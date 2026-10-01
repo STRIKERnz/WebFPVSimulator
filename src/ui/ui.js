@@ -4350,8 +4350,12 @@ export class Ui {
     this.osdThrBar = el('div', 'bar-fill warm');
     const thrBar = el('div', 'bar');
     thrBar.append(this.osdThrBar);
+    this.osdThrottle = el('div', 'fpv-throttle');
+    this.osdThrottleLabel = el('div', 'fpv-throttle-label', 'THR');
+    this.osdThrottlePercent = el('div', 'fpv-throttle-percent', 'THR 0%');
+    this.osdThrottle.append(this.osdThrottleLabel, thrBar, this.osdThrottlePercent);
     const flightBlock = el('div', 'osd-corner osd-right');
-    flightBlock.append(this.osdSpeed, this.osdFlight, this.osdAlt, el('div', 'osd-label', 'Throttle'), thrBar);
+    flightBlock.append(this.osdSpeed, this.osdFlight, this.osdAlt);
     const sticks = el('div', 'osd-sticks is-off');
     this.osdStickLeft = makeGimbal('Yaw, throttle');
     this.osdStickRight = makeGimbal('Roll, pitch');
@@ -4373,7 +4377,7 @@ export class Ui {
     sticks.append(this.osdStickLeft.box, this.osdAir.box, this.osdStickRight.box);
     this.osdSticks = sticks;
     this.bindAirSlider();
-    this.osd.append(top, packBlock, flightBlock, sticks, this.osdLaunch, this.buildTargetLock());
+    this.osd.append(top, packBlock, flightBlock, this.osdThrottle, sticks, this.osdLaunch, this.buildTargetLock());
     this.flightOverlay = new FlightOverlay(this.osd);
     r.append(this.osd);
 
@@ -5083,6 +5087,21 @@ export class Ui {
     this.calAxes = el('div', 'cal-axes');
     this.calAxisCells = [];
     this.calList = el('ol', 'cal-steps');
+    this.manualBindings = el('div', 'cal-manual');
+    this.manualBindings.hidden = true;
+    this.manualRows = {};
+    for (const channel of ['roll', 'pitch', 'yaw', 'throttle']) {
+      const row = el('div', 'cal-actions');
+      const label = el('span', null, channel[0].toUpperCase() + channel.slice(1));
+      const value = el('span', null, 'Unbound');
+      const bind = btn('name-dialog-btn', 'Bind');
+      const unbind = btn('name-dialog-btn', 'Unbind');
+      bind.addEventListener('click', () => this.act(`manual-bind-${channel}`));
+      unbind.addEventListener('click', () => this.act(`manual-unbind-${channel}`));
+      row.append(label, value, bind, unbind);
+      this.manualBindings.append(row);
+      this.manualRows[channel] = { value, bind, unbind };
+    }
     const calBtns = el('div', 'cal-actions');
     this.calCancelBtn = btn('name-dialog-btn', 'Cancel');
     /* Only ever shown on the menu switch step, and only a radio reporting
@@ -5125,6 +5144,7 @@ export class Ui {
       calSticks,
       this.calAxes,
       this.calList,
+      this.manualBindings,
       calBtns,
       hintWithKeys(['Esc'], 'Cancels. Nothing is saved until Save mapping.'),
     );
@@ -7512,6 +7532,7 @@ export class Ui {
           note: padChooseNote(this.padInfo, this.radioBlind),
         },
         { label: 'Calibrate sticks', action: 'calibrate', note: 'Centre, full range, then one named move per stick. Saved after you check it.' },
+        { label: 'Manual bind sticks', action: 'manual-bind', note: 'Choose Roll, Pitch, Yaw or Throttle, press Bind, then move that stick. Unbind clears a draft assignment. Save when all four are bound.' },
         /*
          * THE WAY BACK TO THE ONLY SCREEN THAT SHOWS A MAPPING.
          *
@@ -7749,11 +7770,21 @@ export class Ui {
         overlayColour('Left stick colour', s, 'stickLeftColour'),
         overlayColour('Right stick colour', s, 'stickRightColour'),
         stepper('Stick overlay size', 'Width of each stick panel in screen pixels.', `${s.stickOverlaySize} px`, d => { s.stickOverlaySize = Math.max(60, Math.min(160, s.stickOverlaySize + d * 10)); }),
+        stepper('Stick marker size', 'Size of the moving dots inside the stick panels.', `${s.stickMarkerSize} px`, d => { s.stickMarkerSize = Math.max(2, Math.min(12, s.stickMarkerSize + d)); }),
         stepper('Stick overlay opacity', 'Transparency of both panels, dots and trails.', `${s.stickOverlayOpacity}%`, d => { s.stickOverlayOpacity = Math.max(10, Math.min(100, s.stickOverlayOpacity + d * 5)); }),
         toggle('Stick trails', 'Fading tails show where each stick has moved recently.', s.stickTrails, v => { s.stickTrails = v; }),
         stepper('Stick trail length', 'How long the movement tails remain visible.', `${(s.stickTrailLength / 1000).toFixed(1)} s`, d => { s.stickTrailLength = Math.max(100, Math.min(2000, s.stickTrailLength + d * 100)); }),
         stepper('Stick trail thickness', 'Width of the movement tails.', `${s.stickTrailWidth}`, d => { s.stickTrailWidth = Math.max(1, Math.min(6, s.stickTrailWidth + d)); }),
         toggle('Stick labels', 'Show the channel names beneath the panels. Follows your selected stick mode.', s.stickOverlayLabels, v => { s.stickOverlayLabels = v; }),
+        { label: 'Throttle OSD', section: true },
+        choice('Throttle display', 'Bar, Betaflight-style percentage, or off.', ['bar', 'percent', 'off'], s.throttleDisplay,
+          id => ({ bar: 'Bar', percent: 'Percentage', off: 'Off' }[id]), v => { s.throttleDisplay = v; }),
+        { label: 'Place throttle', throttlePreview: true,
+          note: 'Open the large view and drag the throttle readout over the flight OSD. It saves where you release it.' },
+        stepper('Throttle horizontal position', 'Five percent is near the left edge; 95 percent is near the right.', `${s.throttleX}%`,
+          d => { s.throttleX = Math.max(5, Math.min(95, s.throttleX + d * 5)); }),
+        stepper('Throttle vertical position', 'Five percent is near the top; 95 percent is near the bottom.', `${s.throttleY}%`,
+          d => { s.throttleY = Math.max(5, Math.min(95, s.throttleY + d * 5)); }),
         { label: 'Sound', section: true },
         toggle('Sound', 'All sound: motors, wind, music, cues and every lap time called out loud.', s.sound, (v) => { s.sound = v; }),
         toggle(
@@ -8694,7 +8725,139 @@ export class Ui {
       /* Before the adjust branch: a typed row has arrows too, and the
        * stepper alone would be the old list row without the field that is
        * the whole point of it. */
-      if (it.colour) {
+      if (it.throttlePreview) {
+        const preview = el('div', 'row-control throttle-place-preview');
+        preview.setAttribute('role', 'img');
+        preview.setAttribute('aria-label', `FPV screen preview. Throttle at ${this.settings.throttleX}% across and ${this.settings.throttleY}% down.`);
+        const frame = el('div', 'throttle-place-frame');
+        const viewWidth = window.innerWidth;
+        const viewHeight = window.innerHeight;
+        frame.style.aspectRatio = `${viewWidth} / ${viewHeight}`;
+        const hud = el('div', 'throttle-place-hud');
+        hud.style.width = `${viewWidth}px`;
+        hud.style.height = `${viewHeight}px`;
+        const osdPreview = this.osd.cloneNode(true);
+        osdPreview.style.display = '';
+        osdPreview.classList.remove('dim');
+        osdPreview.querySelectorAll('.fpv-crosshair, .fpv-stick-overlay').forEach(node => node.remove());
+        if (!osdPreview.querySelector('.osd-timer')?.textContent) {
+          osdPreview.querySelector('.osd-timer').textContent = '00:00';
+        }
+        if (!osdPreview.querySelector('.osd-value')?.textContent) {
+          osdPreview.querySelector('.osd-value').textContent = '4.2 V';
+        }
+        const speedPreview = osdPreview.querySelector('.osd-right .osd-value');
+        if (speedPreview && !speedPreview.textContent) speedPreview.textContent = '0 km/h';
+        const sticksPreview = osdPreview.querySelector('.osd-sticks');
+        sticksPreview.classList.remove('is-off');
+        sticksPreview.querySelector('.osd-air')?.classList.remove('is-off', 'is-aloft');
+        new FlightOverlay(osdPreview).update(true,
+          { roll: 0, pitch: 0, yaw: 0, throttle: 0.5 }, this.settings);
+        const previewCrosshair = osdPreview.querySelector('.fpv-crosshair');
+        previewCrosshair.style.display = this.settings.crosshair === 'off' ? 'none' : '';
+        const marker = osdPreview.querySelector('.fpv-throttle');
+        marker.style.display = '';
+        marker.classList.toggle('is-percent', this.settings.throttleDisplay === 'percent');
+        marker.querySelector('.fpv-throttle-percent').textContent = 'THR 42%';
+        marker.querySelector('.bar-fill').style.transform = 'scaleX(0.42)';
+        const position = el('div', 'throttle-place-position', `${this.settings.throttleX}% across · ${this.settings.throttleY}% down`);
+        marker.style.left = `${this.settings.throttleX}%`;
+        marker.style.top = `${this.settings.throttleY}%`;
+        hud.append(osdPreview);
+        frame.append(hud);
+        const expand = btn('name-dialog-btn', 'Open large placement view');
+        preview.append(frame, position, expand);
+        let expanded = false;
+        let overlay = null;
+        const showOverlap = () => {
+          const mark = marker.getBoundingClientRect();
+          const zones = [
+            ['Timer / gates', osdPreview.querySelector('.osd-top')],
+            ['Pack', osdPreview.querySelector('.osd-left')],
+            ['Speed / height', osdPreview.querySelector('.osd-right')],
+            ['Sticks / weight', osdPreview.querySelector('.osd-sticks')],
+            ['Stick display', osdPreview.querySelector('.fpv-stick-overlay')],
+            ['Crosshair', osdPreview.querySelector('.fpv-crosshair')],
+          ];
+          const hits = zones.filter(([, node]) => {
+            if (!node || getComputedStyle(node).display === 'none') return false;
+            const box = node.getBoundingClientRect();
+            return mark.left < box.right && mark.right > box.left
+              && mark.top < box.bottom && mark.bottom > box.top;
+          }).map(([name]) => name);
+          position.textContent = `${this.settings.throttleX}% across · ${this.settings.throttleY}% down`
+            + (hits.length ? ` · Layered with ${hits.join(', ')} (allowed)` : ' · No overlap');
+        };
+        const scaleHud = () => {
+          if (!frame.isConnected) return;
+          hud.style.transform = `scale(${frame.clientWidth / viewWidth})`;
+          showOverlap();
+        };
+        requestAnimationFrame(scaleHud);
+        expand.addEventListener('click', e => {
+          e.preventDefault(); e.stopPropagation();
+          if (expanded) return;
+          expanded = true;
+          overlay = el('div', 'throttle-place-overlay');
+          const title = el('h2', null, 'Place throttle OSD');
+          const help = el('p', null,
+            `Drag THR anywhere, including over other readouts. Crosshair: ${this.settings.crosshair === 'off' ? 'Off' : this.settings.crosshair}.`);
+          const close = btn('name-dialog-btn on', 'Done');
+          const finish = () => {
+            if (!expanded) return;
+            expanded = false;
+            overlay.remove();
+            overlay = null;
+            this.cursor = i;
+            this.writeSettings();
+          };
+          close.addEventListener('click', finish);
+          overlay.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.stopPropagation(); finish(); }
+          });
+          frame.style.width = `${Math.floor(Math.min(window.innerWidth * 0.92,
+            window.innerHeight * 0.72 * viewWidth / viewHeight, 1400))}px`;
+          overlay.append(title, help, frame, position, close);
+          document.body.append(overlay);
+          close.focus();
+          requestAnimationFrame(scaleHud);
+        });
+        const place = e => {
+          const box = frame.getBoundingClientRect();
+          this.settings.throttleX = Math.round(Math.max(5, Math.min(95, (e.clientX - box.left) / box.width * 100)));
+          this.settings.throttleY = Math.round(Math.max(5, Math.min(95, (e.clientY - box.top) / box.height * 100)));
+          marker.style.left = `${this.settings.throttleX}%`;
+          marker.style.top = `${this.settings.throttleY}%`;
+          showOverlap();
+          preview.setAttribute('aria-label', `FPV screen preview. Throttle at ${this.settings.throttleX}% across and ${this.settings.throttleY}% down.`);
+        };
+        frame.addEventListener('pointerdown', e => {
+          e.preventDefault(); e.stopPropagation();
+          frame.setPointerCapture(e.pointerId);
+          place(e);
+        });
+        frame.addEventListener('pointermove', e => {
+          if (frame.hasPointerCapture(e.pointerId)) place(e);
+        });
+        frame.addEventListener('pointerup', e => {
+          if (!frame.hasPointerCapture(e.pointerId)) return;
+          place(e);
+          frame.releasePointerCapture(e.pointerId);
+          this.cursor = i;
+          if (expanded) this.persistSettings();
+          else this.writeSettings();
+        });
+        frame.addEventListener('pointercancel', e => {
+          if (frame.hasPointerCapture(e.pointerId)) {
+            frame.releasePointerCapture(e.pointerId);
+            this.cursor = i;
+            if (expanded) this.persistSettings();
+            else this.writeSettings();
+          }
+        });
+        row.classList.add('row-throttle-preview');
+        row.append(preview);
+      } else if (it.colour) {
         const control = el('label', 'row-control row-colour');
         const picker = el('input');
         picker.type = 'color'; picker.value = it.value;
@@ -12857,6 +13020,16 @@ export class Ui {
     /* The throttle bar every frame: it is an instrument the thumb is reading,
      * and since it moves by transform it costs no layout. See Ui.bar. */
     Ui.bar(this.osdThrBar, throttle);
+    const throttleMode = this.settings.throttleDisplay;
+    const throttleKey = `${throttleMode}|${this.settings.throttleX}|${this.settings.throttleY}`;
+    if (this.osdThrottleKey !== throttleKey) {
+      this.osdThrottleKey = throttleKey;
+      this.osdThrottle.style.display = throttleMode === 'off' ? 'none' : '';
+      this.osdThrottle.style.left = `${this.settings.throttleX}%`;
+      this.osdThrottle.style.top = `${this.settings.throttleY}%`;
+      this.osdThrottle.classList.toggle('is-percent', throttleMode === 'percent');
+    }
+    if (throttleMode === 'percent') Ui.text(this.osdThrottlePercent, `THR ${Math.round(throttle * 100)}%`);
     if (this.osdHits) {
       /*
        * IT COUNTS UP NOW, AND IT COSTS NOTHING.
@@ -13928,6 +14101,7 @@ export class Ui {
       return;
     }
     if (!view) {
+      this.manualBindings.hidden = true;
       this.calCanSave = false;
       this.calCanSkip = false;
       if (this.calSaveBtn) {
@@ -13952,9 +14126,19 @@ export class Ui {
       return;
     }
     const n = view.stepIndex + 1;
-    this.calKicker.textContent = `Step ${n} of ${view.stepCount}, ${view.title}`;
-    this.calPrompt.textContent = view.prompt;
-    this.calHint.textContent = view.hint;
+    this.manualBindings.hidden = !view.manual;
+    this.calList.hidden = Boolean(view.manual);
+    if (view.manual) {
+      for (const [channel, row] of Object.entries(this.manualRows)) {
+        const axis = view.bindings[channel];
+        Ui.text(row.value, view.binding === channel ? 'Move stick now…' : axis === null ? 'Unbound' : `Axis ${axis + 1}`);
+        row.bind.disabled = Boolean(view.binding);
+        row.unbind.disabled = axis === null && view.binding !== channel;
+      }
+    }
+    this.calKicker.textContent = view.manual ? 'Manual stick binding' : `Step ${n} of ${view.stepCount}, ${view.title}`;
+    this.calPrompt.textContent = view.manual ? 'Choose a channel, press Bind, then move its stick in the positive direction. For throttle, move toward full power.' : view.prompt;
+    this.calHint.textContent = view.manual ? 'Move one control at a time. Return other sticks to rest first. Unbind clears the assignment until you bind it again.' : view.hint;
     this.calCanSave = Boolean(view.canSave);
     if (this.calSaveBtn) {
       this.calSaveBtn.disabled = !view.canSave;

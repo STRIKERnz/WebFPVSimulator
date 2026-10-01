@@ -8,21 +8,26 @@ export const OVERLAY_DEFAULTS = {
   crosshair: 'off', crosshairColour: '#ffffff', crosshairSize: 24,
   crosshairOpacity: 85, crosshairThickness: 2,
   stickOverlay: true, stickOverlayShape: 'square', stickOverlaySize: 110,
+  stickMarkerSize: 5,
   stickOverlayOpacity: 80, stickLeftColour: '#ffcc45', stickRightColour: '#5ee5ff',
   stickTrails: true, stickTrailLength: 700, stickTrailWidth: 3,
   stickOverlayLabels: false,
+  throttleDisplay: 'bar', throttleX: 90, throttleY: 24,
 };
 
 export function normaliseOverlaySettings(s) {
   if (!CROSSHAIRS.includes(s.crosshair)) s.crosshair = OVERLAY_DEFAULTS.crosshair;
   if (!['square', 'circle'].includes(s.stickOverlayShape)) s.stickOverlayShape = 'square';
+  if (!['off', 'bar', 'percent'].includes(s.throttleDisplay)) s.throttleDisplay = OVERLAY_DEFAULTS.throttleDisplay;
   for (const key of ['crosshairColour', 'stickLeftColour', 'stickRightColour']) {
     if (!/^#[0-9a-f]{6}$/i.test(s[key])) s[key] = OVERLAY_DEFAULTS[key];
   }
   for (const [key, lo, hi] of [
     ['crosshairSize', 10, 60], ['crosshairOpacity', 10, 100], ['crosshairThickness', 1, 5],
     ['stickOverlaySize', 60, 160], ['stickOverlayOpacity', 10, 100],
+    ['stickMarkerSize', 2, 12],
     ['stickTrailLength', 100, 2000], ['stickTrailWidth', 1, 6],
+    ['throttleX', 5, 95], ['throttleY', 5, 95],
   ]) {
     s[key] = Number.isFinite(s[key]) ? Math.max(lo, Math.min(hi, s[key])) : OVERLAY_DEFAULTS[key];
   }
@@ -98,8 +103,11 @@ export class FlightOverlay {
     this.canvas.style.display = s.stickOverlay ? '' : 'none';
     if (!s.stickOverlay || !this.ctx) { this.clearTrails(); return; }
     const size = s.stickOverlaySize;
-    const width = size * 2 + 32;
-    const height = size + (s.stickOverlayLabels ? 24 : 8);
+    /* The stick centres may reach the panel rim. Give the bitmap room for
+       the whole marker and shadow outside that rim, on every side. */
+    const gutter = s.stickMarkerSize + 8;
+    const width = size * 2 + 32 + gutter * 2;
+    const height = size + (s.stickOverlayLabels ? 24 : 8) + gutter * 2;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const key = [size, height, dpr, s.stickMode, s.stickTrails, s.stickTrailLength, s.stickOverlayShape].join('|');
     if (key !== this.stickKey) {
@@ -125,15 +133,16 @@ export class FlightOverlay {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, width, height);
     for (let i = 0; i < 2; i++) {
-      const x0 = i * (size + 32) + size / 2;
-      const y0 = size / 2;
+      const x0 = gutter + i * (size + 32) + size / 2;
+      const y0 = gutter + size / 2;
       const radius = size / 2 - 7;
+      const travelRadius = radius + 3;
       const colour = i === 0 ? s.stickLeftColour : s.stickRightColour;
       const point = p => {
         // A circular panel uses a circular travel boundary, so diagonals
         // stay inside the rim rather than drawing the dot outside it.
         const scale = s.stickOverlayShape === 'circle' ? Math.max(1, Math.hypot(p.x, p.y)) : 1;
-        return { x: x0 + p.x / scale * radius, y: y0 - p.y / scale * radius };
+        return { x: x0 + p.x / scale * travelRadius, y: y0 - p.y / scale * travelRadius };
       };
       ctx.save();
       ctx.beginPath();
@@ -156,12 +165,12 @@ export class FlightOverlay {
       }
       ctx.globalAlpha = 1;
       const pos = point(positions[i]);
-      ctx.beginPath();ctx.arc(pos.x,pos.y,5,0,Math.PI*2);
+      ctx.beginPath();ctx.arc(pos.x,pos.y,s.stickMarkerSize,0,Math.PI*2);
       ctx.fillStyle = colour;ctx.shadowColor = 'rgba(0,0,0,.8)';ctx.shadowBlur = 5;ctx.fill();
       ctx.shadowBlur = 0;ctx.strokeStyle = 'rgba(0,0,0,.7)';ctx.lineWidth = 1.5;ctx.stroke();
       if (s.stickOverlayLabels) {
         ctx.font = '10px sans-serif';ctx.textAlign = 'center';ctx.fillStyle = '#ffffff';
-        ctx.fillText(stickCaption(s.stickMode, i === 0 ? 'left' : 'right').toUpperCase(), x0, size+15);
+        ctx.fillText(stickCaption(s.stickMode, i === 0 ? 'left' : 'right').toUpperCase(), x0, gutter+size+15);
       }
       ctx.restore();
     }

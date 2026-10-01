@@ -516,27 +516,6 @@ function snapshotAxes(gp) {
  * poll. */
 const ROSTER_MS = 100;
 
-/* Firefox presents this EdgeTX radio as a standard pad: the first three
- * axes are roll, pitch and yaw, but throttle is analogue button 6. Adapt
- * that observed layout to AETR before calibration and flight read it.
- * Keep the displaced switch axis at the end. Other radios and Chromium's
- * unstandardised Pocket layout retain their original reports. */
-function radioGamepad(gp) {
-  if (gp.mapping !== 'standard'
-      || !/^1209-4f54-EdgeTX Radiomaster Pocket Joystick$/i.test(gp.id)
-      || gp.axes.length !== 8 || gp.buttons.length !== 28
-      || !Number.isFinite(gp.buttons[6]?.value)) {
-    return gp;
-  }
-  return {
-    id: gp.id, index: gp.index, connected: gp.connected,
-    timestamp: gp.timestamp, mapping: '',
-    axes: [gp.axes[0], gp.axes[1], gp.buttons[6].value * 2 - 1,
-      gp.axes[2], ...gp.axes.slice(4), gp.axes[3]],
-    buttons: gp.buttons,
-  };
-}
-
 function listGamepads() {
   const out = [];
   const list = typeof navigator !== 'undefined' && navigator.getGamepads
@@ -545,7 +524,7 @@ function listGamepads() {
   for (let i = 0; i < list.length; i += 1) {
     const gp = list[i];
     if (gp && gp.connected && gp.axes && gp.axes.length >= 4) {
-      out.push(radioGamepad(gp));
+      out.push(gp);
     }
   }
   return out;
@@ -2932,6 +2911,49 @@ export class InputManager {
     return true;
   }
 
+  startManualBind() {
+    if (!this.startCalibrationCheck()) return false;
+    this.calibration.manual = true;
+    this.calibration.binding = null;
+    return true;
+  }
+
+  bindChannel(channel) {
+    const c = this.calibration;
+    const gp = this.firstGamepad();
+    if (!c?.manual || !gp || !IDENT_CHANNELS.includes(channel)) return false;
+    c.binding = { channel, rest: snapshotAxes(gp), padId: gp.id };
+    return true;
+  }
+
+  unbindChannel(channel) {
+    const c = this.calibration;
+    if (!c?.manual || !IDENT_CHANNELS.includes(channel)) return false;
+    c.draft[channel] = null;
+    c.binding = null;
+    return true;
+  }
+
+  captureManualBind(gp) {
+    const c = this.calibration;
+    const b = c?.binding;
+    if (!b || !gp || gp.id !== b.padId) return;
+    const live = snapshotAxes(gp);
+    if (live.length !== b.rest.length) { c.binding = null; return; }
+    const used = usedAxes({ ...c.draft, [b.channel]: null });
+    const pick = pickUnusedAxis(live, b.rest, used);
+    if (pick.best < 0 || Math.abs(live[pick.best] - b.rest[pick.best]) < CAL.IDENT_DELTA) return;
+    const axis = pick.best;
+    const rest = b.rest[axis];
+    const sample = live[axis];
+    const min = live.map((v, i) => i === axis ? Math.min(-1, rest, v) : v);
+    const max = live.map((v, i) => i === axis ? Math.max(1, rest, v) : v);
+    c.draft[b.channel] = b.channel === 'throttle'
+      ? throttleSpec(axis, rest, sample, min, max)
+      : channelSpec(axis, rest, sample, min, max);
+    c.binding = null;
+  }
+
   /*
    * Flip one channel, in the draft, on the check step. Nothing reaches the
    * saved map until Save, so a pilot can try it, watch the gimbal, and back
@@ -3216,6 +3238,7 @@ export class InputManager {
     const travelled = c.min && c.max ? travelCount(c.min, c.max, CAL.SWEEP_TRAVEL) : 0;
     const need = c.min ? Math.min(4, c.min.length) : 4;
     const gp = this.firstGamepad();
+    if (c.manual) this.captureManualBind(gp);
     let channels = { roll: 0, pitch: 0, yaw: 0, throttle: 0 };
     let axes = [];
     if (gp) {
@@ -3325,7 +3348,10 @@ export class InputManager {
       waiting: Boolean(c.waiting) || !gp,
       travelled,
       need,
-      canSave: c.step === 'confirm',
+      canSave: c.step === 'confirm' && (!c.manual || IDENT_CHANNELS.every(ch => c.draft[ch])),
+      manual: Boolean(c.manual),
+      binding: c.binding?.channel || null,
+      bindings: c.manual ? Object.fromEntries(IDENT_CHANNELS.map(ch => [ch, c.draft[ch]?.axis ?? null])) : null,
       /* Only the menu switch is ever skippable, and only because the hold
        * gesture covers the radio that is asked for one. See
        * skipCalibrationSelect. */

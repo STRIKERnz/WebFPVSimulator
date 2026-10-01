@@ -6454,6 +6454,17 @@ export async function boot({ loading, bootStart, mapId }) {
       } else {
         notice = noRadioBanner('reload');
       }
+    } else if (action === 'manual-bind') {
+      if (input.startManualBind()) {
+        calReturn = 'pilot';
+        ui.show('calibrate');
+      } else {
+        notice = noRadioBanner('reload');
+      }
+    } else if (action.startsWith('manual-bind-')) {
+      input.bindChannel(action.slice('manual-bind-'.length));
+    } else if (action.startsWith('manual-unbind-')) {
+      input.unbindChannel(action.slice('manual-unbind-'.length));
     } else if (action === 'calibrate-check' || action === 'stickhelp-check') {
       /* The check step on its own, against the mapping already saved. Same
        * door as calibrate above, and the same answer when there is nothing

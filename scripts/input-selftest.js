@@ -2259,46 +2259,25 @@ section('a device with thumbs and keys: a stick key takes the sticks, a finger t
     `${r.im.hand} ${r.im.source} ${r.im.channels.throttle}`);
 }
 
-section('Firefox Pocket analogue throttle reported as button 6');
+section('manual stick binding');
 {
-  const raw = makePad([0, 0, 0, -1, 0, 0, -1, -1], 28,
-    '1209-4f54-EdgeTX Radiomaster Pocket Joystick');
-  raw.mapping = 'standard';
-  raw.buttons[6].value = 0.0014655593551539114;
-  const rig = new Rig(raw);
-  rig.step();
-  check('captured throttle-down report reads idle', rig.im.channels.throttle < 0.002);
-  raw.buttons[6].value = 0.9985344406448461;
-  raw.buttons[6].pressed = true;
-  rig.step();
-  check('captured throttle-up report reads full without yaw',
-    rig.im.channels.throttle > 0.998 && rig.im.channels.yaw === 0);
-  raw.buttons[6].value = 0;
-  raw.buttons[6].pressed = false;
-  // The wizard helper speaks logical AETR; drive the underlying Firefox
-  // report instead so calibration is exercised through navigator.getGamepads.
-  rig.pad = { get axes() { return rig.im.firstGamepad().axes; } };
-  rig.ax = (i, v) => {
-    if (i === 2) {
-      raw.buttons[6].value = (v + 1) / 2;
-      raw.buttons[6].pressed = raw.buttons[6].value > 0.5;
-    } else {
-      raw.axes[i === 3 ? 2 : i] = v;
-    }
-    raw.timestamp += 1;
-  };
-  const result = driveWizard(rig, { roll: 0, pitch: 1, yaw: 3, thr: 2 });
-  check('full wizard reaches confirmation with trigger throttle', result === true, String(result));
-  check('wizard saves its mapping', rig.im.acceptCalibration());
-  rig.ax(2, 0); rig.ax(3, 1); rig.step();
-  check('saved mapping keeps half throttle independent of full yaw',
-    Math.abs(rig.im.channels.throttle - 0.5) < 1e-9 && rig.im.channels.yaw === 1);
-  raw.mapping = '';
-  check('nonstandard Pocket report is left intact', rig.im.firstGamepad() === raw);
-  raw.mapping = 'standard';
-  raw.id = 'Other standard gamepad';
-  const other = new Rig(raw);
-  check('other standard gamepads are left intact', other.im.firstGamepad() === raw);
+  const rig = new Rig(makePad([0, 0, -1, 0, 0]));
+  check('manual binding opens on the existing mapping', rig.im.startManualBind());
+  check('unbinding yaw prevents an incomplete save', rig.im.unbindChannel('yaw') && !rig.view().canSave);
+  check('binding waits for movement', rig.im.bindChannel('yaw') && rig.view().binding === 'yaw');
+  rig.ax(4, 0.8);
+  const captured = rig.view();
+  check('the moved axis is assigned to yaw', captured.bindings.yaw === 4 && captured.binding === null);
+  check('all four assignments can now be saved', captured.canSave);
+  rig.im.cancelCalibration();
+  check('cancel keeps the old mapping', rig.im.map.yaw.axis !== 4);
+  rig.ax(4, 0);
+  rig.im.startManualBind();
+  rig.im.unbindChannel('yaw');
+  rig.im.bindChannel('yaw');
+  rig.ax(4, 0.8);
+  rig.view();
+  check('save applies the manual mapping', rig.im.acceptCalibration() && rig.im.map.yaw.axis === 4);
 }
 
 console.log(failed ? `\n${failed} failed, ${passed} passed` : `\nall ${passed} passed`);
