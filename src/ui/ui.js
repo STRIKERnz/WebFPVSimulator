@@ -7628,14 +7628,14 @@ export class Ui {
           (id) => (id === 'angle' ? 'Angle' : 'Acro'),
           (id) => { s.flightMode = id; },
         ),
-        toggle(
+        ...(this.mode === 'freestyle' ? [toggle(
           'Automatic crash recovery',
           s.autoCrashRecovery
-            ? 'On: hard crashes and stuck landings set the drone down nearby.'
-            : 'Off: collisions bounce, skid and tumble without moving you to a recovery spot. X or Pause → Set down nearby frees a stuck quad and keeps the run; R restarts.',
+            ? 'On in Freestyle: hard crashes and stuck landings set the drone down nearby.'
+            : 'Off in Freestyle: collisions bounce, skid and tumble. X or Pause → Set down nearby frees a stuck quad and keeps the run.',
           s.autoCrashRecovery,
           (v) => { s.autoCrashRecovery = v; },
-        ),
+        )] : []),
         toggle(
           'Launch control',
           'Betaflight race start, off by default. When on, press L on the start line, pitch forward, centre the stick, then punch throttle. The quad holds the angle until you go.',
@@ -8193,11 +8193,11 @@ export class Ui {
       return [
         { label: 'Resume', action: 'resume', primary: true },
         { label: 'Restart run', action: 'restart' },
-        {
+        ...(this.mode === 'freestyle' ? [{
           label: 'Set down nearby',
           action: 'set-down-nearby',
           note: 'Free a quad wedged against an object or stuck on the ground. Keeps this run and its lap clock; clears the current trick combo. X does the same in flight.',
-        },
+        }] : []),
         ...(builder ? [builder] : []),
         ...this.ghostItems(),
         ...(trouble ? [trouble] : []),

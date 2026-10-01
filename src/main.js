@@ -3979,7 +3979,7 @@ export async function boot({ loading, bootStart, mapId }) {
   const STUCK_RATE = 1.5;
   let stuckSinceMs = -1;
   function stuckTick() {
-    if (!ui.settings.autoCrashRecovery) {
+    if (view.mode === 'freestyle' && !ui.settings.autoCrashRecovery) {
       stuckSinceMs = -1;
       return;
     }
@@ -4012,7 +4012,12 @@ export async function boot({ loading, bootStart, mapId }) {
     setCrashflip(false);
     turtleRecover = false;
     setDownNearby();
-    notice = { text: 'Stuck, so you were set down nearby.\nX does this any time.', untilMs: performance.now() + 2800 };
+    notice = {
+      text: view.mode === 'freestyle'
+        ? 'Stuck, so you were set down nearby.\nX does this any time.'
+        : 'Stuck, so you were set down nearby.',
+      untilMs: performance.now() + 2800,
+    };
   }
 
   /*
@@ -4084,7 +4089,8 @@ export async function boot({ loading, bootStart, mapId }) {
   /* Whether a crash read now would be taken: the step loop asks it before
    * it steps, so a crash step ends the loop only when the reset follows. */
   function crashCanReset() {
-    return ui.settings.autoCrashRecovery && mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
+    return (view.mode !== 'freestyle' || ui.settings.autoCrashRecovery)
+      && mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
       && !turtleFlip.active;
   }
   function crashResetTick() {
@@ -6462,7 +6468,7 @@ export async function boot({ loading, bootStart, mapId }) {
       return;
     }
     if (action === 'set-down-nearby') {
-      if (mode !== 'paused' || ui.screen !== 'paused' || launchStaging || poseLock) {
+      if (view.mode !== 'freestyle' || mode !== 'paused' || ui.screen !== 'paused' || launchStaging || poseLock) {
         return;
       }
       setManualFlip(false);
@@ -6737,7 +6743,7 @@ export async function boot({ loading, bootStart, mapId }) {
      * it sooner. A craft marked landed can still be wedged against an
      * obstacle, so the same rescue must work there too.
      */
-    if (code === 'KeyX' && ui.screen === 'flight' && mode === 'flight') {
+    if (code === 'KeyX' && view.mode === 'freestyle' && ui.screen === 'flight' && mode === 'flight') {
       if (launchStaging || poseLock) {
         return;
       }
