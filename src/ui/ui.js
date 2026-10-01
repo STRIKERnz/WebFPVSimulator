@@ -47,6 +47,7 @@ import {
   STICK_MODES, DEFAULT_STICK_MODE, normaliseStickMode, stickChannels, stickCaption,
 } from '../input/stickmode.js';
 import { LINK_PRESETS } from '../input/link.js';
+import { FlightOverlay, CROSSHAIRS, OVERLAY_COLOURS, OVERLAY_DEFAULTS, normaliseOverlaySettings } from './flightoverlay.js';
 
 /* Wording for input.js's calibration steps. The order lives there. */
 const CAL_LABELS = {
@@ -481,14 +482,6 @@ export function pacingTimerOn(s) {
   return normalizeGraphics(s.graphics) === 'low';
 }
 
-/*
- * The crosshairs' shapes, 'off' first because it is the default. 'wings'
- * is the flat mark a Betaflight OSD's crosshairs element draws, 'cross' is
- * four short arms round an open centre, and 'dot' is the least in the way.
- * Each is one class on .osd-cross in index.html; see syncCrosshair.
- */
-export const CROSSHAIRS = ['off', 'wings', 'cross', 'dot'];
-const CROSSHAIR_LABEL = { off: 'Off', wings: 'Wings', cross: 'Cross', dot: 'Dot' };
 
 /*
  * WEIGHT: the pilot's answer to "floaty", as a percentage of the weight the
@@ -1015,6 +1008,8 @@ const DEFAULTS = {
   /* Betaflight launch control. Off: ordinary takeoff. On: L on the start
    * line holds attitude at idle until you punch throttle. */
   launchControl: false,
+  // Leave impacts to the contact solver unless the pilot wants recovery.
+  autoCrashRecovery: false,
   /*
    * Who the ghost drone chases: 'off', 'best' (your best lap this session)
    * or 'previous' (the lap before this one). Best is the default because a
@@ -1091,6 +1086,8 @@ const DEFAULTS = {
   weight: WEIGHT_STOCK,
   laps: 3,
   sound: true,
+  impactSounds: false,
+  ...OVERLAY_DEFAULTS,
   volume: 6,
   /* Per stem, zero to ten, each dividing by 10 to reach the audio API. The
    * types matter: loadSettings only accepts a stored key whose typeof matches
@@ -1345,6 +1342,7 @@ export function loadSettings() {
     s.keyRaceMode = 'angle';
   }
   s.stickMode = normaliseStickMode(s.stickMode);
+  normaliseOverlaySettings(s);
   s.keyThrottle = normaliseKeyThrottle(s.keyThrottle);
   /*
    * A setting the pilot picks off a LIST has to still be on that list.
@@ -2739,6 +2737,18 @@ function pacingNote(s) {
   return on
     ? 'On Low the timer draws the frames while you fly, so the picture answers the sticks sooner, for more GPU work, heat and battery; Auto graphics holds still while it runs, and replays and films keep the display\'s beat. On Medium and High the display paces everything.'
     : 'The display paces the frames on this preset. On Low the timer would draw while you fly instead, so the picture answers the sticks sooner, for more GPU work, heat and battery.';
+}
+
+function overlayColour(label, settings, key) {
+  return {
+    label, note: 'Click the colour swatch for any colour. Left and right cycle common OSD colours.',
+    colour: true, value: settings[key],
+    set: v => { if (/^#[0-9a-f]{6}$/i.test(v)) settings[key] = v; },
+    adjust: d => {
+      const at = OVERLAY_COLOURS.indexOf(settings[key].toLowerCase());
+      settings[key] = OVERLAY_COLOURS[(Math.max(0, at) + (d > 0 ? 1 : -1) + OVERLAY_COLOURS.length) % OVERLAY_COLOURS.length];
+    },
+  };
 }
 
 function toggle(label, note, on, set) {
@@ -4363,13 +4373,8 @@ export class Ui {
     sticks.append(this.osdStickLeft.box, this.osdAir.box, this.osdStickRight.box);
     this.osdSticks = sticks;
     this.bindAirSlider();
-    /* The crosshairs, at the centre of the canvas, which is the camera's
-     * axis. Four arms and a dot, and the shape class says which of them
-     * draw: see syncCrosshair and .osd-cross in index.html. */
-    this.osdCross = el('div', 'osd-cross is-off');
-    this.osdCross.append(el('i', 'xh-l'), el('i', 'xh-r'), el('i', 'xh-t'), el('i', 'xh-b'), el('i', 'xh-dot'));
-    this.osdCrossShape = 'off';
-    this.osd.append(this.osdCross, top, packBlock, flightBlock, sticks, this.osdLaunch, this.buildTargetLock());
+    this.osd.append(top, packBlock, flightBlock, sticks, this.osdLaunch, this.buildTargetLock());
+    this.flightOverlay = new FlightOverlay(this.osd);
     r.append(this.osd);
 
     /*
@@ -7440,6 +7445,14 @@ export class Ui {
           (id) => { s.flightMode = id; },
         ),
         toggle(
+          'Automatic crash recovery',
+          s.autoCrashRecovery
+            ? 'On: hard crashes and stuck landings set the drone down nearby.'
+            : 'Off: collisions bounce, skid and tumble without moving you to a recovery spot. R restarts; X sets you down nearby.',
+          s.autoCrashRecovery,
+          (v) => { s.autoCrashRecovery = v; },
+        ),
+        toggle(
           'Launch control',
           'Betaflight race start, off by default. When on, press L on the start line, pitch forward, centre the stick, then punch throttle. The quad holds the angle until you go.',
           Boolean(s.launchControl),
@@ -7716,35 +7729,39 @@ export class Ui {
          */
         toggle(
           'Impact frame',
-          !s.mangaAndScoring
-            ? 'Nothing to do while Manga and scoring is off: a crash cuts straight to where you are set down. Turn that on and this decides whether a crash holds the moment as an ink panel.'
-            : (s.impactFrame
-              ? 'On: a crash on a freestyle map holds the moment for a beat as a high contrast ink panel with impact lines, then lets go. Never a white flash, at most one every two seconds. Off under Clean FPV, and whenever your system asks for reduced motion.'
-              : 'Off: a crash cuts straight to where you are set down, with no held frame. The rest of the manga look stays.'),
+          s.impactFrame
+            ? 'On: a crash on a freestyle map holds the moment for a beat as a high contrast ink panel with impact lines, then lets go. Never a white flash, at most one every two seconds. Off under Clean FPV, and whenever your system asks for reduced motion.'
+            : 'Off: impacts stay in the live view. The rest of the manga look stays.',
           s.impactFrame,
           (v) => { s.impactFrame = v; },
         ),
-        /*
-         * THE HUD: what is drawn over the picture in flight. One row for
-         * now, the crosshairs, a fixed mark at the centre of the frame.
-         * The note says per shape what it is, like Frame pacing's.
-         */
-        { label: 'HUD', section: true },
-        choice(
-          'Crosshairs',
-          {
-            off: 'A mark at the centre of the picture, which is where the camera points. Off: nothing is drawn there.',
-            wings: 'Wings: a short line either side of a centre dot, the flat mark a Betaflight OSD draws, fixed at the centre of the picture where the camera points.',
-            cross: 'Cross: four short arms round an open centre, fixed at the centre of the picture where the camera points, so what you aim at stays in view.',
-            dot: 'Dot: one small dot at the centre of the picture, where the camera points. The least in the way.',
-          }[s.crosshair] || '',
-          CROSSHAIRS,
-          s.crosshair,
-          (id) => CROSSHAIR_LABEL[id],
-          (id) => { s.crosshair = id; },
-        ),
+        { label: 'Flight OSD', section: true },
+        choice('Crosshair', 'Fixed at the centre of the FPV view. Pick the OSD aiming mark you prefer.',
+          CROSSHAIRS, s.crosshair,
+          (id) => ({ off: 'Off', wings: 'Wings', cross: 'Cross', gap: 'Gapped cross', dot: 'Dot', circle: 'Circle', 'circle-dot': 'Circle + dot', chevron: 'Chevron', corners: 'Corners' }[id]),
+          (v) => { s.crosshair = v; }),
+        overlayColour('Crosshair colour', s, 'crosshairColour'),
+        stepper('Crosshair size', 'Size in screen pixels.', `${s.crosshairSize} px`, d => { s.crosshairSize = Math.max(10, Math.min(60, s.crosshairSize + d * 2)); }),
+        stepper('Crosshair thickness', 'Width of the crosshair lines.', `${s.crosshairThickness}`, d => { s.crosshairThickness = Math.max(1, Math.min(5, s.crosshairThickness + d)); }),
+        stepper('Crosshair opacity', 'Lower values let more of the FPV picture show through.', `${s.crosshairOpacity}%`, d => { s.crosshairOpacity = Math.max(10, Math.min(100, s.crosshairOpacity + d * 5)); }),
+        toggle('Stick overlay', 'Live calibrated inputs for your radio, gamepad, keyboard or touch sticks. Centred at the bottom of the FPV view.', s.stickOverlay, v => { s.stickOverlay = v; }),
+        choice('Stick panel shape', 'Transparent panels around the two stick indicators.', ['square', 'circle'], s.stickOverlayShape, v => v === 'circle' ? 'Circle' : 'Square', v => { s.stickOverlayShape = v; }),
+        overlayColour('Left stick colour', s, 'stickLeftColour'),
+        overlayColour('Right stick colour', s, 'stickRightColour'),
+        stepper('Stick overlay size', 'Width of each stick panel in screen pixels.', `${s.stickOverlaySize} px`, d => { s.stickOverlaySize = Math.max(60, Math.min(160, s.stickOverlaySize + d * 10)); }),
+        stepper('Stick overlay opacity', 'Transparency of both panels, dots and trails.', `${s.stickOverlayOpacity}%`, d => { s.stickOverlayOpacity = Math.max(10, Math.min(100, s.stickOverlayOpacity + d * 5)); }),
+        toggle('Stick trails', 'Fading tails show where each stick has moved recently.', s.stickTrails, v => { s.stickTrails = v; }),
+        stepper('Stick trail length', 'How long the movement tails remain visible.', `${(s.stickTrailLength / 1000).toFixed(1)} s`, d => { s.stickTrailLength = Math.max(100, Math.min(2000, s.stickTrailLength + d * 100)); }),
+        stepper('Stick trail thickness', 'Width of the movement tails.', `${s.stickTrailWidth}`, d => { s.stickTrailWidth = Math.max(1, Math.min(6, s.stickTrailWidth + d)); }),
+        toggle('Stick labels', 'Show the channel names beneath the panels. Follows your selected stick mode.', s.stickOverlayLabels, v => { s.stickOverlayLabels = v; }),
         { label: 'Sound', section: true },
         toggle('Sound', 'All sound: motors, wind, music, cues and every lap time called out loud.', s.sound, (v) => { s.sound = v; }),
+        toggle(
+          'Impact sounds',
+          'Crash and collision pops. Motors, wind, music and lap calls keep their own settings.',
+          s.impactSounds,
+          (v) => { s.impactSounds = v; },
+        ),
         stepper('Volume', 'Overall level, the lap call included. Zero to ten.', `${s.volume}`, (d) => {
           s.volume = Math.max(0, Math.min(10, s.volume + d));
         }),
@@ -8677,7 +8694,17 @@ export class Ui {
       /* Before the adjust branch: a typed row has arrows too, and the
        * stepper alone would be the old list row without the field that is
        * the whole point of it. */
-      if (it.num && it.range) {
+      if (it.colour) {
+        const control = el('label', 'row-control row-colour');
+        const picker = el('input');
+        picker.type = 'color'; picker.value = it.value;
+        picker.setAttribute('aria-label', it.label);
+        picker.addEventListener('click', e => e.stopPropagation());
+        picker.addEventListener('keydown', e => e.stopPropagation());
+        picker.addEventListener('change', () => { it.set(picker.value); this.cursor = i; this.writeSettings(); });
+        control.append(picker, el('span', 'row-value', it.value.toUpperCase()));
+        row.append(control);
+      } else if (it.num && it.range) {
         row.append(this.makeSliderControl(it, i));
       } else if (it.num) {
         row.append(this.makeNumber(it, i));
@@ -13599,27 +13626,18 @@ export class Ui {
   }
 
   /*
-   * Keyboard stick ghost. Mode 2: left is yaw (x) and throttle (y, idle
-   * at the bottom), right is roll (x) and pitch (y, stick forward is up,
-   * matching the radio and the up arrow). Hidden when a radio is the
-   * stick source.
-   *
-   * `show` now hides the two GIMBALS rather than the block they sit in,
-   * because the air slider sits between them and is not the keyboard's.
-   * Whether the block itself is up is setAirSlider's call, which the frame
-   * loop makes from the same place with the same flight test.
+   * FlightOverlay draws calibrated channels for every input source and
+   * follows the pilot's stick mode. Keep the previous flight gimbals hidden;
+   * their container still owns the independent weight slider.
    */
   setStickOverlay({ show, roll, pitch, yaw, throttle }) {
+    if (this.flightOverlay) this.flightOverlay.update(show, { roll, pitch, yaw, throttle }, this.settings);
     if (!this.osdSticks) {
       return;
     }
-    const cls = show ? 'osd-gimbal' : 'osd-gimbal is-off';
+    const cls = 'osd-gimbal is-off';
     Ui.klass(this.osdStickLeft.box, cls);
     Ui.klass(this.osdStickRight.box, cls);
-    if (!show) {
-      return;
-    }
-    placeSticks(this.osdStickLeft, this.osdStickRight, { yaw, throttle, roll, pitch }, this.settings.stickMode);
   }
 
   /*

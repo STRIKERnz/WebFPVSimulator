@@ -516,6 +516,27 @@ function snapshotAxes(gp) {
  * poll. */
 const ROSTER_MS = 100;
 
+/* Firefox presents this EdgeTX radio as a standard pad: the first three
+ * axes are roll, pitch and yaw, but throttle is analogue button 6. Adapt
+ * that observed layout to AETR before calibration and flight read it.
+ * Keep the displaced switch axis at the end. Other radios and Chromium's
+ * unstandardised Pocket layout retain their original reports. */
+function radioGamepad(gp) {
+  if (gp.mapping !== 'standard'
+      || !/^1209-4f54-EdgeTX Radiomaster Pocket Joystick$/i.test(gp.id)
+      || gp.axes.length !== 8 || gp.buttons.length !== 28
+      || !Number.isFinite(gp.buttons[6]?.value)) {
+    return gp;
+  }
+  return {
+    id: gp.id, index: gp.index, connected: gp.connected,
+    timestamp: gp.timestamp, mapping: '',
+    axes: [gp.axes[0], gp.axes[1], gp.buttons[6].value * 2 - 1,
+      gp.axes[2], ...gp.axes.slice(4), gp.axes[3]],
+    buttons: gp.buttons,
+  };
+}
+
 function listGamepads() {
   const out = [];
   const list = typeof navigator !== 'undefined' && navigator.getGamepads
@@ -524,7 +545,7 @@ function listGamepads() {
   for (let i = 0; i < list.length; i += 1) {
     const gp = list[i];
     if (gp && gp.connected && gp.axes && gp.axes.length >= 4) {
-      out.push(gp);
+      out.push(radioGamepad(gp));
     }
   }
   return out;

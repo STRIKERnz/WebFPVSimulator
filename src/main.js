@@ -3375,7 +3375,7 @@ export async function boot({ loading, bootStart, mapId }) {
     if (u > 1) {
       u = 1;
     }
-    if (typeof audio.event === 'function') {
+    if (ui.settings.impactSounds && typeof audio.event === 'function') {
       /* Still two cues, because there are two samples, but the level and
        * the choice now come off the impulse rather than off a speed the
        * contact may never have had. */
@@ -3572,7 +3572,7 @@ export async function boot({ loading, bootStart, mapId }) {
     dumpTurtleIterm();
     setTurtleParkMotors(true);
     applyTurtleFlipPose(0);
-    if (mode === 'flight' && typeof audio.event === 'function') {
+    if (ui.settings.impactSounds && mode === 'flight' && typeof audio.event === 'function') {
       audio.event('clip');
     }
   }
@@ -3983,6 +3983,10 @@ export async function boot({ loading, bootStart, mapId }) {
   const STUCK_RATE = 1.5;
   let stuckSinceMs = -1;
   function stuckTick() {
+    if (!ui.settings.autoCrashRecovery) {
+      stuckSinceMs = -1;
+      return;
+    }
     const st = stateCurr;
     const still = mode === 'flight'
       && ui.screen === 'flight'
@@ -4084,7 +4088,7 @@ export async function boot({ loading, bootStart, mapId }) {
   /* Whether a crash read now would be taken: the step loop asks it before
    * it steps, so a crash step ends the loop only when the reset follows. */
   function crashCanReset() {
-    return mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
+    return ui.settings.autoCrashRecovery && mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
       && !turtleFlip.active;
   }
   function crashResetTick() {
@@ -9145,17 +9149,16 @@ export async function boot({ loading, bootStart, mapId }) {
         ghostFinal: Boolean(ghostGap && ghostGap.final),
       });
       const ch = input.channels;
-      const vis = turtleAxes(ch.roll, ch.pitch);
       ui.setStickOverlay({
-        show: input.isKeyboardPrimary() && !input.isTouchPrimary(),
-        roll: vis[0],
-        pitch: vis[1],
+        show: true,
+        roll: ch.roll,
+        pitch: ch.pitch,
         yaw: ch.yaw,
         throttle: ch.throttle,
       });
-      /* The air slider rides the same test as the gimbals it sits between,
-       * but not the same SOURCE test: it belongs to every pilot, radio,
-       * keyboard and thumbs alike. This is also where its first-run hint is
+      /* The weight slider sits above the stick display and belongs to
+       * every pilot, radio, keyboard and thumbs alike. Its visibility is
+       * independent of the stick overlay setting. Its first-run hint is
        * raised and retired, which is why it is here and not in show().
        * Aloft is off the pads, not perched or set down, and not on its
        * back: the slider fades while it is true and the card retires when
@@ -9178,6 +9181,8 @@ export async function boot({ loading, bootStart, mapId }) {
       ui.setAirSlider(false);
       ui.syncChipFade(false, nowWall);
       ui.setTargetLock(LOCK_OFF);
+    } else {
+      ui.setStickOverlay({ show: false, roll: 0, pitch: 0, yaw: 0, throttle: 0 });
     }
     /*
      * The thumb sticks live in FLIGHT and nowhere else. Over any menu
@@ -11420,4 +11425,3 @@ export async function boot({ loading, bootStart, mapId }) {
  * which is the screen that can actually say what went wrong and what to do
  * about it.
  */
-
