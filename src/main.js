@@ -3371,7 +3371,7 @@ export async function boot({ loading, bootStart, mapId }) {
     if (u > 1) {
       u = 1;
     }
-    if (typeof audio.event === 'function') {
+    if (ui.settings.impactSounds && typeof audio.event === 'function') {
       /* Still two cues, because there are two samples, but the level and
        * the choice now come off the impulse rather than off a speed the
        * contact may never have had. */
@@ -3568,7 +3568,7 @@ export async function boot({ loading, bootStart, mapId }) {
     dumpTurtleIterm();
     setTurtleParkMotors(true);
     applyTurtleFlipPose(0);
-    if (mode === 'flight' && typeof audio.event === 'function') {
+    if (ui.settings.impactSounds && mode === 'flight' && typeof audio.event === 'function') {
       audio.event('clip');
     }
   }
@@ -4017,6 +4017,10 @@ export async function boot({ loading, bootStart, mapId }) {
   const STUCK_RATE = 1.5;
   let stuckSinceMs = -1;
   function stuckTick() {
+    if (!ui.settings.autoCrashRecovery) {
+      stuckSinceMs = -1;
+      return;
+    }
     const st = stateCurr;
     const still = mode === 'flight'
       && ui.screen === 'flight'
@@ -4118,7 +4122,7 @@ export async function boot({ loading, bootStart, mapId }) {
   /* Whether a crash read now would be taken: the step loop asks it before
    * it steps, so a crash step ends the loop only when the reset follows. */
   function crashCanReset() {
-    return mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
+    return ui.settings.autoCrashRecovery && mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
       && !turtleFlip.active;
   }
   function crashResetTick() {
@@ -6505,6 +6509,19 @@ export async function boot({ loading, bootStart, mapId }) {
       });
       return;
     }
+    if (action === 'set-down-nearby') {
+      if (mode !== 'paused' || ui.screen !== 'paused' || launchStaging || poseLock) {
+        return;
+      }
+      setManualFlip(false);
+      setCrashflip(false);
+      turtleRecover = false;
+      setDownNearby();
+      mode = 'flight';
+      ui.show('flight');
+      enterFlightFullscreen();
+      return;
+    }
     if (action === 'pause') {
       mode = 'paused';
     } else if (action === 'title') {
@@ -6755,11 +6772,11 @@ export async function boot({ loading, bootStart, mapId }) {
      * The pilot's own unstick: set down on the flat surface nearest to
      * where you are, upright, run untouched. stuckTick does the same for a
      * craft left still and not upright; this is the pilot's way to ask for
-     * it sooner. It refuses on the ground so it cannot be used as a free
-     * reposition between laps.
+     * it sooner. A craft marked landed can still be wedged against an
+     * obstacle, so the same rescue must work there too.
      */
     if (code === 'KeyX' && ui.screen === 'flight' && mode === 'flight') {
-      if (landed || launchStaging || poseLock) {
+      if (launchStaging || poseLock) {
         return;
       }
       setManualFlip(false);

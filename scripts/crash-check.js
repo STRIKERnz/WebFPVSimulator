@@ -382,7 +382,8 @@ async function main() {
     for (let i = 0; i < 240 && !(await ev('return !!window.__shellReady')); i += 1) {
       await sleep(500);
     }
-    await ev("const ui = window.__ui; ui.settings.map = 'city'; ui.settings.graphics = 'low'; ui.onAction('fly', ui.settings); return 1;");
+    // These scenarios assert the optional automatic recovery policy.
+    await ev("const ui = window.__ui; ui.settings.map = 'city'; ui.settings.graphics = 'low'; ui.settings.autoCrashRecovery = true; ui.onAction('fly', ui.settings); return 1;");
     let ready = false;
     for (let i = 0; i < 260; i += 1) {
       const m = await ev('return window.__map ? window.__map() : null');

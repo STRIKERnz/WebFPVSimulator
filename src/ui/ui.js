@@ -1130,6 +1130,8 @@ const DEFAULTS = {
   /* Betaflight launch control. Off: ordinary takeoff. On: L on the start
    * line holds attitude at idle until you punch throttle. */
   launchControl: false,
+  // Let collisions bounce unless the pilot enables automatic rescue.
+  autoCrashRecovery: false,
   /*
    * Who the ghost drone chases: 'off', 'best' (your best lap this session)
    * or 'previous' (the lap before this one). Best is the default because a
@@ -1206,6 +1208,7 @@ const DEFAULTS = {
   weight: WEIGHT_STOCK,
   laps: 3,
   sound: true,
+  impactSounds: false,
   volume: 6,
   /* Per stem, zero to ten, each dividing by 10 to reach the audio API. The
    * types matter: loadSettings only accepts a stored key whose typeof matches
@@ -8035,6 +8038,14 @@ export class Ui {
           (id) => { s.keyRaceMode = id; },
         )] : []),
         toggle(
+          'Automatic crash recovery',
+          s.autoCrashRecovery
+            ? 'On: hard crashes and stuck landings set the drone down nearby.'
+            : 'Off: collisions bounce, skid and tumble. X or Pause → Set down nearby frees a stuck quad and keeps the run; R restarts.',
+          s.autoCrashRecovery,
+          (v) => { s.autoCrashRecovery = v; },
+        ),
+        toggle(
           'Launch control',
           'Betaflight race start, off by default. When on, press L on the start line, pitch forward, centre the stick, then punch throttle. The quad holds the angle until you go.',
           Boolean(s.launchControl),
@@ -8293,6 +8304,12 @@ export class Ui {
         ),
         { label: 'Sound', section: true },
         toggle('Sound', 'All sound: motors, wind, music, cues and every lap time called out loud.', s.sound, (v) => { s.sound = v; }),
+        toggle(
+          'Impact sounds',
+          'Crash and collision pops. Motors, wind, music and lap calls keep their own settings.',
+          s.impactSounds,
+          (v) => { s.impactSounds = v; },
+        ),
         stepper('Volume', 'Overall level, the lap call included. Zero to ten.', `${s.volume}`, (d) => {
           s.volume = Math.max(0, Math.min(10, s.volume + d));
         }),
@@ -8580,6 +8597,11 @@ export class Ui {
       return [
         { label: 'Resume', action: 'resume', primary: true },
         { label: 'Restart run', action: 'restart' },
+        {
+          label: 'Set down nearby',
+          action: 'set-down-nearby',
+          note: 'Free a quad wedged against an object or stuck on the ground. Keeps this run and its lap clock; clears the current trick combo. X does the same in flight.',
+        },
         ...(builder ? [builder] : []),
         ...this.ghostItems(),
         ...(trouble ? [trouble] : []),
