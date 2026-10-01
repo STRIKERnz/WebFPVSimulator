@@ -490,8 +490,101 @@ section('a radio throttle that springs, and the pilot never lets go until the ch
   rig.ax(1, 0); rig.ax(0, 0.6);
   check('roll held during the pitch release: yaw does not arrive', rig.waitStep('yaw', 1500) === false);
   check('the throttle at its bottom was not the reason', rig.pad.axes[2] === -1 && rig.view().step === 'pitch');
+  check('and the screen says roll is what it is waiting for', /Waiting for roll/.test(rig.view().hint), rig.view().hint);
   rig.ax(0, 0);
   check('roll let go: yaw arrives', rig.waitStep('yaw') === true);
+}
+
+section('a radio throttle that springs, held down at the centre step and let go on the left stick: bug-f06287ff');
+{
+  /*
+   * A BETAFPV JoyStick on Windows, eight axes and no buttons: "calibration
+   * menu process seems to stop around the point where i need to let the left
+   * stick come back to center". Its throttle springs back to just under the
+   * middle, -0.13 in the report, and this pilot held it down at the centre
+   * step as the centre step says, so its REST IS THE BOTTOM, and the middle
+   * is neither of the two places an identified throttle may park. They held
+   * it through roll and pitch, which are the other hand, and yaw is the
+   * first step that needs the left thumb for something else. "Let the left
+   * stick come back to the centre" is an instruction to let go, the throttle
+   * springs up, and the release waits for it to come back down while the
+   * hint talked about diagonals. The wait is right and stays; the screen now
+   * says what it is waiting for, and the prompt on that stick says to keep
+   * the throttle down.
+   */
+  const rig = new Rig(makePad([0, 0, -1, 0, 0, -1, -1, 0], 0, 'BETAFPV JoyStick (Vendor: 0483 Product: 4321)'));
+  rig.im.startCalibration();
+  rig.waitStep('sweep');
+  for (const i of [0, 1, 2, 3]) {
+    rig.ax(i, 1); rig.step(); rig.ax(i, -1); rig.step(); rig.ax(i, i === 2 ? -1 : 0); rig.step();
+  }
+  rig.waitStep('throttle');
+  rig.ax(2, 1); rig.waitPhase('release'); rig.ax(2, -1); rig.waitStep('roll');
+  rig.ax(0, 1); rig.waitPhase('release'); rig.ax(0, 0); rig.waitStep('pitch');
+  rig.ax(1, -1); rig.waitPhase('release'); rig.ax(1, 0); rig.waitStep('yaw');
+  rig.ax(3, 1); rig.waitPhase('release');
+  const prompt = rig.view().prompt;
+  check('mode 2: the yaw release, on the stick that carries the throttle, says to keep the throttle down',
+    /left stick.*throttle still all the way down/.test(prompt), prompt);
+  /* The left thumb comes off: yaw centres, and the throttle springs up. */
+  rig.ax(3, 0.02); rig.ax(2, -0.13);
+  const stuck = rig.waitStep(SELECT_STEP, 1500) === false;
+  const v = rig.view();
+  check('the release waits, as it should for a throttle off its bottom',
+    stuck && v.step === 'yaw' && v.phase === 'release', `${v.step} ${v.phase}`);
+  check('and says what it is waiting for: the throttle, and what it reads',
+    /throttle, which reads 4[34] percent/.test(v.hint), v.hint);
+  check('and the way on for a throttle that springs back up', /hold it down/.test(v.hint), v.hint);
+  rig.ax(2, -1);
+  check('held down, the menu switch step arrives', rig.waitStep(SELECT_STEP) === true, rig.view().step);
+  /* Mode 1 puts the throttle on the right stick with roll, so there it is
+   * roll's release that has to say it, and yaw's must not. */
+  const releasePrompt = (step) => {
+    rig.im.calibration.step = step;
+    rig.im.calibration.phase = 'release';
+    return rig.view().prompt;
+  };
+  rig.im.setStickMode(1);
+  const mode1 = { roll: releasePrompt('roll'), yaw: releasePrompt('yaw') };
+  rig.im.setStickMode(2);
+  check('mode 1: roll\'s release says it, and yaw\'s does not',
+    /right stick.*throttle still all the way down/.test(mode1.roll) && !/throttle/.test(mode1.yaw),
+    `${mode1.roll} | ${mode1.yaw}`);
+}
+{
+  /* The stick just asked for has to come back too, and it is the prompt's
+   * to say so, not the hint's: the hint names only some OTHER axis. */
+  const rig = new Rig(makePad([0, 0, -1, 0], 4, 'Roll not let go'));
+  rig.im.startCalibration();
+  rig.waitStep('sweep');
+  for (const i of [0, 1, 2, 3]) {
+    rig.ax(i, 1); rig.step(); rig.ax(i, -1); rig.step(); rig.ax(i, i === 2 ? -1 : 0); rig.step();
+  }
+  rig.waitStep('throttle');
+  rig.ax(2, 1); rig.waitPhase('release'); rig.ax(2, -1); rig.waitStep('roll');
+  rig.ax(0, 1); rig.waitPhase('release');
+  check('roll still held after it was identified: pitch does not arrive', rig.waitStep('pitch', 1500) === false);
+  check('and the hint blames no other axis', /One direction at a time/.test(rig.view().hint), rig.view().hint);
+  rig.ax(0, 0);
+  check('roll let go: pitch arrives', rig.waitStep('pitch') === true);
+}
+{
+  /* And when it is not a channel at all: a switch knocked during a release
+   * is named by its axis, which is the number the strip above it shows. */
+  const rig = new Rig(makePad([0, 0, -1, 0, -1], 4, 'Switch knocked'));
+  rig.im.startCalibration();
+  rig.waitStep('sweep');
+  for (const i of [0, 1, 2, 3]) {
+    rig.ax(i, 1); rig.step(); rig.ax(i, -1); rig.step(); rig.ax(i, i === 2 ? -1 : 0); rig.step();
+  }
+  rig.waitStep('throttle');
+  rig.ax(2, 1); rig.waitPhase('release'); rig.ax(2, -1); rig.waitStep('roll');
+  rig.ax(0, 1); rig.waitPhase('release');
+  rig.ax(0, 0); rig.ax(4, 1);
+  check('a switch knocked during the roll release: pitch does not arrive', rig.waitStep('pitch', 1500) === false);
+  check('and the screen names the axis', /Waiting for axis 4/.test(rig.view().hint), rig.view().hint);
+  rig.ax(4, -1);
+  check('put back: pitch arrives', rig.waitStep('pitch') === true);
 }
 
 /* ------------------------------------------------------------------------
@@ -1794,9 +1887,21 @@ section('stick help: which machine, and what the screen says');
     /Chrome is dropping it/.test(stickSay({ ...base, dead: ['yaw'], fourAxes: true }, 'android'))
     && !/Chrome/.test(stickSay({ ...base, dead: ['yaw'], fourAxes: true }, 'windows')));
   const android = platformHelp('android', 'chromium', { fourAxes: true, axisCount: 4 });
-  check('Android: four axes, the computer, and the radio side worded as untried',
-    /only four axes/.test(android.lines.join(' ')) && /computer/.test(android.lines.join(' '))
-    && /should get\s+all four through/.test(android.lines.join(' ')) && /arriving as 4 axes/.test(android.lines.join(' ')));
+  /* bug-8acd3b2f, bug-abaabdde, bug-b2de5239, bug-da8c8d0e: five radios on
+   * phones, all four axes and yaw gone. The recipe is the one both ends' code
+   * says works (see platformHelp): the missing stick on channels 5 and 6, of
+   * which Chrome keeps one, in a copy of the model. */
+  const androidText = android.lines.join(' ');
+  check('Android: which four channels Chrome keeps, and that one of throttle and yaw is the casualty',
+    /only four of a radio's channels/.test(androidText) && /channels\s+1 and 2, one of channels 3 and 4, and one of channels 5 and 6/.test(androidText)
+    && /arriving as 4 axes/.test(androidText));
+  check('the fix on the radio: a copy of the model, channels 5 and 6 cleared and given the missing stick, then calibrate',
+    /copy of the model/.test(androidText) && /clear channels 5 and 6/.test(androidText)
+    && /one line whose source is the\s+stick that does not arrive/.test(androidText)
+    && /Rud for yaw, Thr for throttle/.test(androidText) && /Calibrate\s+sticks/.test(androidText));
+  check('worded as untried, asking to be told, and a computer for the radios that cannot change',
+    /nobody has confirmed it on a phone yet/.test(androidText) && /Report a bug/.test(androidText)
+    && /DJI controller/.test(androidText) && /computer/.test(androidText));
   check('Windows: joy.cpl as the test, and not as a calibration',
     /joy\.cpl/.test(platformHelp('windows').lines.join(' ')) && /changes nothing a browser reads/.test(platformHelp('windows').lines.join(' ')));
   check('Safari on a Mac is told to try another browser first, and Chrome on a Mac is not',
