@@ -6461,6 +6461,19 @@ export async function boot({ loading, bootStart, mapId }) {
       });
       return;
     }
+    if (action === 'set-down-nearby') {
+      if (mode !== 'paused' || ui.screen !== 'paused' || launchStaging || poseLock) {
+        return;
+      }
+      setManualFlip(false);
+      setCrashflip(false);
+      turtleRecover = false;
+      setDownNearby();
+      mode = 'flight';
+      ui.show('flight');
+      enterFlightFullscreen();
+      return;
+    }
     if (action === 'pause') {
       mode = 'paused';
     } else if (action === 'title') {
@@ -6721,11 +6734,11 @@ export async function boot({ loading, bootStart, mapId }) {
      * The pilot's own unstick: set down on the flat surface nearest to
      * where you are, upright, run untouched. stuckTick does the same for a
      * craft left still and not upright; this is the pilot's way to ask for
-     * it sooner. It refuses on the ground so it cannot be used as a free
-     * reposition between laps.
+     * it sooner. A craft marked landed can still be wedged against an
+     * obstacle, so the same rescue must work there too.
      */
     if (code === 'KeyX' && ui.screen === 'flight' && mode === 'flight') {
-      if (landed || launchStaging || poseLock) {
+      if (launchStaging || poseLock) {
         return;
       }
       setManualFlip(false);

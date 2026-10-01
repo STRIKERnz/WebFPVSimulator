@@ -7632,7 +7632,7 @@ export class Ui {
           'Automatic crash recovery',
           s.autoCrashRecovery
             ? 'On: hard crashes and stuck landings set the drone down nearby.'
-            : 'Off: collisions bounce, skid and tumble without moving you to a recovery spot. R restarts; X sets you down nearby.',
+            : 'Off: collisions bounce, skid and tumble without moving you to a recovery spot. X or Pause → Set down nearby frees a stuck quad and keeps the run; R restarts.',
           s.autoCrashRecovery,
           (v) => { s.autoCrashRecovery = v; },
         ),
@@ -8193,6 +8193,11 @@ export class Ui {
       return [
         { label: 'Resume', action: 'resume', primary: true },
         { label: 'Restart run', action: 'restart' },
+        {
+          label: 'Set down nearby',
+          action: 'set-down-nearby',
+          note: 'Free a quad wedged against an object or stuck on the ground. Keeps this run and its lap clock; clears the current trick combo. X does the same in flight.',
+        },
         ...(builder ? [builder] : []),
         ...this.ghostItems(),
         ...(trouble ? [trouble] : []),
