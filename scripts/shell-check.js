@@ -101,7 +101,7 @@ const LIBRARY = Object.fromEntries(LIBRARY_SEED.map((d) => [d.id, d]));
  * Everything else in this.screens is here.
  */
 const SCREENS = [
-  'title', 'courses', 'freestyle', 'quad', 'pilot', 'launch', 'rates', 'pids', 'fc',
+  'title', 'courses', 'freestyle', 'quad', 'pilot', 'osd', 'launch', 'rates', 'pids', 'fc',
   /* tricks was missing from this list until bug-f105cf4a, and that is how a
    * screen whose list sat entirely below the fold shipped: nothing walked
    * it. Its items() returns a row per trick, so it belongs here with the
@@ -397,6 +397,27 @@ const IDS = `(() => {
 const BEHAVIOUR = `(() => {
   const ui = window.__ui;
   const out = {};
+
+  try {
+    ui.show('pilot');
+    const door = ui.items().find(it => it.action === 'osd');
+    ui.act('osd');
+    const opened = ui.screen === 'osd';
+    const labels = ui.items().map(it => it.label);
+    ui.back();
+    const returned = ui.screen === 'pilot';
+    ui.show('paused');
+    ui.act('pilot');
+    ui.act('osd');
+    ui.back();
+    ui.back();
+    out.osdRoom = {
+      ok: Boolean(door) && opened && returned && ui.screen === 'paused'
+        && ['Crosshair', 'Stick overlay', 'Edit OSD layout', 'Throttle display'].every(label => labels.includes(label)),
+    };
+  } catch (e) {
+    out.osdRoom = { error: String(e && e.message ? e.message : e) };
+  }
 
   /* Focus memory. Settings, move down a few rows, leave, come back: the
    * cursor belongs on the row it was on, not on row 0 of 30. */
@@ -1714,6 +1735,9 @@ async function main() {
     notes.push(`ids: ${idRows} rows across ${SCREENS.length} screens, all named, unique and stable`);
 
     const b = behaviour;
+    if (!b.osdRoom || !b.osdRoom.ok) {
+      failures.push(`OSD settings navigation: ${b.osdRoom && b.osdRoom.error ? b.osdRoom.error : 'door, controls, or Back route failed'}`);
+    }
     if (!b.focusMemory || b.focusMemory.error) {
       failures.push(`focus memory: ${b.focusMemory ? b.focusMemory.error : 'no result'}`);
     } else if (!b.focusMemory.ok) {

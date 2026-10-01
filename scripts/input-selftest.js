@@ -2259,6 +2259,27 @@ section('a device with thumbs and keys: a stick key takes the sticks, a finger t
     `${r.im.hand} ${r.im.source} ${r.im.channels.throttle}`);
 }
 
+section('Firefox Pocket analogue throttle');
+{
+  const pad = makePad([0, 0, 0, -1, 0, 0, -1, -1], 28,
+    '1209-4f54-EdgeTX Radiomaster Pocket Joystick');
+  pad.mapping = 'standard';
+  pad.buttons[6].value = 0.75;
+  const rig = new Rig(pad);
+  const adapted = rig.im.firstGamepad();
+  check('Pocket button 6 becomes a throttle axis', adapted.axes[2] === 0.5 && adapted.mapping === '');
+  pad.buttons[6].value = 0;
+  rig.step();
+  check('Pocket throttle reaches idle', rig.im.channels.throttle === 0);
+  pad.buttons[6].value = 1;
+  rig.step();
+  check('Pocket throttle reaches full without moving yaw', rig.im.channels.throttle === 1 && rig.im.channels.yaw === 0);
+  const otherPad = makePad([0, 0, 0, -1, 0, 0, -1, -1], 28, 'Other standard gamepad');
+  otherPad.mapping = 'standard';
+  const other = new Rig(otherPad);
+  check('other gamepads retain their original report', other.im.firstGamepad() === otherPad);
+}
+
 section('manual stick binding');
 {
   const rig = new Rig(makePad([0, 0, -1, 0, 0]));

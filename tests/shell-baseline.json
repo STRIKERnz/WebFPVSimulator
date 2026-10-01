@@ -18,11 +18,15 @@
       "belowFold": 0
     },
     "quad": {
-      "overflow": 0,
+      "overflow": 49,
       "belowFold": 0
     },
     "pilot": {
-      "overflow": 1227,
+      "overflow": 1413,
+      "belowFold": 0
+    },
+    "osd": {
+      "overflow": 715,
       "belowFold": 0
     },
     "launch": {
@@ -30,15 +34,15 @@
       "belowFold": 0
     },
     "rates": {
-      "overflow": 440,
+      "overflow": 502,
       "belowFold": 0
     },
     "pids": {
-      "overflow": 154,
+      "overflow": 199,
       "belowFold": 0
     },
     "fc": {
-      "overflow": 3613,
+      "overflow": 3733,
       "belowFold": 0
     },
     "paused": {
@@ -51,15 +55,19 @@
     },
     "howto": {
       "overflow": 0,
-      "belowFold": 123
+      "belowFold": 139
     },
     "tricks": {
-      "overflow": 1649,
+      "overflow": 1773,
       "belowFold": 0
     },
     "credits": {
       "overflow": 0,
-      "belowFold": 1518
+      "belowFold": 1562
+    },
+    "stickhelp": {
+      "overflow": 0,
+      "belowFold": 0
     }
   }
 }

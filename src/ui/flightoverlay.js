@@ -12,13 +12,39 @@ export const OVERLAY_DEFAULTS = {
   stickOverlayOpacity: 80, stickLeftColour: '#ffcc45', stickRightColour: '#5ee5ff',
   stickTrails: true, stickTrailLength: 700, stickTrailWidth: 3,
   stickOverlayLabels: false,
-  throttleDisplay: 'bar', throttleX: 90, throttleY: 24,
+  throttleDisplay: 'bar', throttleLabelStyle: 'name', throttleX: 90, throttleY: 24,
+  osdLayout: {},
 };
 
+export const MOVABLE_OSD = ['timer', 'pack', 'speed', 'sticks', 'weight'];
+
+export function placeOsdElement(node, point) {
+  if (!node) return;
+  if (point) {
+    node.style.left = `${point.x}%`;
+    node.style.top = `${point.y}%`;
+    node.style.right = 'auto';
+    node.style.bottom = 'auto';
+    node.style.transform = 'translate(-50%, -50%)';
+  } else {
+    for (const prop of ['left', 'top', 'right', 'bottom', 'transform']) node.style.removeProperty(prop);
+  }
+}
+
 export function normaliseOverlaySettings(s) {
+  const layout = s.osdLayout && typeof s.osdLayout === 'object' && !Array.isArray(s.osdLayout)
+    ? s.osdLayout : {};
+  s.osdLayout = {};
+  for (const id of MOVABLE_OSD) {
+    const point = layout[id];
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      s.osdLayout[id] = { x: Math.max(5, Math.min(95, point.x)), y: Math.max(5, Math.min(95, point.y)) };
+    }
+  }
   if (!CROSSHAIRS.includes(s.crosshair)) s.crosshair = OVERLAY_DEFAULTS.crosshair;
   if (!['square', 'circle'].includes(s.stickOverlayShape)) s.stickOverlayShape = 'square';
   if (!['off', 'bar', 'percent'].includes(s.throttleDisplay)) s.throttleDisplay = OVERLAY_DEFAULTS.throttleDisplay;
+  if (!['name', 'short', 'icon'].includes(s.throttleLabelStyle)) s.throttleLabelStyle = OVERLAY_DEFAULTS.throttleLabelStyle;
   for (const key of ['crosshairColour', 'stickLeftColour', 'stickRightColour']) {
     if (!/^#[0-9a-f]{6}$/i.test(s[key])) s[key] = OVERLAY_DEFAULTS[key];
   }
@@ -101,6 +127,7 @@ export class FlightOverlay {
       }));
     }
     this.canvas.style.display = s.stickOverlay ? '' : 'none';
+    placeOsdElement(this.canvas, s.osdLayout.sticks);
     if (!s.stickOverlay || !this.ctx) { this.clearTrails(); return; }
     const size = s.stickOverlaySize;
     /* The stick centres may reach the panel rim. Give the bitmap room for

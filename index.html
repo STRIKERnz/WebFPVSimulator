@@ -1132,6 +1132,9 @@
       .fpv-throttle.is-percent .fpv-throttle-label,
       .fpv-throttle.is-percent .bar { display: none; }
       .fpv-throttle.is-percent .fpv-throttle-percent { display: block; }
+      .fpv-throttle-icon { display: none; width: 18px; height: 18px; fill: currentColor; vertical-align: -4px; }
+      .fpv-throttle.is-icon .fpv-throttle-icon { display: inline-block; }
+      .fpv-throttle.is-icon .fpv-throttle-name { display: none; }
       .fpv-stick-overlay {
         position: absolute; left: 50%; bottom: max(18px, env(safe-area-inset-bottom));
         transform: translateX(-50%); pointer-events: none; z-index: 2;
@@ -1159,6 +1162,13 @@
         position: absolute; left: 0; top: 0; transform-origin: top left;
         pointer-events: none; font-family: var(--ui-font); color: var(--cream);
         font-variant-numeric: tabular-nums;
+      }
+      .throttle-place-hud .osd-editable {
+        outline: 3px dashed rgba(255, 204, 69, 0.9);
+        outline-offset: 5px;
+      }
+      .throttle-place-hud .osd-editable.is-selected {
+        outline: 4px solid #5ee5ff;
       }
       .throttle-place-position { margin-top: 5px; font: 12px monospace; color: var(--cream); }
       .throttle-place-preview > .name-dialog-btn { margin-top: 8px; }
