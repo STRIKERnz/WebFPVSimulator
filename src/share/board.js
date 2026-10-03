@@ -194,12 +194,29 @@ function usableBoardOrigin(origin) {
  * the airframe id, so whichever the caller holds is fine. Omitted entirely
  * when nothing is passed, so a link built without one leaves the board on
  * whatever the visitor chose last.
+ *
+ * `subject` names the one track or map the link is about, as { track } or
+ * { map }, and the board opens that sheet: it turns ?track=id and ?map=id
+ * into its own #track= and #map= before it routes (adoptSharedLink in the
+ * board's public/app.js). Every row that says "This track on Tracks and
+ * times" passes one. Before 2026-10-01 none could, so a row promising "the
+ * public page for" a track opened the board's front page (MENUS-PLAN.md 5.1).
  */
-export function boardPageUrl(origin, craft) {
+export function boardPageUrl(origin, craft, subject = {}) {
   const base = usableBoardOrigin(origin)
     || usableBoardOrigin(boardOrigin())
     || defaultBoardOrigin();
-  return craft ? `${base}/?craft=${encodeURIComponent(craft)}` : `${base}/`;
+  const params = new URLSearchParams();
+  if (craft) {
+    params.set('craft', craft);
+  }
+  if (subject && subject.track) {
+    params.set('track', subject.track);
+  } else if (subject && subject.map) {
+    params.set('map', subject.map);
+  }
+  const query = params.toString();
+  return query ? `${base}/?${query}` : `${base}/`;
 }
 
 /*
@@ -482,10 +499,24 @@ export const TRACK_TAGS = [
    * has meant that since before there was a micro track class; beside a 65
    * mm whoop, a tag labelled "Micro" is two different things one word apart.
    * The board's src/validate.js carries the same rename. */
-  { id: 'micro', label: 'Small field', note: 'A five inch track that fits a small field or a garden.' },
-  { id: 'big', label: 'Big field', note: 'Wants the whole field and a lot of speed.' },
+  { id: 'micro', label: 'Small field', note: 'A five inch track that fits a small field or a garden.', classes: ['full'] },
+  { id: 'big', label: 'Big field', note: 'Wants the whole field and a lot of speed.', classes: ['full'] },
   { id: 'showcase', label: 'Showcase', note: 'Built to be looked at.' },
 ];
+
+/*
+ * THE TAGS A CLASS'S TRACK IS OFFERED. How big a field a track wants is a
+ * five inch question, and a whoop track stands in a room, so Small field and
+ * Big field are not offered on one: ten of the board's thirteen rooms wore
+ * Small field, which says something about a field none of them has
+ * (MENUS-PLAN.md 1.27). A tag with no `classes` is every class's. What a
+ * track already wears is the dialog's business, which shows a worn tag so it
+ * can be taken off.
+ */
+export function tagsForClass(cls) {
+  const want = cls === 'micro' ? 'micro' : 'full';
+  return TRACK_TAGS.filter((t) => !t.classes || t.classes.includes(want));
+}
 
 /* MIRRORS TAGS_MAX in the board's src/validate.js. Past five a tag stops
  * narrowing anything, because a track wearing every tag answers every
@@ -511,6 +542,13 @@ export function usableTags(list) {
 }
 
 /*
+ * A WALL IS NOT A CUBE. Both are gates that share a `group`, and the board reads neither field, so it
+ * keeps the gates and loses the grouping. For a cube that is a different course: its sides are gates
+ * no pass goes through, built as solid pipe by the group, and the board's copy would not have them. For
+ * a wall every gate is in the flying order, each is built and scored whether or not they are grouped,
+ * and the board's copy is the same course. So a group is counted below only for the pieces of it that
+ * no pass goes through, and a wall of gates that are all flown is published.
+ *
  * WHAT THE BOARD DOES NOT KNOW YET: a living room's table, chair and banner, a hoop and a hex gate, and a cube.
  *
  * The board keeps its own list of what a track is made of (WebFPVSimulator-
@@ -543,6 +581,10 @@ const PART_WORD = {
  * BOARD_UNKNOWN_TYPES and then the cube. A document that is not one holds nothing. */
 export function partsTheBoardDoesNotKnow(doc) {
   const elements = doc && Array.isArray(doc.elements) ? doc.elements : [];
+  /* The pieces the flying order goes through. A group whose every piece is in it loses nothing when
+   * the board drops the grouping, which is what a wall of gates is; one with a piece no pass goes
+   * through is a cube, whose sides the board's copy would lose. */
+  const flown = new Set((doc && Array.isArray(doc.sequence) ? doc.sequence : []).map((s) => s && s.elementId));
   const tally = new Map();
   const groups = new Set();
   for (const el of elements) {
@@ -552,8 +594,10 @@ export function partsTheBoardDoesNotKnow(doc) {
     if (BOARD_UNKNOWN_TYPES.includes(el.type)) {
       tally.set(el.type, (tally.get(el.type) ?? 0) + 1);
     }
-    /* A name and nothing else, the way the reader keeps it. */
-    if (typeof el.group === 'string' && el.group) {
+    /* A name and nothing else, the way the reader keeps it. Counted only when this piece is one
+     * the order does not go through: a group in which every piece is flown is a row, and a row is
+     * the same course on the board without its grouping. */
+    if (typeof el.group === 'string' && el.group && !flown.has(el.id)) {
       groups.add(el.group);
     }
   }

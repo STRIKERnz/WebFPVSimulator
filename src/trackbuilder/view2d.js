@@ -45,6 +45,8 @@ import {
 import { sequenceNumbers } from './sequence.js';
 import { arrowLanes, stretchOf } from './passes.js';
 import { frameRectFor } from './snap.js';
+import { partGhosts } from './parts.js';
+import { say as sayLength } from './scale.js';
 import { figureCue } from './figures.js';
 import { travelDirection, markerPassDir } from './faces.js';
 import { guideFromKnots, knotsFromPath, tessellateGuide } from '../game/guide.js';
@@ -54,7 +56,7 @@ import {
 import { startBlockDims } from '../art/startblock.js';
 /* The freestyle assets. Pure layouts, no Three.js: the plan draws the same
  * parts the physics is given, so a slot on the plan is a slot in the air. */
-import { partsOf, planBounds } from '../props/catalog.js';
+import { placedPartsOf, planBounds } from '../props/catalog.js';
 import { placedYaw } from '../props/solids.js';
 import { isRoomType, roomFootprint, roomWorldBoxes } from '../props/room.js';
 import { styleOf as propStyleOf, styleDims } from '../props/types.js';
@@ -82,6 +84,10 @@ const C = {
   fieldFill: '#13202c',
   gridMinor: 'rgba(157, 179, 200, 0.10)',
   gridMajor: 'rgba(157, 179, 200, 0.22)',
+  /* A five inch track's plan: the same lines with more contrast, so they read on the dark field from the height that
+   * shows a whole track. A hall's plan and a map's keep the two above. */
+  gridMinorField: 'rgba(157, 179, 200, 0.12)',
+  gridMajorField: 'rgba(157, 179, 200, 0.30)',
   fieldEdge: 'rgba(247, 232, 205, 0.55)',
   ruler: '#0a121a',
   rulerText: '#9db3c8',
@@ -216,7 +222,9 @@ export function localBoundsOf(el) {
     if (boundsCache.size > 4000) {
       boundsCache.clear();
     }
-    b = planBounds(partsOf(el));
+    /* As it stands, stood on end if it is: the plan, the pick box and the
+     * copy offset all cover the ground it covers. */
+    b = planBounds(placedPartsOf(el));
     boundsCache.set(key, b);
   }
   return b;
@@ -478,6 +486,10 @@ export class View2D {
     this.pointer = null;        /* world position of the cursor, or null */
     this.drag = null;
     this.band = null;
+    /* The fingers on the plan, by pointer id, and the pair they make when
+     * there are two: see beginPinch. */
+    this.touches = new Map();
+    this.pinch = null;
     this.hover = null;
     this.bind();
   }
@@ -501,15 +513,19 @@ export class View2D {
 
   /* Fit a world rectangle into the drawing area with a margin. */
   frame(minX, minY, maxX, maxY, marginPx = 60) {
+    /* The strip and the lap figures lie along the foot of the plan on a track, over the canvas, and what is framed
+     * is framed above them: a loop at the bottom of a course is not under a toolbar. A hall's plan is left as it
+     * was framed. */
+    const foot = this.host.buildsIn3D?.() && !this.host.isWhoopRace?.() ? (this.host.panels?.barH || 90) + 54 : 0;
     const availW = Math.max(40, this.w - RULER - marginPx);
-    const availH = Math.max(40, this.h - RULER - marginPx);
+    const availH = Math.max(40, this.h - RULER - marginPx - foot);
     const spanX = Math.max(1e-3, maxX - minX);
     const spanY = Math.max(1e-3, maxY - minY);
     this.cam.scale = clamp(Math.min(availW / spanX, availH / spanY), MIN_SCALE, MAX_SCALE);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     this.cam.x = cx - (this.w / 2) / this.cam.scale;
-    this.cam.y = cy - (this.h / 2) / this.cam.scale;
+    this.cam.y = cy - ((this.h + foot) / 2) / this.cam.scale;
   }
 
   /* What Fit and every load show: the whole field, except on a whoop canvas,
@@ -641,7 +657,7 @@ export class View2D {
     cv.addEventListener('pointerdown', (e) => this.onDown(e));
     cv.addEventListener('pointermove', (e) => this.onMove(e));
     cv.addEventListener('pointerup', (e) => this.onUp(e));
-    cv.addEventListener('pointercancel', () => this.onCancel());
+    cv.addEventListener('pointercancel', (e) => this.onCancel(e));
     cv.addEventListener('pointerleave', () => { this.pointer = null; this.host.requestDraw(); });
     cv.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
   }
@@ -668,6 +684,37 @@ export class View2D {
     this.canvas.setPointerCapture(e.pointerId);
     const world = this.toWorld(p.x, p.y);
 
+    /*
+     * FINGERS (MENUS-PLAN.md 4.4). One finger does what the mouse does. A
+     * second finger takes over: whatever the first was doing is put back, and
+     * the pair slides the plan with their middle and zooms it with the
+     * distance between them, which is what a plan on a phone is expected to
+     * do and what the room already does. The finger left when one lifts has no
+     * gesture to go on with, because a gesture begins with a press.
+     */
+    if (e.pointerType === 'touch') {
+      if (e.isPrimary) {
+        this.touches.clear();
+        this.pinch = null;
+      }
+      this.touches.set(e.pointerId, p);
+      if (this.touches.size === 2) {
+        this.beginPinch();
+        return;
+      }
+      if (this.touches.size > 2) {
+        return;
+      }
+      /* A tool under a finger places when the finger lifts without moving,
+       * not when it lands: the first finger of a pinch is not a placement. A
+       * finger dragged with a tool armed slides the plan instead, except the
+       * wall, which a finger drags out as the mouse does. */
+      if (this.host.armed && this.host.armed !== 'wall' && e.button === 0) {
+        this.drag = { kind: 'tap', start: p, last: p, moved: false, alt: e.altKey };
+        return;
+      }
+    }
+
     /* Middle button, or right button, pans. Right also cancels an armed
      * palette tool, which is the fastest way to stop placing; a road half
      * laid is put away first, and the tool with it on a second press. */
@@ -687,23 +734,18 @@ export class View2D {
       return;
     }
 
-    /* THE ROAD TOOL lays a node a click, and the road lands as one edit
-     * when it is finished: on its first node to close it, on its last to
-     * leave it open (a double click lands there twice), or with Enter. */
-    if (this.host.armed === 'road') {
-      this.host.draftClick(world, this.host.snap(world, e.altKey), NODE_PX / this.cam.scale);
-      return;
-    }
-    /* A vehicle goes on the road nearest the click. */
-    if (this.host.armed === 'vehicle') {
-      this.host.dropVehicle(world, SNAP_PX / this.cam.scale);
+    /* A five inch wall is dragged out along the ground, from the bay that is flown first to the last, as it is in
+     * the room; a click lays three. */
+    if (this.host.armed === 'wall') {
+      const a = this.host.snap(world, e.altKey, { type: 'gate' });
+      this.drag = {
+        kind: 'wall', a: { x: a.x, y: a.y }, b: { x: a.x, y: a.y }, free: e.altKey,
+      };
       return;
     }
 
-    /* An armed palette tool places on click and stays armed, so ten gates
-     * are ten clicks. */
     if (this.host.armed) {
-      this.host.placeAt(this.host.snap(world, e.altKey, { type: this.host.armed }));
+      this.armedPress(world, e.altKey);
       return;
     }
 
@@ -787,9 +829,86 @@ export class View2D {
     };
   }
 
+  /*
+   * A press with a tool in hand, from the mouse at once and from a finger as it
+   * lifts. THE ROAD TOOL lays a node a click, and the road lands as one edit
+   * when it is finished: on its first node to close it, on its last to leave
+   * it open (a double click lands there twice), or with Enter. A vehicle goes
+   * on the road nearest the click. Any other armed palette tool places on
+   * click and stays armed, so ten gates are ten clicks.
+   */
+  armedPress(world, alt) {
+    if (this.host.armed === 'road') {
+      this.host.draftClick(world, this.host.snap(world, alt), NODE_PX / this.cam.scale);
+      return;
+    }
+    if (this.host.armed === 'vehicle') {
+      this.host.dropVehicle(world, SNAP_PX / this.cam.scale);
+      return;
+    }
+    this.host.placeAt(this.host.snap(world, alt, { type: this.host.armed }));
+  }
+
+  /* A second finger: what the first was doing is put back, and the pair is
+   * the camera from here on (movePinch). */
+  beginPinch() {
+    const d = this.drag;
+    if (d && ['move', 'rotate', 'node', 'slide'].includes(d.kind)) {
+      this.host.revertEdit();
+    }
+    this.drag = null;
+    this.band = null;
+    const [a, b] = [...this.touches.values()];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    this.pinch = {
+      spread: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      scale: this.cam.scale,
+      world: this.toWorld(mid.x, mid.y),
+    };
+    this.host.requestDraw();
+  }
+
+  /* The pair's spread is the zoom, and the point that was between them stays
+   * between them, wherever they slide. */
+  movePinch() {
+    const [a, b] = [...this.touches.values()];
+    if (!a || !b) {
+      return;
+    }
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const spread = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    this.cam.scale = clamp(this.pinch.scale * (spread / this.pinch.spread), MIN_SCALE, MAX_SCALE);
+    const now = this.toWorld(mid.x, mid.y);
+    this.cam.x += this.pinch.world.x - now.x;
+    this.cam.y += this.pinch.world.y - now.y;
+    this.host.requestDraw();
+  }
+
   onMove(e) {
     const p = this.localPoint(e);
     this.pointer = this.toWorld(p.x, p.y);
+
+    if (e.pointerType === 'touch') {
+      if (this.touches.has(e.pointerId)) {
+        this.touches.set(e.pointerId, p);
+      }
+      if (this.pinch) {
+        this.movePinch();
+        return;
+      }
+      if (this.drag && this.drag.kind === 'tap') {
+        if (!this.drag.moved && Math.hypot(p.x - this.drag.start.x, p.y - this.drag.start.y) < 8) {
+          return;
+        }
+        /* A finger dragged with a tool in hand slides the plan. */
+        this.drag.moved = true;
+        this.cam.x -= (p.x - this.drag.last.x) / this.cam.scale;
+        this.cam.y += (p.y - this.drag.last.y) / this.cam.scale;
+        this.drag.last = p;
+        this.host.requestDraw();
+        return;
+      }
+    }
 
     if (!this.drag) {
       const hit = this.pickAt(p.x, p.y);
@@ -808,6 +927,14 @@ export class View2D {
         || pickLeg(road, this.pointer.x, this.pointer.y, reach) >= 0);
       this.canvas.style.cursor = this.host.armed === 'road' ? 'crosshair' : (onHandle ? 'pointer' : '');
       this.host.onHoverWorld(this.pointer);
+      return;
+    }
+
+    if (this.drag.kind === 'wall') {
+      const b = this.host.snap(this.pointer, e.altKey, { type: 'gate' });
+      this.drag.b = { x: b.x, y: b.y };
+      this.drag.free = e.altKey;
+      this.host.requestDraw();
       return;
     }
 
@@ -871,10 +998,39 @@ export class View2D {
   }
 
   onUp(e) {
+    if (e && e.pointerType === 'touch') {
+      this.touches.delete(e.pointerId);
+      if (this.pinch) {
+        /* The pair is over when either lifts, and the finger left has no
+         * gesture: see beginPinch. */
+        if (this.touches.size < 2) {
+          this.pinch = null;
+        }
+        return;
+      }
+      const d = this.drag;
+      if (d && d.kind === 'tap') {
+        this.drag = null;
+        if (!d.moved) {
+          this.armedPress(this.toWorld(d.start.x, d.start.y), d.alt);
+        }
+        this.host.requestDraw();
+        return;
+      }
+    }
     if (!this.drag) {
       return;
     }
     const kind = this.drag.kind;
+    if (kind === 'wall') {
+      const d = this.drag;
+      this.drag = null;
+      this.host.placeWallAt(d.a, d.b, 'none', d.free);
+      if (e && this.canvas.hasPointerCapture?.(e.pointerId)) {
+        this.canvas.releasePointerCapture(e.pointerId);
+      }
+      return;
+    }
     if (kind === 'band' && this.band) {
       const ids = this.elementsInBand(this.band);
       this.host.setSelection(ids, this.band.additive);
@@ -894,7 +1050,13 @@ export class View2D {
     }
   }
 
-  onCancel() {
+  onCancel(e) {
+    if (e && e.pointerType === 'touch') {
+      this.touches.delete(e.pointerId);
+      if (this.touches.size < 2) {
+        this.pinch = null;
+      }
+    }
     if (this.drag && ['move', 'rotate', 'node', 'slide'].includes(this.drag.kind)) {
       this.host.cancelEdit();
     }
@@ -1020,11 +1182,15 @@ export class View2D {
     while (step * this.cam.scale < 6) {
       step *= 10;
     }
-    const major = step * 10;
+    /* A five inch track's major lines are every five of its metres, the way the plans a track is designed from are
+     * ruled (5 m major, 1 m minor); a hall's plan and a map's stay every ten of their steps, as they were. The
+     * room is every canvas's now, so a map is named: its plan is not changed by being built in 3D. */
+    const field = Boolean(this.host.buildsIn3D?.()) && !this.host.isWhoopRace?.() && docModeOf(doc) !== 'freestyle';
+    const major = step * (field && step === g ? 5 : 10);
     ctx.lineWidth = 1;
     for (let pass = 0; pass < 2; pass += 1) {
       const s = pass === 0 ? step : major;
-      ctx.strokeStyle = pass === 0 ? C.gridMinor : C.gridMajor;
+      ctx.strokeStyle = pass === 0 ? (field ? C.gridMinorField : C.gridMinor) : (field ? C.gridMajorField : C.gridMajor);
       ctx.beginPath();
       for (let x = 0; x <= doc.field.width + 1e-6; x += s) {
         const p = this.toScreen({ x, y: 0 });
@@ -1048,6 +1214,13 @@ export class View2D {
     ctx.fillRect(0, 0, RULER, this.h);
     ctx.fillStyle = C.rulerText;
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+
+    /* The whoop canvas measures in inches from the middle of the room, as its
+     * card, its drawer and its readout do (MENUS-PLAN.md 4.2a). */
+    if (this.host.isWhoopRace()) {
+      this.drawInchRulers(ctx, doc);
+      return;
+    }
 
     let step = doc.field.gridSize;
     while (step * this.cam.scale < 44) {
@@ -1081,6 +1254,49 @@ export class View2D {
     ctx.textAlign = 'center';
     ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.fillText('m', RULER / 2, RULER / 2);
+  }
+
+  /*
+   * The rulers of a room: a tick at every round number of inches out from the
+   * middle, nought in the middle, at the smallest step that leaves the labels
+   * room to be read. The ticks are counted out from the middle, not from the
+   * corner, because that is where nought is.
+   */
+  drawInchRulers(ctx, doc) {
+    const IN = 0.0254;
+    const steps = [1, 2, 3, 6, 12, 24, 36, 60, 120, 240, 480];
+    const step = steps.find((s) => s * IN * this.cam.scale >= 44) ?? steps[steps.length - 1];
+    const along = (span, mid, at, axis) => {
+      const k0 = Math.ceil(-mid / (step * IN));
+      const k1 = Math.floor((span - mid) / (step * IN));
+      for (let k = k0; k <= k1; k += 1) {
+        at(mid + k * step * IN, `${k * step}`, axis);
+      }
+    };
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    along(doc.field.width, doc.field.width / 2, (x, label) => {
+      const p = this.toScreen({ x, y: 0 });
+      if (p.x < RULER + 8 || p.x > this.w - 4) {
+        return;
+      }
+      ctx.fillText(label, p.x, RULER / 2);
+      ctx.fillRect(Math.round(p.x), RULER - 4, 1, 4);
+    });
+    along(doc.field.depth, doc.field.depth / 2, (y, label) => {
+      const p = this.toScreen({ x: 0, y });
+      if (p.y < RULER + 8 || p.y > this.h - 4) {
+        return;
+      }
+      ctx.save();
+      ctx.translate(RULER / 2, p.y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+      ctx.fillRect(RULER - 4, Math.round(p.y), 4, 1);
+    });
+    ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText('in', RULER / 2, RULER / 2);
   }
 
   drawElement(ctx, el, numbers) {
@@ -1171,7 +1387,7 @@ export class View2D {
       }
       return b;
     };
-    for (const p of partsOf(el)) {
+    for (const p of placedPartsOf(el)) {
       if (!p.solid && !p.draw) {
         continue;
       }
@@ -1966,8 +2182,11 @@ export class View2D {
     if (!signs.length) {
       return;
     }
-    const u = { x: -Math.sin(el.yaw), y: Math.cos(el.yaw) };
-    const half = el.dims.clearW * 0.5;
+    /* A gate's flags are along its width, across the way it is flown; a hurdle's are along the
+     * board, which runs the way it is turned. */
+    const board = ELEMENTS[el.type]?.kind === KIND.OBSTACLE;
+    const u = board ? { x: Math.cos(el.yaw), y: Math.sin(el.yaw) } : { x: -Math.sin(el.yaw), y: Math.cos(el.yaw) };
+    const half = (board ? el.dims.width : el.dims.clearW) * 0.5;
     ctx.fillStyle = selected ? C.selected : C.marker;
     for (const sx of signs) {
       const lean = flagLeanSign(sx);
@@ -2264,6 +2483,7 @@ export class View2D {
     ctx.strokeStyle = selected ? C.selected : (hovered ? '#ffffff' : C.barrierEdge);
     ctx.lineWidth = selected ? 2.4 : 1.4;
     ctx.stroke();
+    this.drawHeaderFlags(ctx, el, selected);
   }
 
   /*
@@ -2542,8 +2762,52 @@ export class View2D {
     ctx.restore();
   }
 
+  /* A wall as it would be laid: each bay a bar across its width with its arrow, and how many and how long. */
+  drawWallGhost(ctx, a, b, free) {
+    const doc = this.host.doc;
+    const { plan, items } = partGhosts(doc, 'wall', a, b, { free, square: this.host.square && !free });
+    ctx.save();
+    ctx.strokeStyle = C.ghost;
+    ctx.fillStyle = C.ghost;
+    ctx.lineWidth = 4;
+    ctx.setLineDash([]);
+    for (const it of items) {
+      const half = (it.props.dims.clearW + FRAME_TUBE_OD) / 2;
+      const w = { x: -Math.sin(it.yaw), y: Math.cos(it.yaw) };
+      const p0 = this.toScreen({ x: it.position.x - w.x * half, y: it.position.y - w.y * half });
+      const p1 = this.toScreen({ x: it.position.x + w.x * half, y: it.position.y + w.y * half });
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+      const c = this.toScreen(it.position);
+      const tip = this.toScreen({ x: it.position.x + Math.cos(it.yaw) * 0.9, y: it.position.y + Math.sin(it.yaw) * 0.9 });
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(tip.x, tip.y);
+      ctx.stroke();
+      ctx.lineWidth = 4;
+    }
+    const first = items[0].position;
+    const last = items[items.length - 1].position;
+    const length = Math.hypot(last.x - first.x, last.y - first.y) + plan.pitch;
+    const label = this.toScreen({ x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 });
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${plan.count} bays, ${sayLength(doc, length)}`, label.x, label.y - 12);
+    ctx.restore();
+  }
+
   drawGhost(ctx) {
     if (!this.host.armed || !this.pointer) {
+      return;
+    }
+    if (this.host.armed === 'wall') {
+      const a = this.drag && this.drag.kind === 'wall' ? this.drag.a : this.host.snap(this.pointer, false, { type: 'gate' });
+      const b = this.drag && this.drag.kind === 'wall' ? this.drag.b : a;
+      this.drawWallGhost(ctx, a, b, Boolean(this.drag && this.drag.free));
       return;
     }
     const at = this.host.snap(this.pointer, false, { type: this.host.armed });

@@ -55,8 +55,12 @@ import { elementById, elementNormal, kindOf, startPadsOf } from './model.js';
  * it floats, which is why it is owned there. */
 import { SEAT_SLACK } from './seat.js';
 import { gateNumberOf, sequenceLabel, unsequencedElements } from './sequence.js';
-import { dist, insideYawedBox, lerp, wrapAngle, yawVector } from './geometry.js';
+import {
+  dist, dot, insideYawedBox, length, lerp, sub, wrapAngle, yawVector,
+} from './geometry.js';
 import { markerSquare } from './path.js';
+import { ROUND_NAME } from './parts.js';
+import { isFigureName, isLaunchName } from './manoeuvres.js';
 /* How much flying the race asks for between two stations, which is what
  * two stations in a row closer than it are warned against. */
 import { stationLegMin } from '../game/race.js';
@@ -197,6 +201,10 @@ export function collectWarnings(doc, path) {
 
   /* -------- reversals, read off the knots -------- */
 
+  /* How square to a face a chord may be before it is called backwards: the 5 inch canvas gives a
+   * weave its due, the whoop canvas keeps the rule it had. See reversed. */
+  const square = trackClassOf(doc) === 'micro' ? 0 : 0.02;
+
   for (let i = 0; i < path.knots.length - 1; i += 1) {
     const a = path.knots[i];
     const b = path.knots[i + 1];
@@ -207,13 +215,13 @@ export function collectWarnings(doc, path) {
       }));
       continue;
     }
-    if (hasFace(a) && reversed(a.tangent, a.pos, b.pos)) {
+    if (hasFace(a) && reversed(a.tangent, a.pos, b.pos, square)) {
       out.push(warn('reversal', `${describe(doc, a)} faces away from ${describe(doc, b)}. The line leaves it backwards. Press X to flip the face.`, {
         seqId: a.seq?.id ?? null,
         elementId: a.elementId,
       }));
     }
-    if (hasFace(b) && reversed(b.tangent, a.pos, b.pos)) {
+    if (hasFace(b) && reversed(b.tangent, a.pos, b.pos, square)) {
       out.push(warn('reversal', `${describe(doc, b)} faces back towards ${describe(doc, a)}. The line arrives at it backwards. Press X to flip the face.`, {
         seqId: b.seq?.id ?? null,
         elementId: b.elementId,
@@ -225,7 +233,7 @@ export function collectWarnings(doc, path) {
   const first = path.knots[0];
   if (pads && first && first.role !== 'finish') {
     const heading = yawVector(pads.yaw);
-    if (reversed(heading, pads.position, first.pos)) {
+    if (reversed(heading, pads.position, first.pos, square)) {
       out.push(warn('reversal', `The lap sets off away from ${describe(doc, first)}. Turn the start pads, or reorder the track.`, {
         elementId: pads.id,
       }));
@@ -233,7 +241,7 @@ export function collectWarnings(doc, path) {
   }
   if (path.closed && path.knots.length >= 2) {
     const lastReal = path.knots[path.knots.length - 2];
-    if (first.role === 'aperture' && reversed(first.tangent, lastReal.pos, first.pos)) {
+    if (first.role === 'aperture' && reversed(first.tangent, lastReal.pos, first.pos, square)) {
       out.push(warn('reversal', `The lap comes back to ${describe(doc, first)} from in front of it, after ${describe(doc, lastReal)}. Flip that face, or move the last element behind it.`, {
         seqId: first.seq?.id ?? null,
         elementId: first.elementId,
@@ -242,16 +250,46 @@ export function collectWarnings(doc, path) {
   }
 
   closeStationWarnings(doc, path, out);
+  figureWarnings(doc, path, out);
+  overFlagWarnings(doc, path, out);
 
   /* -------- curvature -------- */
 
   const limit = doc.settings.minCurveRadius;
   let worst = null;
+  /*
+   * THE LINE BETWEEN TWO BAYS OF ONE WALL is supposed to be tight too: the bays are a gate's width apart, and
+   * a lap that goes through one and then another turns round between them, in the room the quad has on the far
+   * side of the wall, which the line does not model. A pilot flies a slalom of bays 2 m apart, and calling it
+   * something nothing flies is the warning being wrong. The line before the wall and after it is still held to
+   * the radius.
+   */
+  const field = trackClassOf(doc) !== 'micro';
+  const sameWall = (seg) => {
+    if (!field) {
+      return false;
+    }
+    const a = seg.a.elementId ? elementById(doc, seg.a.elementId) : null;
+    const b = seg.b.elementId ? elementById(doc, seg.b.elementId) : null;
+    return Boolean(a && b && a.group && a.group === b.group && a.id !== b.id);
+  };
+  /*
+   * AND A SPIRAL ROUND A FLAG. It is waypoints a quarter turn apart or closer on a circle a metre from the flag
+   * (parts.js addSpiral), which is what the author asked for by asking for one, and a circle that size is tighter
+   * than the 2.5 m the line between obstacles is held to. They are found by the names addSpiral gives them, so one
+   * an author has renamed is held to the radius again, which is the safe way for a name to be wrong. "Loop left" and
+   * "Loop right" are the names of the figure this one replaced, a loop out of a gate and back through it, which
+   * was on the live builder for an afternoon; a track made with it keeps its exemption.
+   */
+  const loopKnot = (k) => {
+    const name = k.elementId ? elementById(doc, k.elementId)?.name ?? '' : '';
+    return ROUND_NAME.test(name) || /^Loop (left|right)$/.test(name) || isFigureName(name) || isLaunchName(name);
+  };
   for (const smp of path.samples) {
     const seg = path.segments[smp.segment];
     /* A wrap around a stacked gate is supposed to be tight. The warning is
      * for the lap between obstacles, not for the figure itself. */
-    if (seg && (seg.a.role === 'wrap' || seg.b.role === 'wrap')) {
+    if (seg && (seg.a.role === 'wrap' || seg.b.role === 'wrap' || sameWall(seg) || (field && (loopKnot(seg.a) || loopKnot(seg.b))))) {
       continue;
     }
     if (smp.radius < limit && (worst == null || smp.radius < worst.radius)) {
@@ -259,7 +297,10 @@ export function collectWarnings(doc, path) {
     }
   }
   if (worst) {
-    out.push(warn('tight-corner', `The line turns tighter than ${limit.toFixed(1)} m at ${worst.s.toFixed(1)} m along the lap: ${worst.radius.toFixed(2)} m radius. Nothing flies that.`, {
+    /* A field's author is told where the limit is, because a track that means a tight turn (a slalom, a loop) has no
+     * other way to find out that it can be lowered, one track at a time. */
+    const ending = field ? 'A quad at racing speed does not fly that. If the track means it, lower Warn under radius in the field settings.' : 'Nothing flies that.';
+    out.push(warn('tight-corner', `The line turns tighter than ${limit.toFixed(1)} m at ${worst.s.toFixed(1)} m along the lap: ${worst.radius.toFixed(2)} m radius. ${ending}`, {
       s: worst.s,
       pos: worst.pos,
     }));
@@ -415,7 +456,7 @@ function hasFace(knot) {
   return knot.role === 'aperture';
 }
 
-function reversed(tangent, from, to) {
+function reversed(tangent, from, to, tol = 0) {
   const th = Math.hypot(tangent.x, tangent.y);
   if (th < HORIZONTAL_FLOOR) {
     return false;
@@ -426,7 +467,96 @@ function reversed(tangent, from, to) {
   if (ch < 1e-6) {
     return false;
   }
-  return (tangent.x * cx + tangent.y * cy) / (th * ch) < 0;
+  /* `tol` is the 5 inch canvas's: a chord square to the tangent is not a reversal, and a floating point
+   * cosine of a quarter turn is six parts in a hundred quadrillion either side of zero, which is not a
+   * thing to decide a warning on. Two gates side by side and flown opposite ways, a weave, have exactly
+   * that chord. Past about a degree beyond square it is a face sending the line back. A whoop canvas
+   * keeps the rule it had. */
+  return (tangent.x * cx + tangent.y * cy) / (th * ch) < -tol;
+}
+
+/*
+ * A FIGURE THAT DOES NOT CONNECT. A figure's own curvature is what the author asked for and is not warned about
+ * (the curvature check below skips it), so what is checked is the two places it can go wrong: where it begins and
+ * where it ends. A turn that ends facing away from the next piece leaves the line a hairpin to get there, and a
+ * figure that is flown into from a piece facing the other way begins with one. The point of the figure is where the
+ * line goes, so it says what the figure does and what to move.
+ */
+function figureWarnings(doc, path, out) {
+  const knots = path.knots;
+  const isFigure = (k) => Boolean(k && k.seq && k.role !== 'finish'
+    && elementById(doc, k.seq.elementId)?.type === 'waypoint'
+    && isFigureName(elementById(doc, k.seq.elementId).name));
+  const cosine = (v, t) => {
+    const m = length(v) * length(t);
+    return m > 1e-9 ? dot(v, t) / m : 1;
+  };
+  for (let i = 0; i < knots.length; i += 1) {
+    if (!isFigure(knots[i]) || (i > 0 && isFigure(knots[i - 1]))) {
+      continue;
+    }
+    let j = i;
+    while (j + 1 < knots.length && isFigure(knots[j + 1])) {
+      j += 1;
+    }
+    const name = elementById(doc, knots[i].seq.elementId).name.replace(/, (back through|back through reversed)$/, '');
+    const prev = i > 0 ? knots[i - 1] : null;
+    const next = j + 1 < knots.length ? knots[j + 1] : null;
+    if (next) {
+      const v = sub(next.pos, knots[j].pos);
+      if (length(v) > 0.5 && cosine(v, knots[j].tangent) < -0.35) {
+        out.push(warn('figure-exit', `${name} ends facing away from ${describe(doc, next)}, so the line has to turn back on itself to reach it. Put ${describe(doc, next)} where the figure ends, or turn the figure the other way.`, {
+          seqId: knots[i].seq.id,
+          elementId: knots[i].elementId,
+        }));
+      }
+    }
+    if (prev && prev.role !== 'finish') {
+      const v = sub(knots[i].pos, prev.pos);
+      if (length(v) > 0.5 && cosine(v, prev.tangent) < -0.35) {
+        out.push(warn('figure-entry', `${describe(doc, prev)} leaves backwards into ${name}, so the line has to turn back on itself to start it. Turn ${describe(doc, prev)} the other way, or move the figure.`, {
+          seqId: knots[i].seq.id,
+          elementId: knots[i].elementId,
+        }));
+      } else if (length(v) > 0.5 && cosine(v, knots[i].tangent) < -0.35) {
+        out.push(warn('figure-entry', `${name} starts heading back towards ${describe(doc, prev)}, so the line has to turn back on itself to begin it. Put ${describe(doc, prev)} where the figure starts, or turn the figure the other way.`, {
+          seqId: knots[i].seq.id,
+          elementId: knots[i].elementId,
+        }));
+      }
+    }
+  }
+}
+
+/*
+ * A LINE OVER A FLAG. The line of a flag goes up for ever: the flag is flown round and never over, and a line that goes
+ * over the top of one is going somewhere the rules do not let a pilot fly. The derived line does it when a hop or a loop
+ * is laid where a flag stands, or a waypoint is dragged over one, and the pass round the flag, which is scored, was never
+ * the problem. One warning for a flag, at the first sample that is over it: above the mast and within a pole and a
+ * half a metre of it, which is a quad's own width on each side. Poles and cones are not in it: a cone is a ground marker, and a pole is the
+ * RaceGOW one, whose rules are its own.
+ */
+const OVER_FLAG_REACH = 0.5;
+
+function overFlagWarnings(doc, path, out) {
+  if (!path || path.samples.length < 2) {
+    return;
+  }
+  for (const flag of doc.elements) {
+    if (flag.type !== 'flag') {
+      continue;
+    }
+    const top = (flag.position.z ?? 0) + (flag.dims.height ?? ELEMENTS.flag.dims.height);
+    const reach = OVER_FLAG_REACH + (flag.dims.poleRadius ?? 0);
+    const over = path.samples.find((p) => p.pos.z > top && Math.hypot(p.pos.x - flag.position.x, p.pos.y - flag.position.y) < reach);
+    if (over) {
+      out.push(warn('over-flag', `The line goes over ${flag.name || 'a flag'} at ${over.s.toFixed(1)} m along the lap. A flag\u2019s line goes up for ever, so it is flown round and never over: move the line to one side of it.`, {
+        s: over.s,
+        pos: over.pos,
+        elementId: flag.id,
+      }));
+    }
+  }
 }
 
 function describe(doc, knot) {
@@ -823,6 +953,8 @@ function label(el) {
  *   fs-gap-blocked   warn  a named gap with a solid across its window
  *   fs-outside       warn  an element standing outside the plot, or
  *                          reaching past its edge
+ *   fs-buried        warn  an asset sunk wholly under the ground: nothing
+ *                          of it is drawn or solid
  *   fs-solids        warn  more solids than a map is budgeted
  *   fs-crowded       warn  a patch of the physics' grid holding more shapes
  *                          than it looks at round the craft at once, so
@@ -896,6 +1028,10 @@ const OVERLAP_EPS = 0.01;
 /* How far past the edge of the plot a solid may reach before it counts as
  * outside it. */
 const PLOT_SLACK = 0.5;
+
+/* A box whose top is no higher than this over the paving is under the ground
+ * as far as a craft is concerned: the physics' own 2 cm (WORLD_BURIED). */
+const BURIED_TOP = 0.02;
 
 /* A named gap's window is shrunk by this at its edges before testing, so a
  * gap drawn to exactly fill the space between two walls is not blocked by
@@ -1078,6 +1214,22 @@ export function freestyleReport(doc) {
     if (b && (b.box[0] < -W / 2 - PLOT_SLACK || b.box[3] > W / 2 + PLOT_SLACK
       || b.box[2] < -D / 2 - PLOT_SLACK || b.box[5] > D / 2 + PLOT_SLACK)) {
       out.push(warn('fs-outside', `${cap(names(el))} reaches past the edge of the plot.`, { elementId: el.id }));
+    }
+  }
+
+  /*
+   * SUNK OUT OF SIGHT. A negative Base hides what is under the ground, which
+   * is the point (lowestBase in ./elements.js), and an asset hidden wholly
+   * is gone from the preview and from the air with nothing in the plan to
+   * say why. Its highest solid top is at or under the paving, the same floor
+   * the physics gives a box before it stops being a surface (indexTops in
+   * src/maps/built/place.js, WORLD_BURIED in src/native/world.c).
+   */
+  for (const b of bodies) {
+    if (b.box[4] <= BURIED_TOP) {
+      out.push(warn('fs-buried', `${cap(names(b.el))} is sunk wholly under the ground, so nothing of it shows and nothing of it is solid. Raise its Base to bring it up.`, {
+        elementId: b.el.id,
+      }));
     }
   }
 

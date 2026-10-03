@@ -36,7 +36,7 @@
 /* FT and IN come from src/units.js, shared with src/game/track.js. The
  * builder must not import the game, so the constants they both need live in
  * a leaf module rather than being typed out twice. */
-import { FT, IN, FRAME_TUBE_OD } from '../units.js';
+import { FT, IN, FRAME_TUBE_OD, GATE_SCALE } from '../units.js';
 import {
   GATE_OPENING_DEFAULT, GATE_OPENING_MAX, GATE_SPACING_NOMINAL,
   ELEVATED_SILL_MIN, PIPE_OD, POLE_FROM_GATE_MIN, ROOM_WIDTH, ROOM_DEPTH, GRID as MICRO_GRID,
@@ -195,6 +195,35 @@ export function docModeOf(doc) {
 }
 
 /*
+ * HOW FAR A FREESTYLE ASSET MAY BE SUNK INTO THE GROUND, in metres. A map
+ * builder asked on 1 October 2026 for "the possibility to move objects below
+ * ground level to hide some part" (bug-e605ff6a): bury a container's lower
+ * half, a pylon's foot, a building's ground floor so its first floor is at
+ * street level. The document already held a negative base and every module
+ * handled one; the inspector, the height drag in the 3D view and nothing
+ * else clamped it at zero, so this is only what those two are told.
+ *
+ * WHAT A SUNK PART IS. Nothing. The ground is flat at zero on a map and is
+ * drawn over everything under it, and the physics holds the part as it
+ * holds any other (it bounds no height), but a craft cannot be under the
+ * ground, and a box whose top is under the paving is never a surface
+ * (indexTops in src/maps/built/place.js). So a part under the ground is
+ * neither seen nor met, and the part over it is solid as drawn.
+ *
+ * Thirty metres is more than any asset needs sunk and a long way short of a
+ * hand edited -9999 that would put a building out of reach of its own
+ * inspector. Only an ASSET: a gate sunk into the ground is a shorter gate,
+ * and a gate's height is what Sill height says, not its base.
+ */
+export const SINK_MAX = 30;
+
+/* The lowest base an element may have in this document: under the ground
+ * for an asset on a map, the ground for everything else. */
+export function lowestBase(doc, el) {
+  return docModeOf(doc) === 'freestyle' && ELEMENTS[el?.type]?.kind === KIND.STRUCTURE ? -SINK_MAX : 0;
+}
+
+/*
  * Frame tube diameter. MultiGP does not publish it. Their gates are built
  * from schedule 40 PVC and 1 inch nominal schedule 40 PVC has an outside
  * diameter of 1.315 in, which is what is used here. It sets how thick a gate
@@ -278,10 +307,55 @@ export function flagLeanSign(sign) {
 
 export function flagSideOf(el) {
   const def = ELEMENTS[el?.type];
-  if (!def?.flagSide) {
+  if (!def) {
     return null;
   }
-  return normalizeFlagSide(el.flagSide, def.flagSide);
+  if (def.flagSide) {
+    return normalizeFlagSide(el.flagSide, def.flagSide);
+  }
+  /* A piece that MAY carry flags, a hurdle being the one: it has them when it says so and is
+   * the piece it always was when it does not, so no existing document changes. */
+  if (def.flagsOptional && FLAG_SIDES.includes(el.flagSide)) {
+    return el.flagSide;
+  }
+  return null;
+}
+
+/*
+ * THE DRESS A GATE WEARS BESIDE THE MULTIGP ONE.
+ *
+ * A MultiGP gate in the world is a printed sleeve round each upright and a
+ * header board a good deal wider than the frame, which is what a sponsor's
+ * mark goes on. That is right for a gate standing on its own and wrong for a
+ * wall of them: the sleeves of neighbours land in each other's openings and the
+ * boards overlap by most of a metre. `plain` is the other dress: no sleeves, a
+ * header board exactly as wide as the frame, so a pennant on the header stands
+ * on the upright it belongs over and bays sit end to end. It is an optional
+ * field written only when set, so every gate that exists is the MultiGP one and
+ * serialises to the bytes it did. Only a vertical, square gate has a dress at
+ * all: a tilted one is carried on a mast and a ring or a hexagon has no
+ * uprights to sleeve.
+ */
+export const GATE_STYLES = ['plain'];
+
+export function isPlain(el) {
+  return Boolean(el) && el.style === 'plain' && ELEMENTS[el.type]?.kind === KIND.APERTURE
+    && apertureShapeOf(el) === 'square';
+}
+
+/*
+ * WHERE A ROW OF GATES HAS TO STAND FOR ITS UPRIGHTS TO MEET IN THE WORLD.
+ *
+ * The document holds the published sizes and the field builds every gate GATE_SCALE
+ * times larger, while positions are never scaled (src/game/trackdoc.js builtDims). Two
+ * gates that share an upright therefore have to be that much further apart than one
+ * opening plus one tube says, or the one's built upright stands inside the other's
+ * opening. The builder draws document sizes, so in it the bays of a wall show a gap of
+ * about a quarter of a metre that the world does not have, and the Wall tool says so.
+ */
+export function wallPitchFor(dims, cls = TRACK_CLASS_DEFAULT) {
+  const scale = cls === 'micro' ? 1 : GATE_SCALE;
+  return scale * ((dims?.clearW ?? 0) + FRAME_TUBE_OD);
 }
 
 /*
@@ -633,7 +707,7 @@ export const ELEMENTS = {
   },
   diveGate: {
     id: 'diveGate',
-    label: 'Dive Gate',
+    label: 'Dive gate',
     key: 'D',
     group: 'track',
     kind: KIND.APERTURE,
@@ -706,7 +780,11 @@ export const ELEMENTS = {
     key: 'B',
     group: 'track',
     kind: KIND.OBSTACLE,
-    note: 'Solid obstacle. Not flown through. Collision geometry only.',
+    note: 'Solid obstacle. Not flown through. Collision geometry only. The Hurdle on the palette is a low one with flags at its ends.',
+    /* A barrier MAY carry the pennants a gate carries, at the ends of its top: `flagSide` on
+     * the piece and the mast height as `dims.flagH`, both written only when it has them. That
+     * is the whole of what a hurdle is. See flagSideOf. */
+    flagsOptional: true,
     /* Not a MultiGP obstacle. A barrier is the tool's way of saying "the
      * racing line must not go here": a shipping container, a fence, a stand.
      * The default is a 4 m by 1 m panel 2 m tall, which is a plausible crowd
@@ -922,7 +1000,7 @@ export const ELEMENTS = {
   },
   startPads: {
     id: 'startPads',
-    label: 'Start Pads',
+    label: 'Start pads',
     key: 'S',
     group: 'extra',
     kind: KIND.START,
@@ -1004,6 +1082,7 @@ for (const [id, t] of Object.entries(PROP_TYPES)) {
     propGroup: t.group,
     kind: t.zone ? KIND.ZONE : KIND.STRUCTURE,
     turns: t.turns,
+    tilt: t.tilt ?? null,
     styles: t.styles ?? null,
     note: t.note,
     dims: { ...t.dims },
@@ -1145,6 +1224,15 @@ export const GATE_PRESETS = [
     hint: 'Tiny whoop size, 19 in square. For an indoor scale track flown on a 65 mm machine.',
     clearW: 19 * IN,
     clearH: 19 * IN,
+  },
+  {
+    id: 'wide',
+    label: 'Wide',
+    size: '2 m bay',
+    published: false,
+    hint: 'Not a MultiGP size. About 2 m between uprights once the world builds it 15 percent larger, which is the bay the Drone Nationals plan draws, so a wall of these stands 2 m a bay.',
+    clearW: 2 / GATE_SCALE - FRAME_TUBE_OD,
+    clearH: 2 / GATE_SCALE - FRAME_TUBE_OD,
   },
   {
     id: 'trainer',
@@ -1321,9 +1409,11 @@ export function paletteGroupOf(def) {
 export const PALETTE_EXTRA = ['startPads', 'label', 'groundLogo'];
 
 /*
- * The path toggle. It is in the palette because the task puts it there, and
- * it is not an element: pressing P shows or hides the derived racing line.
- * It carries a key so the hotkey table has one source.
+ * The path toggle: pressing P shows or hides the derived racing line, which is
+ * the bar's Show line. It is not an element, and it is not on the palette any
+ * more, where it was the bar's switch a second time and stayed lit like an
+ * armed tool (MENUS-PLAN.md 1.23). It carries a key so the hotkey table has
+ * one source, and P is never a piece's letter on any canvas.
  */
 export const PATH_TOGGLE = { id: 'path', label: 'Path', key: 'P', note: 'Toggles display of the derived racing line.' };
 
@@ -1508,17 +1598,124 @@ export const WHOOP_TOOLS = [
     key: 'M',
     note: 'Click two points to measure between them, in inches and millimetres. A click near a gate or a pole takes its middle. Nothing is saved with the track.',
   },
+  /*
+   * N, NOT O. Fly order had O, and so did Ground logo, which is on all three
+   * canvases' palettes with O: the whoop palette showed one letter on two tools
+   * and the key only ever reached Fly order (MENUS-PLAN.md 1.20). A piece on
+   * more than one canvas keeps its letter (4.2a), so Ground logo keeps O and
+   * this moved, to N for the numbers it hands out, which no race canvas uses.
+   * The map has a rail on N, and every one of its 36 keys is taken, so there is
+   * no letter a whoop tool could have that means nothing there.
+   */
   {
     id: 'route',
     label: 'Fly order',
-    key: 'O',
+    key: 'N',
     note: 'Click the pieces in the order you fly them. A click on a piece again is another pass through it, which is how a gate is flown twice. Backspace takes the last pass off.',
   },
 ];
 
-export function toolByKey(letter) {
+/*
+ * THE 5 INCH CANVAS'S PIECES THAT ARE MADE OF PIECES, and its tools that are not pieces.
+ *
+ * None is an element, so none is in ELEMENTS and none is in a document: each writes
+ * ordinary elements and the document holds only those (a wall is gates in a group, a
+ * hurdle is a barrier with flags and a waypoint over it, an up gate is a dive gate with
+ * the numbers the rule gives). They stand on the palette among the pieces, in the place
+ * `after` names, because to a person laying a track they are pieces. See
+ * src/trackbuilder/parts.js for what each writes.
+ */
+export const FIVE_INCH_PIECES = [
+  {
+    id: 'wall',
+    label: 'Wall',
+    key: 'K',
+    after: 'flaggedGate',
+    note: 'Drag along the ground to lay a row of gates that share their uprights, two to six. Each bay is a gate of its own in the flying order, so a wall can be flown straight through or as a weave. The wall is one piece: it moves, turns, copies and goes as one.',
+  },
+  {
+    id: 'upGate',
+    label: 'Up gate',
+    key: '',
+    after: 'diveGate',
+    note: 'A gate leaning at 45 degrees with its lower edge 1.5 m up, flown up through. It is a dive gate with those numbers, which are the rule the Drone Nationals plan gives its up gate.',
+  },
+  {
+    id: 'launchGate',
+    label: 'Launch gate',
+    key: '',
+    after: 'diveGate',
+    note: 'A horizontal gate 15 ft up, flown UP through from below: the dive gate the other way round. It comes with the line to fly it, a pull up from level to vertical on the way in and a push over on the way out, as waypoints you can drag or take out.',
+  },
+  {
+    id: 'hurdle',
+    label: 'Hurdle',
+    key: 'U',
+    after: 'barrier',
+    note: 'A board 4 m long and 1 m high with a flag at each end, flown over. One piece, and not a gate: nothing scores on it, and the lap is pinned over the middle of it.',
+  },
+  {
+    id: 'barHurdle',
+    label: 'Bar hurdle',
+    key: '',
+    after: 'barrier',
+    note: 'A bar 10 ft wide, 5 ft up, on two legs: flown over it, skimming it, or under it between the legs. One piece, and not a gate: the lap is pinned over (or under) the middle of it, and the card says which.',
+  },
+  {
+    id: 'run',
+    label: 'Section',
+    key: 'J',
+    /* After the flagged gate, where the wall is, and below it: a piece stands after an element, and the wall is not one. */
+    after: 'flaggedGate',
+    note: 'A section laid in one click: a straight, a sweeper, a hairpin, a chicane, esses, a step sequence, a flag slalom or a Dutch 8, as many pieces as you ask for, flown in order. Pick the shape under the tool, then click where it starts. They are ordinary pieces afterwards.',
+  },
+];
+
+export const FIVE_INCH_TOOLS = [
+  {
+    id: 'route',
+    label: 'Fly order',
+    /* Not O: on a field O is the ground logo, and a key that has meant something for months is not taken from it. */
+    key: 'N',
+    note: 'Click the pieces in the order you fly them. A click on a gate again is another pass through it, which is how a gate is flown twice. Click a hurdle to fly over it. Backspace takes the last pass off.',
+  },
+  {
+    id: 'ruler',
+    label: 'Ruler',
+    key: 'M',
+    note: 'Click two points to measure between them, in metres. A click near a piece takes its middle. Nothing is saved with the track.',
+  },
+];
+
+/*
+ * THE MAP'S TOOLS THAT ARE NOT PIECES: the ruler, and nothing else, because a map has no flying order to put
+ * in order and its pieces are the palette's own. It has no key: M is the ledge on a map and the digits and
+ * the free letters ran out before the assets did.
+ */
+export const MAP_TOOLS = [
+  {
+    id: 'ruler',
+    label: 'Ruler',
+    key: '',
+    note: 'Click two points to measure between them, in metres. A click near a piece takes its middle. Nothing is saved with the map.',
+  },
+];
+
+/* The tool or the piece-of-pieces a key arms on a class's palette, or undefined. A whoop
+ * canvas has the tools above in WHOOP_TOOLS; a 5 inch race canvas has these two lists. A map's
+ * keys are its assets' (elementByKey), and its one tool has none. */
+export function toolByKey(letter, cls = 'micro', mode = 'race') {
   const up = String(letter || '').toUpperCase();
-  return up ? WHOOP_TOOLS.find((t) => t.key === up) : undefined;
+  if (!up || mode === 'freestyle') {
+    return undefined;
+  }
+  const list = cls === 'micro' ? WHOOP_TOOLS : [...FIVE_INCH_PIECES, ...FIVE_INCH_TOOLS];
+  return list.find((t) => t.key === up);
+}
+
+/* Whether an id is one of the 5 inch pieces made of pieces. */
+export function isFiveInchPiece(id) {
+  return FIVE_INCH_PIECES.some((p) => p.id === id);
 }
 
 /* Convenience: every element definition in palette order, extras last. */
@@ -1543,7 +1740,7 @@ const EXTRA_TYPES = new Set(PALETTE_EXTRA);
  * but the palette tool is distinct, and collapsing it into Gate would hide
  * that.
  */
-export function countElementsByType(elements) {
+export function countElementsByType(elements, cls = TRACK_CLASS_DEFAULT) {
   const tally = new Map();
   for (const el of elements || []) {
     const type = el && el.type;
@@ -1564,7 +1761,9 @@ export function countElementsByType(elements) {
   for (const id of order) {
     const count = tally.get(id) || 0;
     if (count > 0) {
-      rows.push({ type: id, label: ELEMENTS[id].label, count });
+      /* In the class's own words: a whoop track's dive gate is a horizontal
+       * gate in Load and in its results, as it is on its palette. */
+      rows.push({ type: id, label: labelOf(id, cls), count });
     }
   }
   return rows;
@@ -1646,7 +1845,7 @@ export function apertureLevels(dims) {
 
 /* Overall height of an element, for the 3D view and for the height drag
  * limits. Aperture elements are as tall as their top opening plus a tube. */
-export function elementHeight(def, dims, style = null) {
+export function elementHeight(def, dims, style = null, tilt = 0) {
   if (def.kind === KIND.APERTURE) {
     const levels = apertureLevels(dims);
     const top = levels[levels.length - 1];
@@ -1666,7 +1865,8 @@ export function elementHeight(def, dims, style = null) {
     return Math.max(0.08, dims.padSize * 0.40);
   }
   if (def.kind === KIND.STRUCTURE || def.kind === KIND.ZONE) {
-    return approxHeight(def.id, dims, style ?? propStyleOf({ type: def.id }));
+    /* `tilt` is tiltOf(el): stood on end, an asset is as tall as it was long. */
+    return approxHeight(def.id, dims, style ?? propStyleOf({ type: def.id }), tilt);
   }
   if (def.kind === KIND.ROAD) {
     /* Paint. */

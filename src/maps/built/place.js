@@ -45,7 +45,7 @@
 
 import { ELEMENTS, KIND } from '../../trackbuilder/elements.js';
 import { SEAT_SLACK, hasRaised, seatFloating } from '../../trackbuilder/seat.js';
-import { assetOf, partsOf } from '../../props/catalog.js';
+import { assetOf, placedPartsOf } from '../../props/catalog.js';
 import { placeSolids, placedYaw } from '../../props/solids.js';
 import { sincos, turnY } from '../../props/trig.js';
 import { CAR_KINDS } from '../../props/street.js';
@@ -706,7 +706,8 @@ export function placeDocument(doc) {
     }
     const turns = asset.turns ?? 'any';
     const yaw = placedYaw(turns, el.yaw || 0);
-    const parts = partsOf(el);
+    /* As it stands: stood on end if it is (placedPartsOf). */
+    const parts = placedPartsOf(el);
     placeSolids(parts, x, y, z, yaw, turns, solids, stats);
     items.push({ el, kind: def.kind, x, y, z, yaw, turns, parts });
   }
@@ -761,20 +762,43 @@ function supportsOf(doc, placed) {
   }
   const W = doc.field.width;
   const D = doc.field.depth;
-  return {
-    seatFor(el, z) {
-      docToWorld(W, D, el.position.x, el.position.y, 0, SEAT_AT);
-      const reach = z + SEAT_SLACK;
-      let best = null;
-      for (const { owner, box: b } of boxes) {
-        if (owner !== el && b[4] <= reach && (!best || b[4] > best.top)
-          && SEAT_AT.x > b[0] && SEAT_AT.x < b[3] && SEAT_AT.z > b[2] && SEAT_AT.z < b[5]) {
-          best = { top: b[4], on: owner.id };
-        }
+  /*
+   * The highest box top over the plan point (x, y), in the document's frame, that is no more than SEAT_SLACK over
+   * `z`, as { top, on } with `on` the id of the element it belongs to, or null for the paving. `ignore` is one
+   * element's id or a set of them, whose boxes do not count: an element does not hold itself up, and a thing being
+   * carried does not hold up what it is carried over. The same comparisons the seat has always made, asked for a
+   * point as well as for an element, so the track builder's 3D canvas can show where a piece would stand before
+   * it is put down (src/trackbuilder/view3d.js, surfaceAt) and the two cannot disagree.
+   */
+  function under(x, y, z, ignore = null) {
+    docToWorld(W, D, x, y, 0, SEAT_AT);
+    const reach = z + SEAT_SLACK;
+    let best = null;
+    for (const { owner, box: b } of boxes) {
+      if (b[4] <= reach && (!best || b[4] > best.top)
+        && SEAT_AT.x > b[0] && SEAT_AT.x < b[3] && SEAT_AT.z > b[2] && SEAT_AT.z < b[5]
+        && !(typeof ignore === 'string' ? owner.id === ignore : ignore && ignore.has(owner.id))) {
+        best = { top: b[4], on: owner.id };
       }
-      return best;
+    }
+    return best;
+  }
+  return {
+    under,
+    seatFor(el, z) {
+      return under(el.position.x, el.position.y, z, el.id);
     },
   };
+}
+
+/*
+ * WHAT A RAISED THING CAN STAND ON, for a document, as { under(x, y, z, ignore), seatFor(el, z) }: the question
+ * seatDocument asks of every element, kept for a caller that has to ask it again and again about points (a
+ * pointer moving over the plot) without placing the map each time. Placing is the cost, so the answer is only as
+ * current as the document it was made from.
+ */
+export function supportsFor(doc, placed = placeDocument(doc)) {
+  return supportsOf(doc, placed);
 }
 
 export function seatDocument(doc) {

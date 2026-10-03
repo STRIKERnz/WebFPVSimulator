@@ -18,15 +18,15 @@
       "belowFold": 0
     },
     "quad": {
-      "overflow": 49,
+      "overflow": 0,
       "belowFold": 0
     },
     "pilot": {
-      "overflow": 1413,
+      "overflow": 829,
       "belowFold": 0
     },
     "osd": {
-      "overflow": 715,
+      "overflow": 600,
       "belowFold": 0
     },
     "launch": {
@@ -34,11 +34,11 @@
       "belowFold": 0
     },
     "rates": {
-      "overflow": 502,
+      "overflow": 405,
       "belowFold": 0
     },
     "pids": {
-      "overflow": 199,
+      "overflow": 102,
       "belowFold": 0
     },
     "fc": {
@@ -55,7 +55,7 @@
     },
     "howto": {
       "overflow": 0,
-      "belowFold": 139
+      "belowFold": 0
     },
     "tricks": {
       "overflow": 1773,
@@ -63,11 +63,45 @@
     },
     "credits": {
       "overflow": 0,
-      "belowFold": 1562
+      "belowFold": 0
     },
     "stickhelp": {
       "overflow": 0,
       "belowFold": 0
+    },
+    "advanced": {
+      "overflow": 0,
+      "belowFold": 0
+    }
+  },
+  "foldNote": "How far each list hangs under the command bar on arrival, per window, from the fold pass (MENUS-PLAN.md 0.2). A budget like the one above.",
+  "fold": {
+    "1600x900": {
+      "title": 0,
+      "launch": 0,
+      "paused": 0,
+      "results": 0,
+      "stickhelp": 0,
+      "howto": 0,
+      "credits": 0
+    },
+    "1280x720": {
+      "title": 0,
+      "launch": 0,
+      "paused": 37,
+      "results": 0,
+      "stickhelp": 0,
+      "howto": 133,
+      "credits": 0
+    },
+    "844x390 touch": {
+      "title": 0,
+      "launch": 0,
+      "paused": 0,
+      "results": 44,
+      "stickhelp": 129,
+      "howto": 810,
+      "credits": 0
     }
   }
 }

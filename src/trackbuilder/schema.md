@@ -162,7 +162,7 @@ once) and skipping anything that carries no printed vinyl (a flag or a cone is
 scored through a square in the air beside it). Structure *i* wears logo
 *i* mod *n*. Fifteen gates and five logos is three gates each, spread down the
 lap rather than bunched at the start. The rule is `dressOrder()` in
-`model.js`, and both the race field and the builder's own 3D preview read it
+`model.js`, and both the race field and the builder's own 3D view read it
 from there so they cannot disagree.
 
 A gate's own header pennants wear THAT GATE'S logo in both accents. The run of
@@ -224,9 +224,9 @@ course; that is what `sequence` is for.
 | `id` | string | `el-` and a number. Unique within the document. Referenced by `sequence[].elementId`. |
 | `type` | string | One of the element types below. An unknown type means the whole element is dropped on read. |
 | `name` | string | The author's label for it. May be empty, in which case the tool shows the type's name. |
-| `position` | object | Where the element's **base** sits: `x` and `y` on the ground, `z` the height of the base above what it stands on. `0` for nearly everything: a bar, a waypoint, a named gap, an opening with no pipe and, on a map, something stood on a roof or on another asset are the only ones with any other. Anything else with a `z` over 5 cm and nothing under it is set down when it is read: see **Nothing floats**. |
+| `position` | object | Where the element's **base** sits: `x` and `y` on the ground, `z` the height of the base above what it stands on. `0` for nearly everything: a bar, a waypoint, a named gap, an opening with no pipe and, on a map, something stood on a roof or on another asset are the only ones with any other. Anything else with a `z` over 5 cm and nothing under it is set down when it is read: see **Nothing floats**. A map's **asset** may have a negative `z`, down to -30 m: it is sunk into the ground to hide part of it, and what is under the ground is neither drawn nor solid (`SINK_MAX` and `lowestBase` in `elements.js`). Nothing else may go under the ground. |
 | `yaw` | number, radians | Which way the element faces. See the conventions above. |
-| `pitch` | number, radians | Tilt of the aperture plane. Meaningful only for aperture elements; written as `0` for everything else. |
+| `pitch` | number, radians | Tilt of the aperture plane. Meaningful only for aperture elements, and for the freestyle assets that stand on end (see **Standing on end**), where it is `0` upright and a quarter turn, plus or minus 90 degrees, on end; written as `0` for everything else. |
 | `yawOverridden` | boolean | `true` when the AUTHOR set the heading, which stops the tool re-deriving it. See **Faces and pass sides**. |
 | `dims` | object | Dimensions, in metres, whose keys depend on `type`. Always complete: a missing key is filled from the default on read. |
 | `text` | string | **Labels only.** The text drawn on the field. |
@@ -237,7 +237,8 @@ course; that is what `sequence` is for.
 | `reverse` | boolean | **Vehicles only.** `true` drives against the road's node order. |
 | `drift` | boolean | **Vehicles only.** `true` makes it the drift car. |
 | `points` | integer | **Named gaps only.** What flying through it is worth: one of 100, 250, 500, 1000 or 2500, and anything else snaps to the nearest. |
-| `flagSide` | `"left"`, `"right"`, `"both"` or `"top"` | **Flagged gates and flagged doubles only.** Where the pennant stands on the top header, as seen facing the gate. `top` is one mast on the CENTRE of the board, over the opening. Default `left`. Not a dimension; the mast's height is, and it is `dims.flagH`. |
+| `flagSide` | `"left"`, `"right"`, `"both"` or `"top"` | **Flagged gates and flagged doubles, and a barrier that has flags.** Where the pennant stands on the top header, as seen facing the gate. `top` is one mast on the CENTRE of the board, over the opening. Default `left` on a flagged gate. Not a dimension; the mast's height is, and it is `dims.flagH`. On a **barrier** the field is **optional**: it is written only when the barrier has flags (a hurdle), with `dims.flagH` beside it, and a barrier without it is the JSON it always was. There the masts stand at the two ends of the board, along the way it is turned, and `left` is the `-heading` end. |
+| `style` | `"plain"`, or absent | **Apertures only.** The dress a gate wears besides the MultiGP one. A MultiGP gate in the world has a printed sleeve round each upright and a header board wider than the frame; `plain` has no sleeves and a header board exactly as wide as the frame, so a pennant on the header stands on the upright and the bays of a wall sit end to end. Written only when set, so every gate that exists serialises as it did. Only a vertical, square gate has a dress. A value this build does not know is dropped on read with a repair note. See `isPlain` in `elements.js`. |
 | `logoId` | string | **Ground logos only.** The `id` of the entry in `branding.logos` this footprint is painted with. Empty means the course's first logo. Not a dimension. |
 | `unbuilt` | `true`, or absent | **Apertures only.** The opening is a GAP IN THE LATTICE rather than a gate with a frame of its own: it scores, it lights, it carries its number and it pins the racing line, and no pipe is built for it in the world, the export, the preview or the card. The pipe that bounds it belongs to the structures around it. Written only when true, so an ordinary gate's JSON is unchanged. RaceGOW builds this way wherever a leg is carried up past a bar: the opening over the bar has the bar below and a pole beside and nothing else, and drawing a square there puts PVC in mid air. See `isUnbuilt` in `elements.js` and `TRACK-FROM-GIF.md`. |
 | `unbuiltSides` | array of strings, or absent | **Apertures only.** The sides of the frame that have no pipe, taken away one at a time: any of `"top"`, `"bottom"`, `"left"`, `"right"`, each once, written in that order. The opening still scores, lights, carries its number and pins the racing line; only the pipe is gone, along with what belongs to it (an upright's foot, fittings and printed sleeve, the top bar's header board). Four sides per STRUCTURE: `left` and `right` are the two uprights, the whole height of a stack, `top` is the bar over the top opening and `bottom` the bar under the lowest. A bar between two openings of a stack holds both up and is not one of the four. Left and right are as seen facing the gate, the same reading `flagSide` has: `left` is the `-widthAxis` upright and `top` the `+heightAxis` bar. Written only when at least one side is missing, so a gate with all four is the same JSON it was before this existed; a name that is not a side is dropped on read with a repair note. `unbuilt: true` means all four and more (no pipe at all), and wins when both are present. See `FRAME_SIDES` in `elements.js`, and `meshSidesFor` in `src/game/trackdoc.js` for how the race field, which builds each gate facing its first pass, turns these into its own frame. |
@@ -262,6 +263,12 @@ goes. The stored file is not rewritten, so a track on the board keeps the layout
 its times were set on, and the builder says what it set down. Lifting a gate's
 opening off the ground is what `sillH` is for: the legs stand on the ground and
 the opening is up on them.
+
+A negative `z` is not floating and is never set down: it is the opposite, an
+asset sunk on purpose, and the rule above does not look at it. The part under the
+ground is not drawn (the plot is drawn over it) and is never a surface (a box whose
+top is under the paving is not one), and the part over it is as solid as it is drawn.
+The builder warns, `fs-buried`, when an asset is sunk wholly out of sight.
 
 Four kinds of thing are left alone, because nothing built is held up:
 
@@ -296,7 +303,7 @@ Each row's `kind` decides everything the tool does with it.
 | `diveGate` | D | aperture | yes, once per opening | same |
 | `hoop` | none | aperture | yes, once | same, with `levels` always 1. A round gate: the opening is the ellipse that touches all four sides of the `clearW` by `clearH` box, a circle when the two are equal, which is what a new one is. The whoop palette's only. See **The shape of an opening**. |
 | `hexGate` | none | aperture | yes, once | same, with `levels` always 1. A six sided gate: a point at each end of `clearW` and a flat above and below, so it is a regular hexagon when `clearH` is `clearW` times the square root of three over two, which is what a new one is. The whoop palette's only. See **The shape of an opening**. |
-| `barrier` | B | obstacle | **never** | `width depth height` |
+| `barrier` | B | obstacle | **never** | `width depth height`. Optional `flagSide`, and then `flagH` in `dims`, make it a hurdle: see `flagSide`. The palette's Hurdle is a barrier 4 m by 0.1 m by 1 m with two flags and a waypoint over it in the flying order. |
 | `flag` | F | marker | yes, with a pass side | `height poleRadius clearance` |
 | `cone` | C | marker | yes, with a pass side | `height baseRadius clearance` |
 | `waypoint` | W | marker | yes, at zero clearance | `height poleRadius clearance` |
@@ -373,6 +380,49 @@ so is the object it was. A track that holds a cube is not published to the
 board until the board knows a `group`: the board would keep the five gates,
 lose what makes them one, and fly two faces of it.
 
+**A wall.** Gates side by side that share their uprights, which the 5 inch palette's Wall tool
+lays by dragging along the ground. It is stored as what it is made of: ordinary `gate` elements
+(a `flaggedGate` where an end bay carries a pennant) that share a `group`, each in the `plain` dress,
+each pinned to one heading, with `unbuiltSides` taking away, on every bay after the first, the upright
+that faces the bay before it, so each post is built once. Every bay is its own opening and its own pass,
+so a wall can be flown straight through or as a weave, the passes alternating. The bays stand
+`GATE_SCALE * (clearW + FRAME_TUBE_OD)` apart (`wallPitchFor` in `elements.js`): the world builds a gate
+that much larger than the document says and never scales a position, so that is the pitch at which the
+uprights meet where the game builds them. The builder draws document sizes, so in it the bays show a gap
+of about a quarter of a metre that the world does not have. The document holds no word for a wall of its
+own. The board, which does not read `group`, keeps the gates and loses the grouping, which for a wall in
+which every gate is flown is the same course, so the simulator publishes it. A group that has a gate no
+pass goes through is a cube and is still refused.
+
+**Round the flag.** A turn round the pennant on one of a gate's uprights that ends in the one pass through
+that gate, a spiral down when it makes whole turns, is stored as what it is made of: ordinary `waypoint`
+elements in the flying order straight before the pass, at most a quarter turn apart, which `addSpiral` in
+`src/trackbuilder/parts.js` writes. The circle is centred on the flag where the world stands it, `GATE_SCALE`
+times the document's distance out from the opening's middle (its pennant beside the sleeve, on a gate in the
+full dress), with the radius that brings it back through that middle, and it turns clockwise round a flag on
+the pilot's right and anticlockwise round one on the left. It starts where the line from the knot before
+meets it on a tangent; a spiral's whole turns come down from 0.6 m over the header board as the world builds
+it to the middle of the opening, and a turn without a spiral stays at the opening's height. The waypoints are
+named `Spiral right`, `Spiral left` or `Round the flag`, which is how the builder finds the figure again (to
+show it on the card, to make it again, to take it off) and how the curvature warning knows a circle a metre
+from a flag is what the author asked for and does not call it a corner nothing flies; a waypoint renamed is an
+ordinary waypoint again. Until 2026-10-01 the figure was a loop after the pass and a second pass back through
+the gate (`addLoop`, waypoints named `Loop right` and `Loop left`), a misreading of the Nationals plan; a
+document made with it reads as it did and keeps its exemption.
+
+**A hurdle.** A `barrier`, 4 m long by 0.1 m by 1 m by default, with an optional `flagSide` (`left`, `right` or
+`both`) and `dims.flagH` (the mast's height) written only when it has flags, so a barrier with none is the
+bytes it was. A hurdle is not a gate and is not in the flying order; the lap goes over it by a `waypoint`
+named `Over the hurdle` a metre above its top, which `placeHurdle` and the Fly order tool write.
+
+**An up gate.** A `diveGate` with a 45 degree `pitch` and `dims.sillH` of 1.5 m, flown up through (its pass is
+set, so the face rule does not make a dive gate of it).
+
+**The shipped five inch tracks** are plain documents in `src/trackbuilder/presets5.js`, written by
+`scripts/mission-preset.js`, and are handed to the library by the builder (`shipTracks` in `storage.js`) so the
+simulator's own boot graph does not carry them. They list under the five inch canvas, open as a copy under a
+fresh id, and carry their designer's credit.
+
 A map also holds the freestyle assets, of two more kinds, `structure` and
 `zone`, and roads and vehicles, of two more, `road` and `vehicle`; they are
 listed under **Freestyle maps**.
@@ -408,6 +458,41 @@ field. It exists because imported courses need it: Velocidrone lets an author
 drop an invisible trigger volume in open air to pin the racing line where there
 is no gate, and a course that reads one of those as a gate puts obstacles on
 the field that are not on the real track.
+
+**A waypoint can point.** When its `yawOverridden` is true the racing line takes its tangent from
+its `yaw` and its `pitch` together, `(cos pitch * cos yaw, cos pitch * sin yaw, sin pitch)`, where it
+used to take it level, so a run of waypoints follows a vertical loop up, over and down. A waypoint
+that never set its pitch has pitch 0 and is the level tangent it always was. `pitch` has always been a
+field of every element and is clamped to a quarter turn either way.
+
+**A figure between two pieces.** The manoeuvres of the owner's catalogue of 2026-10-02 (straight with
+a leaning exit, hop and dip, turn, climbing turn, descending turn, split-S, reverse split-S, power
+loop, corkscrew, dive, launch, slalom, figure 8, Matty flip) are not elements and are not in the
+document under their own name. A figure is a run of ordinary `waypoint` elements in the flying order,
+each pointing the way the line goes through it, named by a closed grammar the builder reads back to
+find the figure again: `Turn left 180`, `Climbing turn right 360, wide`, `Corkscrew left up`,
+`Slalom right x4`, `Exit left`, `Hop`, `Dip`, `Power loop`, with `, tight` or `, wide` for a size and
+`, back through` or `, back through reversed` where the piece it belongs to is flown a second time
+as its own entry in the sequence (an orbit round a flagged leg, a turnaround, a power loop gate). A
+figure after a pass, before it, or round a flag stands in the slot of waypoints between two passes;
+`src/trackbuilder/manoeuvres.js` is the geometry and `src/trackbuilder/flightpaths.js` lays and reads
+them. A waypoint renamed is an ordinary waypoint again, and the board, which keeps names, keeps the
+figures. Their curvature is exempt from `tight-corner`, and `figure-exit` and `figure-entry` warn
+when a figure ends facing away from the next piece or starts facing back at the last.
+
+**A section.** The Section tool (`src/trackbuilder/runs.js`) lays a straight, a sweeper, a hairpin, a
+chicane, esses, a step sequence, a flag slalom or a Dutch 8 as ordinary gates or flags in the flying
+order in one step, and leaves nothing in the document that says it did.
+
+**The hurdle family.** A `barrier` is the board of a hurdle (the plan's 4 m by 1 m, MultiGP's 10 by 5
+ft, an h-hurdle, which is a flag mast 10 ft tall on one end, or a super hurdle twice the standard
+one), and a `horizontalPole` at 5 ft, 10 ft wide, is a bar hurdle. The lap goes over (or, for a bar,
+under) by a `waypoint` named `Over the hurdle`, `Skim the hurdle`, `Under the bar` and so on, put at the
+height the name says; a gate the lap hops over is the same, named `Over the gate`.
+
+**A launch gate** is a `diveGate` at its default horizontal pitch with its pass set upward, and two
+waypoints named `Pull up` before it and `Push over` after it, which are quarter circles and are exempt
+from `tight-corner` like a figure.
 
 Exactly one `startPads` element may exist. A second one is dropped on read.
 
@@ -476,7 +561,7 @@ simulator flies it as a freestyle map in the town's art style
 
 A map's time of day and its ground, the two things that change its mood
 more than any single asset does. Chosen on the builder's Map panel and
-drawn by the simulator (`src/maps/built/looks.js`); the builder's 3D preview
+drawn by the simulator (`src/maps/built/looks.js`); the builder's 3D view
 follows both.
 
 ```jsonc
@@ -545,9 +630,11 @@ different wreck, advert or colour.
 | `waterTower` | 5 | Industrial | any |  | `height` 16 m [6, 40], `radius` 3.6 m [1.5, 7], `tank` 0.8 m [0, 10] |
 | `mast` | 6 | Industrial | any |  | `height` 32 m [8, 90], `width` 1.8 m [1, 4] |
 | `chimney` | 7 | Industrial | any |  | `height` 24 m [6, 80], `radius` 1.3 m [0.5, 5] |
+| `hollowChimney` | none | Industrial | any |  | `height` 30 m [8, 80], `radius` 3 m [2.4, 7], `door` 2.8 m [1.6, 8] |
 | `pylon` | Y | Industrial | any |  | `height` 28 m [12, 60] |
+| `turbine` | none | Industrial | any |  | `height` 48 m [15, 100], `blade` 28 m [6, 60], `spin` 0 [0, 1] fraction |
 | `containers` | 8 | Industrial | quarter | `40ft` `20ft` `40ft open` | `stack` 2 [1, 5] count, `variant` 1 [1, 99] count |
-| `scaffold` | K | Industrial | quarter | `open` `netted` | `width` 10 m [2.5, 40], `height` 10 m [2, 40], `depth` 1.3 m [1, 2.5] |
+| `scaffold` | K | Industrial | quarter | `open` `netted` | `width` 10 m [2.5, 40], `height` 10 m [2, 40], `depth` 1.55 m [1.55, 2.5] |
 | `bridge` | 9 | Street | quarter | `road` `footbridge` | `span` 24 m [6, 80], `width` 8 m [2, 20], `height` 6 m [3, 20], `piers` 1 [0, 6] count |
 | `billboard` | 0 | Street | any |  | `width` 8 m [2, 20], `height` 3.2 m [1.2, 8], `lift` 5 m [1.5, 30], `variant` 1 [1, 99] count |
 | `utilityPole` | none | Street | any |  | `height` 10 m [5, 16] |
@@ -586,6 +673,63 @@ The world holds two shapes, boxes that cannot turn and capsules that can
   places it at the nearest quarter turn whatever the file says
   (`placedYaw` in `src/props/solids.js`), so the drawing and the solids
   always agree.
+
+### Standing on end
+
+The containers and the ledge can stand on one end, so a container is as tall as
+it is long: a shaft to dive down when it is the open style. It is the
+element's `pitch`, read to the **nearest quarter turn** (`tiltOf` in
+`src/props/types.js`): `0` is upright, `1.570796` (90 degrees) and `-1.570796`
+are on end, the two ways round, and what is between is read as the nearer, so
+the document holds the pitch that is built and the builder writes `0` or a
+quarter. Any other asset ignores its `pitch`, as it always did.
+
+The world holds axis aligned boxes, and a box turned a quarter about a
+horizontal axis is one, with two of its extents swapped, so this needs nothing
+of the physics. The turn is about the asset's own right axis (`+z`), so a
+positive quarter raises the end it faces (a container's door end), and the
+asset is **set back on its base** and **centred along its heading**: its lowest
+point is on `position.z`, and the middle of what it covers is its origin, not
+the end of a stack that used to be up. `tiltMeasure` and `tiltParts` in
+`src/props/solids.js` are the one answer, read by the solids (`placedPartsOf`
+in `src/props/catalog.js`) and by the drawing (the kit turns everything an
+asset paints with the same turn and offsets), so they cannot disagree. A stack
+of containers lies beside itself on end, and the offset of each along its
+length, up to 0.35 m, is now up and down.
+
+The `pitch` rule for a heading is the one for `yaw`: an asset with boxes keeps
+to the compass, and `turns` above still says so. Standing on end composes with
+it, and with a negative `z`: a container stood on end and sunk 2 m has its
+foot 2 m under the ground.
+
+### A chimney to fly down, and a turbine that stands still
+
+Two assets a map builder asked for (bug-e605ff6a), both built of capsules, so
+both face any heading.
+
+**`hollowChimney`** is a brick stack with its bore open from the rim to the
+ground and a doorway in its foot on the side it faces (its heading, `+x`), so
+a pilot dives in over the rim and out through the door. `radius` is the
+OUTER radius at the base, from 2.4 m up, so the bore at the rim is never under
+2.4 m across; the wall is 45 cm thick on the smallest stack and 80 cm on the
+biggest. `door` is the clear width of the doorway at the top of the door,
+where the wall has leaned in furthest, and the door is half as high again as
+it is wide, within 3.2 m and half the stack. A doorway is never wider than one
+and a quarter base radii, so `door` is held to `1.25 * radius` wherever
+dimensions are held to their limits (the file's reader and writer and the
+builder's field), and a larger one is read as that; the layout would stop it at
+75 degrees either side of the heading in any case. The wall is a ring of
+leaning capsules, 54 to 120 of them, with the groove between two never over
+4 cm.
+
+**`turbine`** is a tapering tower, a nacelle and hub, and three blades,
+parked: the rotor faces the heading and does not turn, because the physics
+holds a world that does not move. `spin` sets where the blades stand, as a
+fraction of the third of a turn the rotor has (0 has one blade straight up, 0.5
+has one straight down, 1 is 0 again). `height` is the hub's, and `blade` is
+held to what that leaves it: the lowest blade tip hangs at least 2.5 m over the
+ground. The rotor stands ahead of the tower far enough that a blade hanging
+straight down clears the tower by the gap rule's 1.4 m.
 
 ### An asset's own frame
 
@@ -741,6 +885,7 @@ through is a trap, not a line.
 | `fs-slot` | warn | a space between two elements' solids wider than 5 cm and narrower than 1.4 m |
 | `fs-gap-blocked` | warn | a named gap has a solid across its window |
 | `fs-outside` | warn | an element stands outside the plot, or its solids reach more than half a metre past its edge |
+| `fs-buried` | warn | an asset is sunk wholly under the ground (its highest solid top is within 2 cm of the paving or under it), so nothing of it is drawn or solid |
 | `fs-solids` | warn | the map has more than 20000 solids |
 | `fs-crowded` | warn | two by two cells of the physics' 8 m grid hold more than the 1024 shapes it checks round a craft, so some would be left out |
 
@@ -791,6 +936,7 @@ The flying order, in order. **One entry is one opening, not one element.**
 | `passSide` | `"left"`, `"right"` or null | **Markers only.** Which side of the marker the QUAD passes on, in the frame of the direction of travel. `null` for an aperture. |
 | `clearance` | number, metres, or null | **Markers only.** How far off the marker the racing line is drawn. |
 | `overridden` | boolean | `true` when the AUTHOR set the face or the side by hand, which stops the tool re-deriving it. |
+| `wrap` | `"left"`, `"right"`, `"over"`, or absent | **Aperture entries only, and optional.** How the line gets here from the pass before it when that was another opening of the same stack: round the pilot's left of the structure, round the right, or looping out over the front. Written only when it was said, so an entry that never said keeps its bytes and the line's default: neighbouring levels round the left, a leap between levels over the front. See **Stacked figures**. |
 
 A structure may appear more than once. That is the point:
 
@@ -808,16 +954,19 @@ A double stack or a triple stack is one structure and several openings. Each
 opening is a pass of its own. The inspector offers named figures that write
 those passes in one click:
 
-| figure | openings, in order | faces |
-| --- | --- | --- |
-| One opening | the chosen hole | derived, or as set |
-| Spiral up | bottom to top | the same face on every hole, wrapping around the stack |
-| Spiral down | top to bottom, triples only | alternating, wrapping around the stack |
-| Split-S | top, then bottom | opposite. On a triple the middle opening is skipped. |
+| figure | openings, in order | faces | wrap |
+| --- | --- | --- | --- |
+| One opening | the chosen hole | derived, or as set | |
+| Spiral up | bottom to top | the same face on every hole | round the left, or the right when it says so |
+| Spiral down | top to bottom, triples only | alternating | round the left, or the right when it says so |
+| Split-S | top, then bottom | opposite. On a triple the middle opening is skipped. | out over the front |
+| Reverse Split-S | bottom, then top | opposite. On a triple the middle opening is skipped. | `over`, said, because two neighbouring levels would otherwise be a spiral |
 
 The figure is not a stored field. It is detected from the consecutive sequence
 entries on that element, so a track from before figures existed still loads,
-and a hand edit that leaves the plan still lights the matching button.
+and a hand edit that leaves the plan still lights the matching button. The way a
+spiral turns is read the same way, off the `wrap` of the second pass: `right` or, when
+there is none, left.
 
 Placing a double stack or a triple stack writes a spiral up, so each hole is
 already a gate. The inspector's How it is flown cards change that.
@@ -940,13 +1089,16 @@ does. Codes, so a consumer can filter:
 | --- | --- | --- |
 | `no-face` | warn | a sequenced aperture with `entry: 0` |
 | `reversal` | warn | an element's face sends the line backwards along the course |
-| `tight-corner` | warn | the radius of curvature drops below `settings.minCurveRadius` |
+| `tight-corner` | warn | the radius of curvature drops below `settings.minCurveRadius`, except on a five inch track between two bays of one wall and round a loop (see **A loop**) |
 | `barrier` | warn | the line passes through a `barrier` element, or through the boxes a `table`, `chair` or `banner` is made of (under a table between its legs is not through it) |
 | `out-of-field` | warn | the line leaves the field boundary |
 | `underground` | warn | the line goes below `z = 0` |
 | `unsequenced` | warn | an element that could be in the course is not |
 | `element-out-of-field` | warn | an element stands outside the field |
 | `coincident` | warn | two consecutive knots are in the same place |
+| `figure-exit` | warn | a figure ends facing away from the next piece, so the line has to turn back on itself to reach it |
+| `figure-entry` | warn | a figure is entered from a piece facing the other way, or starts heading back at the one before it |
+| `over-flag` | warn | the line goes over a flag: a flag's line goes up for ever, so it is flown round and never over |
 | `empty` | info | nothing in the flying order yet |
 | `no-start` | info | no start pads, so the lap does not close |
 
@@ -1017,6 +1169,16 @@ is missing, with a default, all four built, that is what every gate before it
 was. A reader that does not know it builds the whole frame, which is a
 picture with pipe the author took away rather than a document whose meaning
 changed: the openings, the flying order and the scoring are untouched.
+
+### A stack's wrap is not a bump
+
+`wrap` is an optional field on a sequence entry for an aperture, written only when it was said. A
+reader that does not know it flies the default wrap, left for neighbouring levels and over the front
+for a leap, which is a line that goes round the other side of a stack rather than a track whose
+meaning changed: the openings, the faces, the order and the scoring are untouched. The layout
+fingerprint hashes the sequence as it stands, so a track with a spiral turned to the right is a
+different layout from the same track turned to the left, as it should be, and every track that never
+said keeps the hash it had.
 
 ### Freestyle maps are not a bump
 

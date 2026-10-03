@@ -62560,3 +62560,2096 @@ was added or removed under src/, so src/fresh.js and index.html are unchanged; t
 
 The modules are still served with cache-control public, max-age=14400, s-maxage=300, so a returning pilot's
 browser can hold the old files for up to four hours; a hard reload gets the new ones at once.
+
+## 2026-10-01 | plan, ui, builder, board | The menus reviewed, and a plan to streamline and fine tune (the owner's ask)
+
+The owner asked: "The menu systems through the game, map builders and tracks and times page have grown in
+complexity over the last month. Please undertake a full uiux review of the menu systems and make a plan to
+stream line and fine tune".
+
+Changed: `MENUS-PLAN.md` at the root, and this entry. No code changed in either repository. The plan is in the
+shape of POLISH-PLAN.md:
+
+- what was measured;
+- eight rules and a glossary;
+- before and after trees for the title, pause, Settings, the Race room and results;
+- six stages of items, 0 to 5, each with file and line;
+- the owner's calls;
+- how done is measured.
+
+### How it was looked at
+
+- **The rig.** The simulator, the builder and the live board ran in headless Chromium, through a copy of
+  `tests/lib/page.js` in the session scratchpad. The copy served the board's GET API from Node and refused
+  every other request. Every POST it saw was a stats event, and each was refused and logged, so nothing
+  reached production.
+- **Sizes and rows.** Every shell screen was taken at 1600x900. Every room, the launch card, pause and
+  results were also taken at 844x390 with touch, and the gate, title, Race room and Settings at 390x844.
+  The builder was taken at three sizes, and the board at desktop and phone. Each screen's live rows were
+  read through `window.__ui`.
+- **Presses to the air.** Counted by keyboard from a cold load: 2 for a first visitor, 3 for a returning
+  pilot.
+- **Three read only inventories by subagents:** the shell, the builder, and the board.
+  - The board is its own repository, WebFPVSimulator-LeaderBoard. It was attached to this session for reading
+    and checked out at 4935604. Nothing in it was changed, and the plan's board items are for that
+    repository's own sessions.
+- **The history.** Main was fetched to depth 3000 to measure the month, because this container's clone held
+  88 commits. Against 34e9323 (30 August), September's growth was:
+
+  | Path | 30 Aug | Now | Commits in September |
+  |---|---|---|---|
+  | `src/ui/ui.js` | 9,027 | 16,450 | 126 |
+  | `index.html` | 3,424 | 5,507 | 65 |
+  | `src/main.js` | 6,900 | 11,444 | 134 |
+  | `src/trackbuilder/` | 13,536 | 48,559 | 105 |
+
+  The `src/trackbuilder/` figures are lines across 18 files then and 34 now. Named shell screens went only
+  from 14 to 16; what grew is inside them.
+
+### What the plan rests on
+
+- **Too many names.** The board has eight names across the three surfaces. The builder has four. Flight model
+  and Physics model are one setting, and Freestyle city and the town are one map.
+- **Rows whose value is something else.** Settings shows "Not set", which is the pilot's name. Quad shows the
+  tune, so the pause menu reads "Betaflight default" twice.
+- **Rows out of reach.** Settings is 39 rows in a 464 px window: 3.6 windows of scrolling at 1600x900, 11 on
+  a landscape phone. The Race room's eight actions start at y=1854, under 31 cards. Credits' rows are 1,540
+  px down, so `lint:shell` is red; that was already recorded in the entry above. How to fly's Back and
+  Pause's Quit to title are below the window. On an 844x390 phone the title shows one and a half rows.
+- **Collisions.**
+  - The no radio message reuses the flight banner and prints over the Settings heading.
+  - PAUSED is lettered over the lap clock.
+  - The results' Total row slides under the menu.
+- **The builder.**
+  - The whoop drawer cannot be closed once it is open. It covers its own toggle and the card's close
+    button, it has no close button, and Escape ignores it. At 1024 wide it paints over dialogs. This is the
+    most serious item.
+  - Also: O on two tools, Load deleting without asking, a raw Board address field in Publish, Back to the
+    simulator landing on the gate, and phones at 0 px of canvas.
+- **The joins.**
+  - Every "The public page for" row opens the board's front page: `boardPageUrl` takes no track.
+  - The board's Fly this track lands on the title, while Fly this map flies.
+  - The board never refreshes after a time is posted.
+- **The radio.** On six screens the sticks never move the cursor (`ui.js:16350`): the title menu, Quad, Rates,
+  PIDs, the bench and Stick help. The legend still says Pitch Move there. Quad opens on Aircraft, where one
+  select swaps the aircraft. Dialogs ignore the pad, including the feel form that opens by itself.
+- **Copy that promises too much.** Three notes say the board receives the tune, the link or the flight model.
+  A posted time carries name, lap, three lap total, ghost and weight (`src/share/board.js:864-899`).
+- **Found and flagged, not in the plan.** The board's bug inbox answered a GET with tickets and no token on
+  production (`bugsAuthorized` passes when BUGS_TOKEN is unset). Writes were not tried.
+
+### Waiting on the owner
+
+The ten calls in the plan's "For the owner". Stage 0 (guards first) and Stage 1 (fine tune, all S) need
+nothing beyond "go".
+
+### What went wrong
+
+- **The touch legend.** My first phone pictures passed the gate with a keyboard Enter. That sets `lastInput`
+  to key, so the title's legend showed keyboard keys on a touch phone, and I nearly wrote it up. The code
+  says otherwise: `legendFor` (`ui.js:14663`) keeps the touch voice, "Tap a row", until a key or a pad is
+  used. Not in the plan.
+- **The Firmware bench.** A jump straight to it with `ui.show('fc')` showed every value as 0, because the
+  bench's session starts from its door. Through the Quad room's row the values are real. Not in the plan.
+- **The staged results.** I staged them with `{ lap, ms }`, but the rows read `{ n, ms }`, so they said "Lap
+  undefined". Those pictures are used for layout only.
+- **The history.** A first draft said the history restarts at the 26 August root. The fetched main reaches
+  back to 11 August, so that sentence went.
+- **Mixed up numbers in my own draft.** 1.7 claimed the results' copy says post; it says "Upload a time".
+  The pause target read 17 to 10 in one place and 17 to 12 in another. The Settings whitespace was 180 px
+  where it is about 110. All corrected before commit.
+- **The history I promised an agent.** I told the shell's research agent that this clone had full history. It
+  was shallow, so that agent counted commits through the GitHub API instead. Its numbers include merges and
+  start on 25 August, so the plan uses mine, for September only.
+- **Profiles deleted outside the repository.** The builder's research agent deleted 48 `/tmp/sim-page-*`
+  Chromium profiles left by probes, mine among them, while no Chromium was running. That is outside the
+  repository, and no run was lost.
+
+### Checks
+
+    lint:shell        FAIL, 1 problem, the credits fold (1540 px, baseline 1518), the same as the entry
+                      above. Not re-recorded: the plan's 0.1 fixes the layout instead.
+    noun-lint         PASS, 295 files (run by the builder's research agent)
+    not run           npm run verify (no code changed), shots.js (the scratch rig took the pictures),
+                      lint:devices, lint:input, check:builder (nothing they cover changed)
+
+## 2026-10-01 | ui, shell, checks, builder, board | The menus streamlined, all five stages of MENUS-PLAN.md (the owner's ask)
+
+The owner, after the review above: "Complete all stages following your suggestions for all. Ensure the final
+system is world class uiux and initiative." So every stage of MENUS-PLAN.md is done here, the ten calls in its
+"For the owner" taken as recommended unless this entry says otherwise, across the simulator, the builder and the
+board. The simulator's work is on `ccr-cfd60e7e-7w2588` in this repository, the builder's was merged into it,
+and the board's is on the branch of the same name in WebFPVSimulator-LeaderBoard. Nothing went to main on
+either side.
+
+### The owner's calls, as taken (2026-10-01, "following your suggestions for all")
+
+1. **The glossary**, as written: Tracks and times for the board, Builder for the page, Post for sending a time,
+   The town, Chase for racing a ghost, Flight model, Firmware bench, Tune, and Tracks and Maps for the rooms.
+2. **About** replaces Credits on the title, with Partners, Support, the FPV wiki and Report a bug in it (1.41).
+3. **Graphics left the pause menu**; Settings is one door away.
+4. and 9. **Before you fly, refined.** The plan's 9 said every way of flying a track shows the card the first time
+   in a session. The owner has asked three times for the other half: the builder's Fly this track "straight to
+   the starting blocks not the initial menu" (2026-09-25 and 2026-09-26) and a double click on a track "to start
+   racing it" (2026-09-27). So the rule is: a press that names a track flies it (its card's Fly it, a double
+   click, the builder's Fly this track, the board's Fly this track, Standings' Fly this track and Chase the
+   record), and the title's Fly, which names nothing, shows Before you fly the first time a track is flown in a
+   tab, and goes to the grid after that. The seated track's sheet in Tracks has a Before you fly row for every
+   other time.
+5. **Each pilot's best** on the board's podiums and sheets, with "All N times" one press away.
+6. **Untitled tracks already on the board are left as they are**; the builder refuses a new publish without a
+   name (see the builder's section).
+7. **The chrome budget** as proposed, with one addition: Report bug is on the plan's screens (the pause, results,
+   Settings and Stick help) and also in flight, where the owner tuned its fade on 2026-09-27, and on Advanced,
+   Calibrate and Choose joystick, which a pilot opens because something is wrong. The music dock stays in flight
+   too, for the same fade.
+8. **The radio, in part.** Pitch moves the cursor on the title and in Quad, where roll is left to the pose; on
+   Rates, Tune, the bench and Stick help the legend says what the sticks are busy with and the buttons choose and
+   go back. **Not built: a held roll that hands the sticks back.** On Stick help a held stick at its stop is the
+   test itself, and on Rates a pilot holding a stick to read the curve would leave the screen. Left for the
+   owner.
+10. **What a posted time carries**: the copy was fixed, so nothing promises the board the tune, the link or the
+    flight model. Whether the board should receive them is still the owner's call.
+
+### What changed in the simulator
+
+- **Names and values (Stage 1).** Every room has one name in the crumb, the heading and its door. Settings has no
+  value; Quad shows the aircraft and Tune the tune. Flight model, The town, Post, Chase the record, Firmware bench,
+  Builder. The crumb is built from the same pointers Escape uses, so it says where Escape goes. Calibrate and
+  Choose joystick have crumbs. Every cut value has a tooltip, the GPU row shows the renderer's short name, and
+  Graphics reads Auto. Keyboard races is a row in Quad, so the picture and the Flight mode row stop disagreeing.
+- **The title (2.1)**: eight rows, Fly, Track, Quad, Settings, How to fly, Tracks and times, About, What to fly.
+  The Fly row says which of the two it will do. First flight is keyed on having flown, not on having answered the
+  gate, so a reload no longer loses it (1.43); old saved settings count as having flown.
+- **The pause menu (2.2)**: twelve items by the plan's count, headings included, and nine stops in the shell walk
+  of a fresh browser. Resume, Restart run, Ghost, the feel section (Tune, Rates, Weight, Flight feel), Settings,
+  How to fly, Quit to title, with the builder row and the trouble row only when they apply.
+- **Settings and Advanced (2.3)**: the render and latency knobs and the flight log moved one door down to
+  Advanced, "for when something is wrong". Settings went from 33 stops to 24, and every fitted list window ends
+  above the command bar.
+- **Tracks (2.4).** Choosing a track opens its sheet under the card's own line of the grid, with a notch at the
+  card: the fastest three pilots, Fly it, then the rows that apply. The seated track's eight rows are its sheet's
+  now, with the one right Edit row, and a row that cannot apply is not drawn. Build a track is a card. The board's
+  half orders by Most flown, Newest or A to Z, remembered. The chosen card never moves under the pointer, the
+  arrows walk the room in drawn order, and Back from the launch card or Standings comes back to the same sheet
+  and row. Card metadata reads "by X · N gates" with the record on its own labelled line (1.14).
+- **Ledes (2.5)**: one line each, the detail moved to the row it explains.
+- **The chrome budget (2.6).** Report bug, music, Patreon, the Flying and Pilot chips each appear where they are
+  about the screen, and the bar's Fly button shows on touch, and on a desktop only while the primary row is out
+  of sight. The bar's Back is a button for every voice.
+- **Layout (1.8 to 1.13).** A notice raised on a menu is a line above the command bar, not the flight banner
+  across the heading. The paused lap clock is hidden on short windows. Headings clear the status bar on a phone,
+  rows on a phone on its side count their padding inside the 44 px target, and touch steppers sit side by side.
+  How to fly's keys run in two columns beside the sticks, and its Back is on the screen at 1600x900. The hidden
+  hint lines are gone (1.42). Race results are six rows, nothing grey but Time posted, and the Total row clears
+  the menu. On short wide windows the title's help sits beside the list and Quad's picture gives up its square.
+- **The feel question (2.8)** waits for the second results and never opens on its own for a radio pilot. Back
+  closes a dialog once the sticks have been seen at rest, through the dialog's own Escape (2.9).
+- **Deep links (5.1).** Every row that names a track opens its own page on the board (`?track=`).
+- **Found on the way**: the generic room path reset the pause chain, so Paused, Settings, Stick help, Escape,
+  Escape quit the run; fixed. Standings for a seat with no recorded board asked this page's own origin; it asks
+  the default board now.
+
+### The board (WebFPVSimulator-LeaderBoard, branch ccr-cfd60e7e-7w2588, 18 commits on 4935604)
+
+Done by a subagent in that repository and reviewed here before it was pushed.
+
+- **One name (3.1).** The page, its title, eyebrow, footer, partners page and inbox link say Tracks and times;
+  the tabs are Tracks and Maps; "Remix in the builder" is "Open in the builder". The board's noun lint fails on
+  any visible Tracks and Statistics, Tracks and Times or leaderboard, and checks the page names itself the same
+  way in all four places (5.4).
+- **A phone's first screen (3.2).** At 360x780 the masthead went from 424 px to 78 and the first track card from
+  y=942, off the screen, to y=300, wholly on it. The counters move to the foot, the filters sit behind one Filter
+  button with a count, and the spine keeps the mark and Open the simulator.
+- **Each pilot's best, one name per pilot (3.3, 3.4).** Podiums and sheets rank each pilot's best, with "All N
+  times" under the table; names that differ only by case, spaces, dots, hyphens or underscores are one pilot, for
+  display only. Podium places held twice by one pilot: 19 of 27 five inch tracks and 4 of 8 whoop tracks before, 0
+  after. The simulator's posting dialog says when a new name is another spelling of one already there.
+- **The aircraft switch scopes everything (3.5)**, tags nobody uses are hidden (1.27), Admin and Site statistics
+  moved to the footer (1.28), the dead credits overlay and its boot work are gone (1.29), the hidden spine is out
+  of the tab order and focus rings are back (1.30), the sheet and statistics styles are scoped (1.31), the counts
+  say what they count (1.32), a sheet's Close, Escape and Back agree (1.33), and the table has real headers and a
+  caption (1.34). Whoop tables fit at 360 (3.7).
+- **The joins.** Fly this track carries `fly=1`, so it goes to the starting blocks like Fly this map (3.6). The
+  simulator's credits open in a tab of their own (5.3). The track list is fetched again when the tab comes back,
+  at most once a minute, so a time posted in the simulator shows without a reload (5.3a).
+- **The bug inbox fails closed** (found during the review). With BUGS_TOKEN unset, reading or updating tickets
+  needed nothing. Now it needs an admin sign in or the token. **Before this is deployed, either set BUGS_TOKEN on
+  the Render service and give it to whatever reads tickets as a bearer, or have them use BOARD_ADMIN_TOKEN:
+  agents here have read production tickets with no header, and they will get 401.** Filing a ticket is unchanged.
+- **Checks there**: `npm test` all passed, one skip that needs BOARD_SELFTEST_PASSWORD as before; lint:nouns
+  PASS; lint:licence, all 29 files carry the notice. And this repository's `lint:board` passed against that
+  branch's server.
+- **Left there**: `public/credits.js` and `public/credits/` are no longer loaded and were kept, because the
+  board's CLAUDE.md describes that roll and giving the board its own roll back is open. The Maps tab's toolbar is
+  not folded behind Filter on a phone (its first card is already on screen). Whoop column headers take two lines,
+  and the inbox token placeholder is cut at 360.
+
+### The builder (src/trackbuilder, merged as 8f6487c)
+
+Done by a subagent in an isolated worktree on a branch of its own, eight commits on 831b724, then merged here
+without conflict. It hit a usage limit partway through its last step and was resumed after the reset; its commits
+were already in the worktree and nothing was lost.
+
+- **The drawer and the menus (1.18, 1.19, 1.23).** The whoop drawer has its own close button, Escape closes it
+  before it lets go of a selection, and its toggle and the card's close button are never covered. More is a menu:
+  Escape closes it and returns focus, the arrow keys and Home and End walk it. Path left the palette and Show line
+  stayed on the bar, so nothing is one switch twice.
+- **One letter per tool (1.20).** Fly order moves from O to N, because Ground logo has O on all three canvases.
+  The whoop letters H, T and W stay, as the owner asked on 2026-09-30. The selftest checks, per canvas, that no
+  letter is used twice and shared tools keep theirs.
+- **Load and Publish (1.21, 1.22, 4.3).** Each canvas lists its own tracks with their kind and age, and counts
+  the other canvas's with a Show it button. Delete leaves an Undo in the row. There is no Board address field in
+  either Publish dialog (`?board=` still works). Publish refuses Untitled track and Untitled map in any case or
+  spacing and says why, in the same dialog.
+- **The joins (1.24, 5.2, 5.2a).** Back to the simulator names the world and the aircraft
+  (`../../index.html?map=custom|built&craft=5inch|whoop65`, never `fly=1`), so the simulator opens on its title
+  with the work seated. After Publish the link is "This track on Tracks and times" or "This map on Tracks and
+  times", through the third argument of `boardPageUrl`. And the Tracks room's **Build a track** card writes a
+  `new` intent: the builder opens a blank canvas of the address's mode, an empty seat with no prompt, and a seat
+  with work in it is kept in Load first. Checked here on the merged tree, in a real page: the card opens the
+  Builder, and Back to the simulator lands on the title with the five inch and the track seated.
+- **Words and units (1.25, 1.26, 4.1, 4.2, 4.2a to c, 4.3a).** The page is the Builder, the switch reads Five
+  inch, Whoop and Freestyle, the inspector says Field, Room or Plot, and the banner speaks for its canvas and
+  collapses to "Saved in this browser" after the first save. The freestyle canvas lost its empty Flying order
+  panel. The views are 2D | 3D (3D | 2D on the whoop) with V between them, and picking a tool in the 3D preview
+  switches to 2D with it in hand. The whoop canvas reads in inches from the room's centre, with millimetres in
+  small print. An empty five inch canvas offers "Start from a track on the board". A canvas switch says what
+  undo and the simulator will do now. Pieces the board cannot hold yet are marked so, and a whoop track is not
+  offered Small field or Big field (`src/share/board.js`, the one file outside the builder it was allowed).
+- **A phone (4.4).** Under 500 px in either dimension the palette and inspector are drawers behind Tools and
+  Details, with a close button and a scrim; the second bar folds into More; the drawing gets 390x759 upright and
+  844x346 on its side, and two fingers pan and pinch the 2D plan. Under 300 px a plain "too small to build on".
+- **A reload (4.5).** Measured first on 831b724: a `?track=` link, edited and reloaded, came back as the link's
+  version with the edits pushed into Load, and a `?share=` copy asked "Open a copy" again. Now `?track=` is
+  dropped once read, `?share=` once the board has answered, and a broken `?track=` says so.
+- **Checks there**: `check:clip` 1826 passed, 0 failed (53 new); `check:builder` PASS, 556 checks over 48 cases,
+  ten of them new; `lint:devices` PASS, with the whoop drawer at two laptop sizes and all three canvases at 390x844
+  and 844x390 with touch. Existing flow cases that changed, because the plan changed what they test, none
+  loosened: three blocked, views, picture, fly order, a cube flown through other faces, furniture, a hoop and a
+  hex gate.
+- **Not done, for the owner or later**: fractional inches on whoop pieces (positions snap from the room's corner,
+  so a piece can read -42.9 in from the centre, and snapping from the centre would move placement in every
+  existing room); pinch zoom in the five inch and map 3D preview on touch; the phone drawers are modal, so on a
+  landscape phone the room cannot be tapped while Details is open; the board's own `validate.js` may want the same
+  tag classes.
+
+### Checks that changed, and why
+
+- **`lint:shell`** opens the screens a pilot passes on every run at 1600x900, 1280x720 and 844x390 with touch,
+  and asserts on arrival that the primary row can be pressed without a scroll and that a way out is on screen;
+  the hang under the command bar is a budget per window (0.2). It walks Advanced. It now measures the pause menu,
+  which it never could: the screen had no `screen-paused` class, so every number for it was a zero from an
+  empty query. It checks every row that opens the board is called Tracks and times (5.4). The tuning path,
+  the pause menu's builder row, the gate's fourth card and the room return walk name today's labels and doors.
+- **The baseline was re-recorded down**, every number an improvement or a first measurement: About 1518 px below
+  the window to 0 (0.1, the red check from the entries above), How to fly 123 to 0, Settings' overflow 1227 to
+  634, Rates 440 to 338, Tune 154 to 52, the bench 3613 to 3599, the trick list 1649 to 1605. Stick help on a
+  phone 144 to 124 after its lede was cut.
+- **`lint:nouns`** fails on the glossary's retired names as well as a visible "course" (0.3), and skips agents'
+  worktrees under `.claude`. One argued exception: racegow-lattice.js's generated header.
+- **`lint:input`** reads a radio notice raised on Settings from the menu notice it is said in now (1.8), and
+  the gate's fourth card as Builder. No threshold moved.
+- **`lint:board`** reaches Standings through the seated card's sheet, reads Chase the record, and asks that Fly
+  it be reachable without a scroll, the row or the bar, rather than always on the bar.
+- **`lint:input` again, after the merge**: it pinned the builder's switch as `5 inch`, which the builder now
+  says as Five inch (4.1). Updated with its reason; no threshold moved. The builder's agent was not allowed to
+  edit that file, so the follow-up was mine.
+
+### What went wrong
+
+- **The shell walk was blind on the pause menu** for as long as it has existed (above). Found because the fold
+  pass reported 0 rows seen there.
+- **My own fold check failed every desktop screen** on its first run: it looked the primary row up with
+  `indexOf` in an `items()` array, and `items()` builds new objects on every call. The photographs disagreed, so
+  the check was wrong, not the product.
+- **A sticky Back on How to fly** covered the keys at 1280x720. Replaced by the bar's Back button.
+- **The Fly row's new note** landed on the best lap line on the title at 1280x720. Moved beside the list on short
+  windows.
+- **Fitting lists to the window** first ran 16 px under the bar on a phone (the 200 px floor won over the cap),
+  and then capped Quad and Rates below 1280 px, where the page scrolls and the list does not clip, so rows drew
+  past the list's border. Both fixed; the fold pass would have caught the first, and the photographs caught the
+  second.
+- **A touch stepper rule lost to a later rule** of the same specificity, so the arrows stayed stacked on the
+  first try.
+- **Smaller slips, caught before commit**: a Node constant used inside a browser template in the shell check, an
+  escaped quote that broke a template in the board check, 'credits' briefly added to ROOM_PARENTS, Advanced first
+  built as a screen named graphics, the Keyboard races row first keyed on `padInfo.using`, which is the string
+  Keyboard, and the hasFlown default that would have marked every returning pilot new until a migration was
+  added.
+- **The noun lint walked the builder agent's worktree** inside `.claude/` and reported its old copy of ui.js.
+- **A `cd` into that worktree** moved this session's working directory there for one command. Nothing in it was
+  touched, and every later command named the main checkout by its full path.
+- **The stop hook flagged `.claude/worktrees/` as untracked.** It is the builder's whole second checkout. I did not
+  commit it: it is excluded in this checkout's local `.git/info/exclude` instead, and the branch comes in by merge.
+- **`lint:board` could not find the board.** It looks for a sibling directory spelled WebFPVSimulator-LeaderBoard,
+  and the clone here is spelled webfpvsimulator-leaderboard. A symlink outside the repository made it run. It
+  did not touch the repository, and the check passed against the board branch's server.
+- **The builder's agent could not know the simulator's `session.js` comment** said a `new` intent was never read,
+  and left it. Corrected here, with the one in `input-check.js`.
+
+### Checks
+
+All of these on the merged tree, 8f6487c and the follow-ups after it:
+
+    lint:shell        PASS at 1600x900, with the fold pass at three windows and the board door names
+    lint:input        all 220 passed
+    lint:devices      PASS
+    lint:responsive   PASS
+    lint:board        PASS, against the board branch's server on 127.0.0.1
+    lint:fc           33 of 33 traces clean
+    lint:presets      4 of 4 clean
+    lint:preload      up to date
+    lint:nouns        PASS, 13 retired names, one argued exception
+    check:clip        1826 passed, 0 failed
+    check:builder     PASS
+    link:selftest     all passed (run before the merge; nothing in it moved)
+    board repo        npm test all passed, one skip that needs BOARD_SELFTEST_PASSWORD; lint:nouns PASS;
+                      lint:licence, all 29 files carry the notice
+    not run           npm run verify: nothing here touches physics, the plant, the module ABI or the build.
+                      main.js changed only where a notice is drawn. shots.js: the scratch rig took the
+                      pictures, at 1600x900, 1280x720, 844x390 with touch and 390x844.
+
+### The owner's answer, 2026-10-01, and the push to main
+
+The owner read the report and the verification question and answered: "push to main and i'll test". Both
+branches went to main as fast-forwards, the board first and the simulator second, which is the order
+DEPLOY.md gives: board `4935604..570ea3d`, simulator `831b724..76ebffb`. Each was checked immediately before
+the push to be 0 commits behind main with main an ancestor of the branch, and nothing was forced, so no
+history was rewritten. The owner is flying the simulator and looking at the board themselves. No
+`npm run verify` and no `shots.js` was run, as above.
+
+- **DEPLOY.md was corrected first (76ebffb).** It still said an unset `BUGS_TOKEN` meant no check on the
+  bug inbox, and told whoever set the service up to leave it unset while handing the link around. It now says
+  what the board does: reading and updating tickets needs a board admin, `BUGS_TOKEN` is a second way in,
+  and unset there is none. Found by reading the deploy notes before pushing. Nothing else in this
+  repository reads the inbox: `src/share/bugs.js` only files tickets, which still needs no token.
+- **Checked on the live hosts with GET requests only**, after the deploys landed: `webfpv.org/board/` is
+  titled "Tracks and times, WebFPV"; `/board/api/tracks` answers 200; `/board/api/bugs?status=open` with no
+  token answers 401, which is the inbox failing closed; and `webfpv.org/sim/` serves the new menus (the page
+  carries the menu notice element this change added). Nothing was posted, filed or changed on production,
+  and the new pages were not flown or clicked through there: that is the owner's test.
+- **What the owner will meet.** The agents that read production tickets with no header now get 401 until
+  `BUGS_TOKEN` is set on the Render service and handed to them as a bearer, or they use `BOARD_ADMIN_TOKEN`.
+  That was said in the report before the push.
+- **What went wrong.** Nothing in the push itself. The one catch was the stale DEPLOY.md paragraph above.
+## 2026-10-01 | plan, builder | The 5 inch builder: the plan, and Stage 1, the parts (the owner's ask)
+
+The owner tried to build the 2026 Mission Foods Australian Drone Nationals Official Qualifying Track
+in the 5 inch builder and could not: no way to find a flagged gate's second flag ("double top
+flags"), a wall of gates "had to be hacked together", gates side by side "were hard to place", and a
+gate with a flag on top could not be flown twice with a spiral. They asked for a gap analysis, a UI
+and UX review, a plan and the work, ending with the track buildable very easily.
+
+`TRACK-BUILDER-5IN-PLAN.md` is the analysis, the review, the design and the stages (committed
+alone first, 5776370). This entry is the plan's Stage 1: the parts. Stages 2 to 6 follow in their
+own entries. Nothing here changes the physics, the module ABI or the build, and
+`git diff --stat vendor/betaflight` is empty.
+
+### What the analysis found
+
+- The diagram, read off the pixels, is on whole metres (13 + 10 + 15 = 38 down, 13 15 20 29 5
+  across) and its counts agree with its materials list: 7 gates, 9 flags, 1 hurdle, 1 dive gate.
+  The "7 gates" include a wall of three bays sharing four posts, flown as a weave.
+- The "double top flags" was not a missing part. `flagSide: both` exists and works, and its chooser
+  sits about 960 px down a 1424 px inspector seen through a 291 px window. The same panel hides the
+  rest. The 5 inch canvas also cannot fly a gate twice (Fly again is whoop only), has no wall, and
+  its hurdle would be a barrier with two orphan flags.
+- With today's primitives the track can be written from a script (12 passes, five warnings), so the
+  model holds nearly all of it and the tool is what is missing.
+- Three constraints that shaped the design came from reading the other repositories: the simulator
+  refuses any `group` as a cube (`share/board.js`), a new default `dims` key would move every
+  republished track's layout hash and clear its times, and the world builds every gate 15 percent
+  larger than the document says while never scaling a position.
+
+### What Stage 1 built
+
+- **A plain gate dress** (`style: "plain"`, optional, written only when set). No sleeves and a header
+  board as wide as the frame, in the world (`scene.js` `obstacle`) and in the builder's room
+  (`view3d.js`). The pennant then stands on its upright.
+- **A barrier may carry flags** (`flagSide`, and `dims.flagH` beside it, written only while it has
+  them), which is what a hurdle is. Built with the gate pennant function from the same kit
+  (`scene.js` `courseProps`), drawn in 2D and 3D. A barrier with none is the bytes it was.
+- **`src/trackbuilder/parts.js`**: flags as one choice (`setFlags`: none, left, right, both, top, which
+  changes the type where it must), the wall (`wallPlan`, `placeWall`: ordinary plain gates in a
+  group, the shared upright taken away, at the world's pitch, passes set to weave), the hurdle
+  (`placeHurdle`: 4 by 0.1 by 1 m with two flags and a waypoint a metre over it in the order),
+  the up gate (`placeUpGate`: a dive gate at 45 degrees with its sill 1.5 m up, flown up) and the
+  loop (`addLoop`: three waypoints on a circle round the chosen upright, then the second pass).
+- **The weave rule** in `faces.js`, for the 5 inch class only: where the chord to the neighbours is
+  square to a gate, a pass through a gate beside the last one goes the other way.
+- **A wide bay gate preset** (2 m between uprights as built), and `GATE_SCALE` moved to `units.js`,
+  where the builder can read it, and re-exported from `game/track.js`.
+- **The publish refusal narrowed** (`share/board.js`): a `group` is a cube only for a gate that no
+  pass goes through. A wall in which every gate is flown is published.
+- **Documented** in `schema.md` (the new fields, the wall, the loop).
+
+### A bug found on the way, and fixed
+
+A one-sided pennant (`flagSide` left or right) stood on the OPPOSITE upright in the world from the one
+the builder draws, for any gate flown along its own normal, which is most gates. The world builds a gate
+facing the pass with its local x on the pilot's right, and `meshSidesFor` turns the frame's sides for
+exactly that; the pennants, written earlier, were never turned. It showed when the first wall's flag stood
+over the wrong end post in the game. Fixed in `trackdoc.js`, for a pennant on one upright only (two
+pennants and a centre one are symmetric and are left exactly as they were). In the shipped tracks that is
+two pennants, `el-27` in trk-54902a69 and `el-28` in trk-f912dc57. A new check places a pennant on
+either side, on both flight directions, at six headings, and compares the builder's upright with the
+world's (24 of 24).
+
+### Against the plan
+
+- The plan said no existing track would change. Bytes, faces, headings, line length, stations and built
+  structures are identical on all 19 documents (8 whoop presets, 10 saved 5 inch tracks and the
+  living room), with two exceptions: the two pennants above, and the warning lists of six saved 5 inch
+  tracks, which each lose a `reversal` note. The reversal rule treated a chord a hair past square to a
+  face as a face sending the line back, on floating point noise (the cosine of a quarter turn is not
+  zero). It now allows two parts in a hundred on the 5 inch canvas, which a weave needs. A whoop
+  canvas keeps the rule it had, and its eight presets are identical.
+- The plan said a wall's pitch is the world's. It is, and the builder shows document sizes, so the bays
+  show a gap of about a quarter metre that the world does not have. Not changed, and said in the schema.
+
+### What went wrong
+
+- The first selftest run had three failures from my own reversal change, which also moved the whoop
+  presets' warnings until I limited it to the 5 inch class. The differential run is what showed it.
+- The first pennant fix turned two pennants and a centre one as well, and four existing checks that pin
+  their signs failed. Those cases are symmetric and cosmetic, so the fix was narrowed.
+- The first screenshot of the game was the main menu: setting the camera does nothing until the craft is
+  placed (`__placeCraft`). One wasted run.
+- Two of my own wall checks were written in a tangle (a ternary and an `a && b || c`) and passed for
+  the wrong reason; rewritten to say what they mean.
+
+### RUN LOG
+
+    code                     src/trackbuilder: parts (new), elements, model, faces, warnings, view2d,
+                             view3d, selftest, schema.md; src/game: trackdoc, track; src/render: scene;
+                             src/share: board; src/units.js
+    self test                node src/trackbuilder/selftest.js: 1830 passed, 0 failed (1773 before;
+                             57 new checks, written beside the code they check)
+    differential             19 documents through the code before and after: bytes, faces, headings,
+                             length, stations, built structures identical; differences are the two
+                             pennants and six warning lists above (scripts in the session scratchpad,
+                             not committed)
+    the game                 a track with a wall, a hurdle with flags, an up gate and a looped flagged
+                             gate flown in headless Chromium (`shots.js --course`): the wall's header
+                             is continuous, its posts are shared, its flag is over the end post; the
+                             hurdle's two flags stand at its ends; the console shows only the refused
+                             fetch to a board that is not running here. Pictures looked at, not
+                             committed
+    micro:check              all pass
+    lint:preload             up to date (parts.js is not in the app's import graph yet)
+    dashes and non ASCII     none added
+    not run                  `npm run verify` (no physics, plant, ABI or build change), `check:builder`
+                             (no page behaviour changed in this stage), `shots.js` pictures for the
+                             pilot (offered at the end of the turn)
+
+## 2026-10-01 | builder | The 5 inch builder, Stages 2 to 6: build in the room, in metres, with the choices on the card, and the Nationals qualifier built from an empty canvas (the owner's ask)
+
+Stage 1 (above) made the parts. This is the rest of `TRACK-BUILDER-5IN-PLAN.md`: the canvas the parts
+are built on, the choices on the card, a grid and a plan that read, the track that ships, and the proof
+that it can be built from nothing. Stages 2 to 5 were committed together as a checkpoint (ee78195)
+because a container is reclaimed without warning; this commit adds the tests that pin them, the touch
+pass, the documents and the corrections below. Nothing here changes the physics, the module ABI or the
+build, and `git diff --stat vendor/betaflight` is empty, so no approval was asked for. The fifteen
+decisions the plan took on the owner's behalf are in its section 8, each with how to reverse it, and
+the largest is the first: a 5 inch track now opens in the room, not on the plan.
+
+### What was built
+
+- **The room, on the 5 inch canvas.** `buildsIn3D(doc)` is true for every canvas but freestyle and is
+  what the room's editing, panes, grab pipes, lanes and path stretch ask; `isWhoopRace` stays for the
+  things that are RaceGOW's alone. A track opens in the room, from the south and steeper, framed on
+  the track (or the field when it is empty), and the plan is one key away.
+- **`scale.js`.** Every length that depends on the size of the room is in one file, one block for a
+  hall and one for a field: how far a magnet reaches, a Shift nudge, the ring at a gate's foot, how
+  near the camera may come, the margins Fit frames, how fat a pipe is to pick, the camera a room opens
+  at. The hall's block holds the numbers it has always had, so the whoop asks the same questions and
+  gets the same answers.
+- **Metres.** A field says metres everywhere a length is read: the ruler, the measures between gates,
+  the card, the hover readout, the turn clearance. A hall keeps inches with the millimetres beside
+  them.
+- **Pieces and tools.** The palette on a field gains Wall (K), Hurdle (U), Up gate and a Tools group,
+  Fly order (N) and Ruler (M). A wall is dragged out along its line, in the room or on the plan, and
+  shown as it will be laid before it is. A click lays one centred on the click. A wall, a hurdle and an
+  up gate are one at a time: the tool is put away after the piece, which shows its card. A gate
+  stays armed.
+- **The card.** One card on any piece, beside it: Faces as a compass (North, East, South, West), Flags
+  (none, left, right, both, top; for a wall, which end), Loop (Right, Left, Back through), Line passes
+  on its (a compass, for the turn flag), Turn clearance, Gate size (Standard, Wide, Championship, for
+  one gate or a whole selection), Bay (a wall's), Fly over (a hurdle), Fly again. Every one is a chip
+  or a number, and none is further than one click from the piece.
+- **Square.** A button on the bar, off by default and kept in the browser, not in the track. On: the
+  first gate faces east and keeps it, and each next gate, wall, hurdle and up gate takes the quarter
+  turn nearest its line and keeps it, which is how a plan is drawn. Q and E turn fifteen degrees, with
+  Shift a quarter, and a quarter turn squares a gate up first.
+- **Magnets on a field.** A gate placed near another is offered the slot beside it, a bay's width along
+  the other gate's width (`fieldMagnetFor`), and aligns with the other on either axis, so two gates
+  side by side are one click each and not a nudge.
+- **The grid and the plan.** Five metre major lines and a bright boundary in the room, five metre major
+  lines on the plan, more contrast in both, the plan reserving a foot for the lap bar, the field's size
+  as a button on that bar ("Field 60 x 40 m") which opens its width, depth and how tight a turn is
+  warned about.
+- **The warning.** On a field the curvature warning no longer fires on the line between two bays of
+  one wall or round a loop (the waypoints a loop makes, found by their names), because those are the
+  design. Its message now says where the limit is: "If the track means it, lower Warn under radius in
+  the field settings."
+- **The track.** `src/trackbuilder/presets5.js`, generated by `scripts/mission-preset.js` and handed to
+  storage by `shipTracks` (as `shipMaps` ships maps), so the simulator's own boot does not carry it.
+  It lists under the 5 inch canvas in Load, opens as a copy under a fresh id, and credits the designer
+  and the event, with no sponsor mark. Facts, measured on the file as it is: 19 elements (3 gates,
+  4 flagged gates, 1 hurdle, 1 dive gate, 1 turn flag, 8 waypoints, the start pads), 20 passes, a
+  closed line of 148.7 m, no warnings, no repairs, a 45 by 55 m field with the warning set to a metre.
+  By the plan's own materials list that is 7 gates (the start gate, a wall of three bays, two looped
+  gates and the lower left gate), 9 flags, 1 hurdle and 1 dive gate.
+
+### Against the plan
+
+- The plan said the key for Fly order is O. O is the ground logo on a field's palette and has been for
+  months, so it is N (decision 7).
+- A field's magnet reaches 0.35 m (the plan said about half a metre), the Shift nudge is 0.25 m (the
+  plan said 5 m, which is not a nudge) and the camera may come within 2 m of the ground (the plan
+  said 8 m). `scale.js` is one edit for each.
+- Turning: Q and E fifteen degrees, Shift a quarter; Alt turns a gate's ring freely, the other way
+  round from the plan's table, because Alt already meant "off the grid" everywhere else in the builder.
+- The plan had one loop, always with a second pass. The diagram's two loops are not drawn alike and a
+  track elsewhere may want a hook in the line, so a chip chooses (decision 12); the shipped track uses
+  the first kind for both. The turn flag needed a way to say which side the line passes it on and how
+  wide its turn is, which the plan had not noticed (decision 11 and the card).
+- The line against the plan's yellow line (`overlay_mission.png`, not committed): from ours to theirs
+  the median distance is 0.43 m and nine tenths of ours is within 1.6 m; from theirs to ours the
+  median is 1.3 m. The two places they part are the turn flag's oval, which ours draws wider, and
+  the weave, which ours draws with less swing. The plan's line is a suggestion and ours is derived.
+- The acceptance run builds the track from an empty canvas in 55 gestures (a gesture being a click, a
+  drag, a key or a typed number), every piece within 0.15 m of the one that ships (0.3 m for a waypoint),
+  every heading exact, the flags the same, the passes in the same order and flown the same way, the
+  lap closed, nothing warned about. The check allows seventy.
+
+### What went wrong
+
+- **I had changed the whoop's and the maps' drawing without meaning to**, and a line by line comparison of
+  the full flow check with the baseline run is what showed it. The `drag` case's mesh count on a whoop
+  track was 186 where it had been 185: the room's grid and its edge, one set of lines on every canvas
+  for as long as the builder has existed, had become two or three. The plan's grid colours had been made
+  stronger for every canvas, and its major lines set to every five steps on every canvas that is not a
+  hall, which includes a map's plan. Both are now the five inch race canvas's alone and a hall's room
+  draws its one set of lines as it did, which put the count back at 185. The check had passed all the
+  same, because it compares a drag with a rebuild in one run and never with the baseline; only the
+  comparison saw it. No check draws a map's plan, so that half rests on reading the guard, which is
+  false for a freestyle document.
+- **My first full flow check was thrown away.** It started before my last edit, and a run that ended
+  after the edit says nothing about it. I took a fresh snapshot and ran it again. Before that, a
+  `pkill -f builder-flow-check` killed my own shell, because the pattern was in its command line, and
+  left an empty snapshot behind.
+- **Building the track found real flaws, which is what it was for.** The first run of the Mission
+  build was warned about the weave's bays (0.37 m radius), the loops (0.87 m) and the approach to the
+  right hand gate. That is the track, not a fault in it, hence decision 13. The first bay of a wall
+  flown straight on from the last gate had no rule for which way to go, so it was arbitrary: `exitOf`
+  now flies the first bay against the side the previous pass leaves toward. The turn flag's U turn
+  had no way in at all. A flag at plan y 0.4 snapped to the grid.
+- **The card flashes at the top left for one frame** before it is placed beside its piece. It cost me
+  the driver, which clicked the empty place: `cardClick` waits two frames and for the card to be still.
+  The flash is still there and is left open, below.
+- **Several of my own checks were wrong.** A convoluted assertion passed for the wrong reason and a
+  syntax error hid in another (`node --check` caught it); a helper matched "Flag" inside "Flagged
+  gate" until it took an exact label first; `say()` stripped the zeros from "100" until it was told to
+  strip only after a decimal point; a magnet check asked for more precision than a yaw stored to six
+  decimals has (it now allows 1e-5).
+- **A chip that could not be turned off.** "Back through", in a row where the lit chip was a no-op,
+  could not turn itself off, which `toggle` on a choice now allows.
+- **Two things were changed back or narrowed.** A change to the whoop's hover readout was reverted so
+  that a whoop canvas stays what it was. The noun lint caught "course" in a coach text, and a stray
+  multiplication sign and a curly apostrophe were written as an escape and a plain apostrophe, so that
+  nothing non ASCII was added.
+- **`gen-preload` lists only tracked files**, so the new modules had to be `git add -N` before it saw
+  them. Without that, `lint:preload` is green and the new files are not preloaded.
+- **I read the upper left gate twice.** The plan's first reading had it flown east with a hook in the
+  line round its flag. On a second look at the saved crops it is flown west and loops like the right
+  hand gate, round its flag post and back through, and the preset is built that way. The plan said so
+  only in decision 12 until this turn, which still described the first reading; its section 10 now
+  says what the track does. It is my reading of a small and busy picture and the plan's line is a
+  suggestion, so the preset is a track that uses every piece the plan lists and not a claim that it is
+  the organisers' file. Its note says so.
+
+### Left open
+
+- The whoop's 2D plan has the same framing bug the field's plan had (it frames under the lap bar).
+  Left as it was, so the whoop is what it was.
+- A field has no share link, no picture and no build sheet, and no Replace with menu. The plan did not
+  ask for them.
+- A loop's radius is fixed when the loop is made: resize the gate afterwards and the loop stays at the
+  old size. The acceptance run resizes the gates at the end, which is why its waypoints are allowed
+  0.3 m.
+- The first piece placed does not reframe the camera, so a track built in one corner of a 60 m field
+  can sit small until Fit.
+- A wall's bays show a quarter metre gap in the builder's own preview that the world does not have (from
+  Stage 1, decision 6).
+- No check draws a map's plan or room, and the builder has none for freestyle at all. This work does not
+  reach them by design (the guards are on `buildsIn3D` and `isWhoopRace`), and that is read, not run.
+- The landing page and the board vendor older copies of `elements.js`, `model.js`, `geometry.js` and
+  `units.js`. They were behind before this work (the whoop builder's commits are not in them) and each
+  checks its copy against its own manifest, so both stay green with nothing recopied: `npm run lint:page`
+  there is 32 of 32 clean and `npm test` on the board passes. A recopy is the owner's call, and the
+  film wants looking at when it happens.
+
+### RUN LOG
+
+    code                     src/trackbuilder: scale (new), presets5 (new, generated), app, edit3d,
+                             elements, parts, snap, storage, ui, view2d, view3d, warnings, index.html,
+                             selftest, schema.md; scripts: mission-preset (new), builder-flow-check;
+                             src/fresh.js (regenerated: parts, presets5, scale); the plan, section 10
+    self test                node src/trackbuilder/selftest.js: 1884 passed, 0 failed (1830 at the end of
+                             Stage 1: 54 new checks, written beside the code they check)
+    differential             the 19 documents of Stage 1 through the final tree and the tree before
+                             this work: the same 8 differences as at Stage 1 (two pennants, six
+                             warning lists) and none between Stage 1 and now
+    flow check               node scripts/builder-flow-check.js against a snapshot of the finished tree
+                             (its src, scripts and package.json identical to the commit): 507 passed,
+                             0 failed. That is the 449 it had before this work and 58 in the five cases
+                             added for the 5 inch canvas. 444 of the 449 old check lines print the same text as the
+                             baseline run. The other five differ in a port number, a random track id and
+                             three colour samples, which also vary between runs of the tree before this
+                             work (picture: 43 and 47 colours; furniture: red 134 and 140), so they are
+                             noise. An earlier full run, 507 and 0 as well, had the grid and plan
+                             changes above in it, and is not the evidence
+    acceptance               55 gestures from an empty canvas; matches presets5 (case "five inch: the
+                             Nationals qualifier, built from an empty canvas")
+    the game                 the shipped track built in the game in headless Chromium (`shots.js --course`,
+                             with the document of the preset, identical to the file but for one apostrophe
+                             in its note), the craft placed on the pads and the camera moved: five pictures
+                             looked at (the start to the hurdle, the right hand loop, the wall and the up
+                             gate, the left column, an overview), the lap reads 12 gates; the only console
+                             errors are the refused fetch to a board that is not running here. Nobody flew
+                             the lap, so this is a picture of the build and not of the flying. Not
+                             committed. The game's code has not changed since Stage 1
+    generated files          scripts/mission-preset.js --check: presets5.js is what it writes;
+                             lint:preload (gen-preload --check): up to date, boot 127 modules, 244 served
+    lint:nouns               PASS, the player only ever sees a track
+    other checks             check:fresh 18 passed, 0 failed; check:path 12 passed, 0 failed;
+                             lint:board PASS; micro:check, the micro class builds, reads, warns, draws and
+                             races
+    other repositories       landingpage: npm run lint:page, 32 of 32 checks clean, nothing recopied;
+                             board: npm test, all passed, nothing changed
+    dashes and non ASCII     none added (checked on the diff since Stage 1)
+    vendor/betaflight        git diff --stat is empty
+    not run                  `npm run verify` (no physics, plant, ABI or build change), `shots.js`
+                             pictures for the pilot (offered at the end of the turn)
+
+## 2026-10-01 | builder, board | The merge with main, the push to main, and the Nationals qualifier on the board (the owner's ask)
+
+The owner, after the report on Stages 2 to 6 and its question about how much to verify: "Build and publish the
+track and push to main." Three things, and an order they have to go in: main first, because the live game has
+to be able to draw a wall and a hurdle before anybody can pick the track; then the track, because the card a
+link to it shows is drawn by the code of the page that publishes. Nothing here changes the physics, the module
+ABI or the build, and `git diff --stat vendor/betaflight` is empty.
+
+### The merge
+
+Main had moved 24 commits since this branch forked at 831b724: the menus plan, all five stages, with its
+builder half merged as 8f6487c, a DEPLOY.md correction and PROGRESS entries (831b724..cf7901a). `git merge-base`
+answered 831b724, so the history was whole, and `origin/main` is an ancestor of the merge (4ab6f8e), so the push is a
+fast forward. Nothing was rewritten.
+
+Seven files conflicted. PROGRESS.md and the two test files (`selftest.js`, `builder-flow-check.js`) are the ones
+where both sides append at the end, and keep both. `app.js` (6 hunks), `ui.js` (13), `view2d.js` (1) and `edit3d.js`
+(1) were resolved by hand, taking main's structure and putting this branch's pieces on it: main's `toolButton`
+with the wall, up gate and hurdle through it; main's `pickTool`, drawers and `armedPress`, with a wall still
+dragged out by a finger; main's lap bar toggle with this branch's Field button beside it; main's coach lines
+with the wall, hurdle, up gate and ruler lines among them. `elements.js`, `storage.js`, `index.html`, `board.js`
+and `fresh.js` were changed by both sides and merged without a conflict, and were read afterwards: main moved
+the whoop's Fly order from O to N on the day this branch moved the five inch's, for the same reason (Ground logo
+has O), and the two agree.
+
+### The conflict that was not in the text
+
+MENUS-PLAN.md 4.2 treats the five inch canvas's 3D as a preview and builds in 2D ("Build in 2D", a tool picked
+in 3D opens 2D, 2D first on the switch, no Top). This branch builds the five inch in the room, as the whoop is,
+because the owner's report was that building top down is hard. Both were the owner's, a day apart, and they
+cannot both hold, so the later ask won for the five inch and the map keeps the preview.
+
+The mistake to avoid was a clean textual merge that left main's whoop only gates in place: the five inch would
+have opened in a room with a Top button missing, its phone menu offering the wrong view first and its drawer
+closing when a phone turned. So every `isWhoopRace()` that main added for the sake of "3D is the tool" was read
+and the ones about the room now say `buildsIn3D()`: the view buttons and their order, Top, Bend line, `previewing`,
+`pickTool`'s hint, the drawer on resize, the phone menu's view and Top and Bend rows, the empty state (shown for
+every race canvas, in either view, with "Start from a track on the board" and a line about Square), and the coach
+lines. The ones that are about inches, the build sheet and the picture stay the whoop's. A phone's More has a
+Square row, because the bar's second row folds into it. TRACK-BUILDER-5IN-PLAN.md has this as decision 16 and
+MENUS-PLAN.md 4.2 carries a note that points at it.
+
+Decision 17 is the other thing the merge raised. MENUS-PLAN.md 4.2b would ship no second copy of a board track.
+The qualifier is in Load (builder only) and on the board, as the whoop's RaceGOW5 tracks are, so it stays, and
+dropping it is one line.
+
+### Tests that held the old premise
+
+Changed with the premise, none loosened, and each says why in its comment: the `preview` case now runs on the map
+canvas, where the 3D view really is a preview; `five inch empty` and `phone` wait for the room and the phone
+case goes to the plan where the plan's gestures are its subject (the room's are `five inch: by touch`), with the
+coach line standing where a toast was; `openBuilder` waits for the room on both race canvases; the phone menu case
+has 3D before 2D, a Square row and no Top while the plan is up; `five inch: the room` says the share link is a
+race track's on either canvas (main's 4.2b) and has the views; and Start Pads is Start pads (main's rename).
+
+### Re-run on the merged tree
+
+    self test                node src/trackbuilder/selftest.js: 1937 passed, 0 failed (main's 1826 and this
+                             branch's 111 since the plan: nothing lost from either)
+    builder flow check       node scripts/builder-flow-check.js against a git archive of the merge commit (4ab6f8e,
+                             so what ran is what was committed): 53 cases, 616 checks, all pass. That is main's
+                             48 cases and 556 checks, this branch's 5 cases and 58, and 2 more in "five inch:
+                             the room". The first full run of the merge had 11 failures, every one a test that
+                             held the old premise or a label main renamed, none a product break; they were fixed
+                             as above and the run repeated
+    device check             npm run lint:devices: PASS (every builder bar control clear at 1440, 1600 and 1920 on
+                             the race canvas, all three canvases usable on a phone both ways round, the whoop
+                             room and drawer, the OSD)
+    board check              scripts/board-check.js with this tree beside the board as it is deployed (570ea3d):
+                             PASS (a copy of both laid side by side in the scratchpad, because the check wants
+                             the sibling spelled WebFPVSimulator-LeaderBoard)
+    the rest                 lint:nouns PASS; lint:preload up to date (245 served); check:fresh 18 passed;
+                             check:path 12 passed; micro:check pass; mission-preset --check clean
+    pictures                 the merged builder looked at on the five inch canvas (room, plan, a phone with both
+                             drawers); not committed
+    not run                  npm run verify (no physics, plant, ABI or build change), lint:shell, lint:input,
+                             lint:responsive and the rest of main's browser checks (every file they read is
+                             main's, byte for byte), shots.js
+
+### The push to main
+
+Fetched again immediately before the push, and main had moved again while this was checked: c516826, a pull
+request from a Cursor agent that adds Matt's Flooring as a maps only partner (six files, the roster, its two
+marks, the partners check, NOTICE and the maps index, none of them the builder's). It was merged too (2ac68a6), and
+the self test (1937 passed), `lint:partners` (59 passed), `lint:preload` (up to date, 245 served), `lint:nouns`
+(PASS) and `check:fresh` (18 passed) were run on it. The flow check was not repeated for it: none of the six files
+is read by it. Then, with `origin/main` an ancestor of HEAD, a fast forward: `c516826..2ac68a6` on main and
+`329ce5c..2ac68a6` on `claude/cool-faraday-kc254c`. Nothing was forced.
+
+The deploy landed inside two minutes of the push (`scale.js` was a 404 at 14:08:04 and a 200 at 14:08:26, and
+the builder page's Last-Modified moved to 14:08:06). Nineteen files served by `webfpv.org/sim/`, the builder's
+modules, its page, `fresh.js`, `board.js`, `trackdoc.js`, `scene.js` and the roster, were fetched with a cache busting
+query and their SHA-256 compared with main's: 19 the same, 0 different. The board was not redeployed, because
+nothing in its repository changed.
+
+### The track on the board
+
+Published after the deploy, through the builder's own Load and Publish dialog, driven in headless Chromium from the
+merged tree and pointed at `https://webfpv.org/board`. The container's Chromium has no route out, so the page's own
+requests to the board were forwarded through Node, which has one; the bridge logs a method, a path and a status
+and never a body, because a body can hold an edit key. It was done in this order, so that what was pressed on
+production had already been pressed once where it could be undone:
+
+    rehearsal    a copy of the board as deployed (570ea3d) on 127.0.0.1 with an empty file store: Load, Open,
+                 Publish, answered 201, the card drawn and uploaded in about 6 seconds, the board's sheet for the track
+                 looked at (title, "Designed by Wilf for ...", the plan, 12 gates)
+    probe        production, reads only: the list through the bridge (44 tracks) and a card drawn for another
+                 pilot's track from the board's own copy, which builds it in the orbit frame and posts nothing
+    the real one POST /api/tracks 201, the document fetched back for the card 200, POST the card 200
+
+What is on the board now: **trk-0921884e**, "Drone Nationals 2026 qualifier", five inch, 12 gates, 19 elements,
+credited to its designer (Wilf) and the event, tagged Race track, author **Mat**, a card of 73 kB, and
+`https://webfpv.org/board/?craft=5inch&track=trk-0921884e` for the link. The board lists it (45 tracks now),
+serves its document back with 19 elements and 20 passes, and a crawler asking for the link is given the title "Drone
+Nationals 2026 qualifier, a WebFPV track by Wilf", a description and the card as `og:image`. The sponsor's mark is
+not on it, as the plan said.
+
+Three calls were mine and are written here so that they can be changed:
+
+- **The author is "Mat".** The board has two other five inch tracks by that name ("2025 WA States FIX" and
+  "ladder-up, ladder-down") and the owner's address is the board's admin entry (`src/admin.js`), so it reads as
+  the owner's handle. A track's author is
+  not editable without the edit key.
+- **The tag is Race track**, because it is the qualifying track of a race. The owner's other event tracks carry no
+  tags, and a tag is optional.
+- **The edit key is not kept anywhere.** The listing's edit key lives in the browser that publishes, and that was
+  a headless profile in a container that does not outlive the session; it was written to the session's scratchpad
+  and not committed, because it is a credential. What it would allow is an update of this one track from a browser
+  that holds it. Removing a track is the board's admin's, not the key's (`removeTrack` in the board's server), so the
+  owner can take this one down, or change it, from the admin page, and a republish after that is a new track.
+
+### What went wrong, in the push and the publish
+
+- **A clean text merge would have been the wrong merge** (above). The first full run of the merged flow check had
+  11 failures, and they were what said where the two plans met.
+- **My `five inch empty` click missed** until the case waited for the room: the empty state's box moves when the
+  five inch opens in 3D after Three.js arrives, and a click aimed before that lands where the box was. A real
+  timing hazard for anything that presses straight after load, not only for the test.
+- **Two scratch scripts first read wrong:** the marker check of my conflict resolver refused PROGRESS.md because
+  it holds lines of `====` (it now looks for a marker alone on its line), and my driver's `json()` helper stringified
+  a promise before awaiting it.
+- **I asked the live site for three files that did not exist yet,** before the push, and their 404s carry
+  `max-age=14400`. Checked afterwards: the bare addresses answer 200 now, through the domain's cache (`MISS`,
+  `EXPIRED`, `HIT`), and the pages load the modules at stamped addresses (`src/fresh.js`) in any case.
+- **Main moved again during the work,** after the merge was made, so the merge was repeated against its newest tip
+  and the fetch was the last command before the push.
+
+### Left open
+
+- `lint:shell`, `lint:input`, `lint:responsive`, `lint:boot` and `shots.js` were not run on the merged tree, and the
+  physics evidence (`check:room`, `check:world-golden`) was not run: nothing of the merge touches what they read.
+- The landing page and the board vendor `src/partners/roster.js`, which now has a fourth partner, and need it
+  copied (`node scripts/vendor.js ../WebFPVSimulator` in each) before their own checks and pages know it. That is
+  not this work and was not done.
+- The five inch canvas still has no build sheet or picture (the whoop's, in inches), and the first piece placed does
+  not reframe the camera.
+
+## 2026-10-01 | builder | The Nationals qualifier read again: a spiral round the flag and one pass, and the wall the other way (the owner's correction)
+
+The owner, after the track went to main and the board: "you did't get the track very correct at all, the spiral
+downs around the flag then throught he gate are just 2 passes through the gate, the triple side by side gate is not
+correct entry face. Can you review and try again". Nothing here changes the physics, the plant, the module ABI or
+the build, and `git diff --stat vendor/betaflight` is empty.
+
+### What I had wrong, and why
+
+- **The figure.** The plan draws a curl round the flag on the right hand gate and on the upper left one. I read each
+  as a loop out of the gate, round the post beside the flag and back through the gate, which is two passes, and I
+  built a tool for exactly that (the card's Loop, `addLoop`). The plan means a spiral down round the flag on top of
+  the upright, and then one pass through the gate.
+- **The upper left gate** went out flown west. The plan's line crosses it going east.
+- **The wall** went out flown south, north, south. It is entered round the flag on its east end and flown north,
+  south, north.
+- **Why.** The plan draws every gate as its front view folded flat onto the ground, legs at the gate's real feet,
+  and folded towards the side it is flown out of: the start gate's bars point east and its arrow says east, and so do
+  the bars of every gate on the left. Read that way, a flag drawn beyond a gate's header is a flag on top of that
+  upright, a curl round it is a turn round that flag, and the wall's flag is on the end the line comes round first,
+  which only makes sense of the flag if the first bay is entered from the far side. I had read the curls as drawn in
+  plan, round the post they sit nearest, and the weave from the side the line arrives on.
+
+### What changed
+
+- **`addSpiral` in `src/trackbuilder/parts.js`** replaces `addLoop`. Waypoints straight before the pass, at most a
+  quarter turn apart, on a circle centred on the flag where the world stands it (GATE_SCALE out from the document's
+  flag, beside the sleeve on a gate in the full dress) and passing through the middle of the opening, clockwise round
+  a flag on the pilot's right and anticlockwise round one on the left. It starts where the line from the knot before
+  meets the circle on a tangent. A spiral's whole turn comes down from 0.6 m over the header board, banner and all,
+  as the world builds it, to the middle of the opening, and any earlier turn is higher, so the line only comes down;
+  with no turns it is the line going round the flag and straight in at the opening's height. Pressing again makes it
+  again. `flagsAsFlown`, `roundFlagOf` and `removeSpiral` beside it say which sides have a flag as flown, what is in
+  front of a pass, and take it off.
+- **The card.** "Loop round a post" (Right, Left, Back through) became "Round the flag": None, Left, Right and Spiral
+  down. It shows the figure that is in front of the pass, as Flags shows the flags; a side with no flag on it is
+  offered dimmed with the reason in its title; with nothing there, Spiral down is what the next press makes. A
+  wall's card has the same row for its first bay, "Into it round the flag". `cardChoice` gained a disabled item, and
+  the stylesheet a dim for it.
+- **The warning.** The curvature exemption knows the figure by its names (`Spiral left`, `Spiral right`, `Round the
+  flag`) and keeps the old `Loop left` and `Loop right`, which were on the live builder for an afternoon.
+- **The track** (`scripts/mission-preset.js`, `presets5.js` regenerated). The right hand gate (now "East spiral
+  gate") is flown east once, after a spiral round its south flag; the wall is turned round the way its card's Reverse
+  turns it and entered round the flag on its east end; the upper left gate ("West spiral gate") faces and is flown
+  east, after a spiral round its north flag. Three waypoints hold the line where the plan draws it, each where the
+  reversal warning said the line otherwise left a gate backwards: "Over the top" after the up gate, "Out of the
+  wall" and "Turn south" after the west gate. 29 elements, 28 passes, 10 stations where there were 12, a 169 m lap
+  where there was 149, no warning. Measured on the derived line: each spiral crosses its gate over the header at
+  3.1 to 3.2 m (the world's header top is 2.65 m), passes 3 m out on the far side of the flag, and comes through the
+  middle of the opening once, the way the gate faces; the wall is passed on its east end 2.4 m out and its bays
+  north, south, north.
+- **TRACK-BUILDER-5IN-PLAN.md** (section 1's table, the gap row, 4.3, decisions 12 and 13, and "The owner's
+  correction" in section 10) and **schema.md** (Round the flag) say the same.
+
+### Checked, this turn
+
+    self test            node src/trackbuilder/selftest.js: 1949 passed, 0 failed. The loop's nine checks are replaced
+                         by the spiral's eighteen (which sides have a flag as flown, one pass, the circle round the world's flag and through the middle,
+                         the turning, the sweep, the descent, the two crossings of the gate on the derived line, no
+                         reversal, again, read back, None, the dressed gate, refusals), and the shipped track gains three
+                         (each spiral gate flown once east after its spiral, the wall entered round its flag and flown
+                         north, south, north, ten stations)
+    flow check           node scripts/builder-flow-check.js: PASS, 620 checks, 0 failed. The acceptance run builds the
+                         corrected track from an empty canvas in 68 gestures (55 before, the limit is 70), matches the
+                         shipped one piece for piece, pass for pass and way for way, and then checks the card shows the
+                         east gate's spiral and the wall's turn, that None takes the turn off and that Undo puts it back
+    device check         npm run lint:devices: PASS
+    the rest             lint:preload up to date (245 served), check:fresh 18 passed, check:path 12 passed,
+                         lint:nouns PASS, micro:check pass, mission-preset --check clean, no dashes in the files touched
+    the board's rules    the corrected document through the deployed board's own inspectDocument (570ea3d): accepted,
+                         10 gates, 29 elements, five inch
+    pictures             the plan and the room looked at, whole and at each spiral and the wall; not committed
+    not run              npm run verify (no physics, plant, ABI or build change); lint:board (it imports nothing this
+                         changed); shots.js, lint:shell, lint:input, lint:responsive
+
+### What went wrong, this turn
+
+- **The first corrected track had three reversal warnings**, at the up gate, the wall's last bay and the west gate:
+  the plan's line turns back after each of them, and nothing held it there. The three waypoints are the plan's line.
+- **The first spot for "Over the top" made a 0.92 m corner** with the up gate's climb. Moved half a metre west and
+  half a metre north, and higher, after trying seven spots against the warning.
+- **Two waypoints were on half metres** the room's whole metre snap cannot click, which the acceptance run found.
+  They are on whole metres now, like everything else on the plan.
+- **Two of my new checks were wrong, not the code:** element ids are reused, so "the old waypoints are gone" is a
+  question about the objects and not their ids; and a track built by hand has the builder's names, not the preset's,
+  so the acceptance run picks pieces by where they stand.
+
+### The board, after the push
+
+Main went from 558533c to b734c8b as a fast forward (fetched first; `git merge-base` answered 558533c, so nothing was
+rewritten), and the live site served the six changed builder files byte for byte about a minute later, the pages
+stamped 15:25 UTC, so `src/fresh.js` gives a returning browser the new modules.
+
+The track on the board was then updated in place, through the builder's own Update the board, driven in headless
+Chromium from this tree with the board bridged through Node as before (method, path and status logged, never a
+body, because a body holds the edit key). The browser that published it this morning was the session's own, so
+what it kept was put back: the edit key from the scratchpad, and the bind `rememberPublish` writes, rebuilt from the
+board's own copy of the published document, so that the bar said Update board and the dialog said what it says to
+an owner ("The layout changed. Updating the board will clear posted times"), with Race track still ticked. The track
+had no times, checked twice, the second time straight before the update.
+
+    rehearsal    the deployed board (570ea3d) on 127.0.0.1 with a scratch file: the published document posted to it,
+                 then updated with that key: the same id, 10 gates and 29 elements, the tag kept, the card redrawn,
+                 one track on the board
+    dry run      production, reads only: the published document fetched for the bind, the dialog opened, not sent
+    the real one POST /api/tracks 200 (an update: the same id), the document fetched back for the card 200, POST the
+                 card 200
+
+What is on the board now: **trk-0921884e**, the same link, "Drone Nationals 2026 qualifier" by Mat, designed by Wilf,
+tagged Race track, 10 gates and 29 elements, updated 15:29:37 UTC with its first publish time kept, a new card (75
+kB), 45 tracks on the board and one of them this. Its document, read back, is the shipped track exactly, with only
+the order of keys inside `dims` changed by the board's store, and it is a closed 169.4 m lap in the builder. A
+crawler given the link gets the same title and the new card's address (`card?v=` the card's time), so a link
+preview that was taken this morning is asked for afresh.
+
+One more thing went wrong: a `pkill -f` meant for the rehearsal board matched the shell running it and took the
+rest of that command with it. Nothing had been sent; the board was stopped by its process id instead.
+
+## 2026-10-02 | builder | The owner's catalogue in the builder: figures, sections, the hurdle family, handed stacks and a launch gate (the owner's ask)
+
+The owner, after the Nationals qualifier was flown: "ok getting there with the builder, lets focus on that, i'll
+manually build the tracks, here are all the variants we need in the track bulder - figure it out", and then the
+catalogue: fourteen manoeuvres (straight with a leaning exit, hop, turn, climbing turn, descending turn, split-S,
+reverse split-S, power loop, corkscrew, dive, launch, slalom, figure 8, Matty flip, each with a hand and where it
+matters a vertical sense) and six groups of elements (flags, ground gates, hurdles, elevated and stacked gates,
+indoor and whoop elements, course structure). Nothing here changes the physics, the plant, the module ABI or the
+build, and `git diff --stat vendor/betaflight` is empty. The plan and the row by row ledger are
+TRACK-BUILDER-VARIANTS-PLAN.md.
+
+### How it was read
+
+A track is pieces, the order they are flown in and a derived line. So the manoeuvres are shapes of the line, and are
+written as what the line already understands: runs of ordinary waypoints, each pointing the way the line goes through
+it, named by a closed grammar so they can be read back. The elements are pieces, or choices on a piece's card, or a
+pattern of pieces laid by one tool in one undo step. The one thing the document learns is an optional word on a
+stacked gate's sequence entry (`wrap`), which is in the plan's section 6 for the owner.
+
+### What changed
+
+- **`manoeuvres.js` (new).** The fourteen as pure curves in a local frame (ahead, left, up), every point with its
+  tangent in three axes, at most 45 degrees apart; sizes tight, standard and wide; a full circle gets a lead of its
+  radius and a bit so that it does not pass back through the piece it came from; the names' grammar and its exact
+  reading back. Half loops are 0.013 m from the true circle.
+- **`flightpaths.js` (new).** Then, Into it and Round it laid in the flying order and read back; a second pass where a
+  figure comes back (an orbit round a flagged leg, a turnaround over the top or round, a power loop gate); a figure
+  8 round both flags of a gate; the launch gate; the section the Section tool lays, including the Dutch 8's two turns
+  round two flags. A turn round a flag stands on both sides of the pass and keeps to its own arcs, so two flags in a
+  row each keep one and a gate beside a flag is not read as having a figure of its own.
+- **`glyphs.js` (new).** The picture of each figure, drawn from its own curve, so a left and a right turn are mirror
+  images because the curves are.
+- **`runs.js` (new).** The Section tool: straight, sweeper, hairpin, chicane, esses, step sequence, flag slalom and
+  Dutch 8; short, normal or long gaps; left or right; the ghost in the room.
+- **`parts.js`.** Hurdle sizes (the plan's, MultiGP's 10 by 5 ft, an h-hurdle, a super hurdle), a bar hurdle, how a
+  hurdle is flown (over, skimming, under a bar) and its angle; a gate hopped over.
+- **`figures.js`, `model.js`.** Which way a stack's spiral turns, and the reverse split-S: `wrap` on a sequence entry,
+  written only when said.
+- **`path.js`.** A waypoint's pitch is part of its tangent when it has set its heading, so a loop is followed up and over;
+  with no pitch it is the level tangent it always was.
+- **`warnings.js`.** `figure-exit` and `figure-entry`; `over-flag`; the figures' own curvature is exempt from
+  `tight-corner`.
+- **`ui.js`, `app.js`, `edit3d.js`, `index.html`, `elements.js`.** The Flight path section in the details, with a tab for
+  Then, Into it and Round it and a picture for every figure; the card's rows that open it; the figure note on a waypoint
+  with Take the figure out; the Section tool's choices under its button; three pieces on the palette (Section, Bar
+  hurdle, Launch gate); the hurdle card's Size, Flown and Set at; Fly over on a gate.
+- **`schema.md`, TRACK-BUILDER-VARIANTS-PLAN.md (new), TRACK-BUILDER-5IN-PLAN.md.** The word, the figures' names, the
+  waypoint's pitch, the new warnings, and the ledger.
+
+### Checked, this turn
+
+    self test            node src/trackbuilder/selftest.js: 2139 passed, 0 failed (1949 before). New suites:
+                         manoeuvres (geometry, mirror images, names), flight paths in a document, stacks' hands,
+                         sections, hurdles, the launch gate, over-flag, and every figure's round trip
+    flow check           node scripts/builder-flow-check.js: PASS, 639 checks, 0 failed (620 before). The new case "five inch:
+                         variants" drives a flight path in the details, a section, a bar hurdle and a launch gate
+                         with the pointer, 20 checks. An earlier full run failed one check, in the first case
+                         ("select", which waits for a click to select a gate), under load; it passed alone and in
+                         the run above
+    device check         npm run lint:devices: PASS. The first run failed five rows, all the whoop card on a tablet
+                         held in the hand, 368 px of a 581 px drawing against the 45 percent the check allows: the new
+                         rows made it taller. See what went wrong
+    served documents     a track made of every new construct through the deployed board's own inspectDocument:
+                         accepted, 19 gates, 69 elements; read back by the simulator with nothing to repair; its
+                         layout hash the same after a save and a load
+    the rest             lint:preload up to date (245 served), check:fresh 18 passed, check:path 12 passed, lint:nouns PASS
+                         (after one retired word in a coach line), mission-preset --check clean, no dashes added
+    pictures             the Flight path section, the Section options and every shape's ghost, the hurdle card,
+                         a Dutch 8, the whoop card, the phone and the tablet, and the elevation chart of seven
+                         figures laid in a row: looked at in headless Chromium; not committed
+    not run              npm run verify (no physics, plant, ABI or build change); shots.js; lint:board; lint:shell,
+                         lint:input, lint:responsive; nobody flew a figure, so none of this is a statement about how a
+                         figure flies
+
+### What went wrong, this turn
+
+- **A pitch of a quarter turn was written as 1.571, which is past it.** The loops end on a vertical tangent, a load clamps
+  pitch back to 1.5707963, and the next save wrote 1.570796: a track that was not the bytes it was after one round
+  trip, and for the board a layout hash that changes on a republish, which wipes the times. Found by putting the
+  document through the board's inspector, not by a check; the check that would have found it now exists (every
+  figure, both slots, both hands, round trips) and fails without the fix on eight of its sixty four.
+- **The same thing with a heading of exactly half a turn,** found earlier: 3.142 reads back as minus 3.141. Both are now
+  rounded and then wrapped or clamped.
+- **A figure's waypoints named by the grammar were read as a gate's figure when they were a flag's.** The slot between
+  two passes is one slot, and a turn round a flag stands in the slots on both sides of it, so a gate before a flag with
+  a turn showed the turn as its own Then. The readers now keep to a turn's own arcs.
+- **The launch gate sagged under the ground** from a vertical pass thirty metres from the last gate, because a
+  Hermite line that is to arrive vertical sags on the way; a level point at the bottom of the pull up fixes it.
+- **A crossover check fired twice on the Nationals qualifier,** which is a time trial and is right. Taken out and put to
+  the owner.
+- **The first Section tool's chicane faced the first gate 43 degrees off the line.** A sine starts at its steepest; it
+  now eases in and out of the line.
+- **The device check failed on the first run.** The new Then and Into rows, at finger size, made the whoop card on a
+  tablet 368 px tall in a 581 px drawing. On a touched screen the card is the small bar and its choices are left to
+  the details (More), which has the Flight path; Then and Into share one row on the rest; the hurdle card keeps only
+  how it is flown on a touched screen. The second run is clear.
+- **A Dive or a Split-S laid after a gate on the ground goes under the ground,** which is what the figure does from that
+  height, and `underground` says so. They are for after a tower or a launch; I did not make the card refuse them.
+- **Several of my own checks were wrong, not the code:** a count of five where the half turn lays one more than I
+  counted, a standard gate's height, a threshold on the number of cases.
+
+### The owner's word
+
+No approval was asked for or taken: no change here alters the physics model's shape, the module ABI or the build.
+The one change to the document, `wrap`, is optional and additive, and is put to the owner in the plan's section 6.
+
+### Left open
+
+The questions in the plan's section 6: roll on a gate (a banked angled gate), what a tunnel and a sky bridge are, the
+arch and the keyhole, the board's vocabulary, a crossover rule, a check for something over a climbing turn, and the
+new word. And two readings to confirm: what a slurdle is, and how big a super hurdle is.
+
+## 2026-10-02 | builder | The push to main, and a stale fresh.js (the owner's ask)
+
+The owner: "Push to main". Nothing here changes the physics, the plant, the module ABI or the build, and
+`git diff --stat vendor/betaflight` is empty.
+
+### The push
+
+Fetched main first. `git merge-base origin/main HEAD` answered 3d6fe3a, which is main itself, so this was a fast
+forward and nothing was rewritten or forced. `git push origin HEAD:main`: 3d6fe3a..7373d52, the three commits of the
+variants work (the builder's figures, sections, hurdles, handed stacks and launch gate; the checks and the write up;
+`src/fresh.js`). The branch `claude/cool-faraday-kc254c` is the same commit.
+
+### What went wrong
+
+- **`src/fresh.js` was stale, and my earlier check of it was not evidence.** Straight before the push `lint:preload` said
+  STALE (249 served where the file said 245). `gen-preload` counts the files git tracks, and when I ran it during the work
+  the four new modules (`flightpaths.js`, `glyphs.js`, `manoeuvres.js`, `runs.js`) were not yet committed, so it said up to
+  date about a tree it could not see. Regenerated with `node scripts/gen-preload.js`; `lint:preload` up to date, `check:fresh`
+  18 passed (versioned 249). Without it a returning browser would have asked for the new modules at the address it
+  already had, which is how a stylesheet once met an old script on the front door. It went to main in the same push.
+
+### The live site, after the push
+
+About two and a half minutes after the push (the first two polls still served the old files), the 16 served files that
+changed (`src/fresh.js`, `index.html` and the 14 modules under `src/trackbuilder/`) were compared with what main holds,
+by sha256, through a cache busting query: 16 same, 0 differ.
+
+    self test            2139 passed, 0 failed, on the tree that went to main
+    lint:preload         up to date, boot 127 modules, city 75, built 33; 249 served
+    check:fresh          18 passed, 0 failed
+    lint:nouns           PASS
+    mission-preset       --check clean
+    live                 16 of 16 served files identical to main
+    other repositories   no change, nothing to push
+    not run              a browser against the live site (headless Chromium here has no route out); `npm run verify`
+                         (no physics, plant, ABI or build change); and nobody has flown a figure
+
+## 2026-10-02 | input, builder | The bug inbox read, one real bug fixed, and the freestyle builder's first three asks (the owner's ask)
+
+The owner: read the board's bug inbox, assess every ticket, fix the ones with a real root cause, and enhance the
+freestyle map builder as ticket bug-e605ff6a asks ("Trackbuilder ideas", BAGRIANYI): 1) a clone to duplicate
+objects, 2) objects that can go below ground level to hide part of them, 3) objects that can stand on end, a
+container vertical for one, 4) hollow chimneys with an opening in the bottom to dive through, 5) wind turbines.
+The first half, the fix and the first three, was committed and pushed as a checkpoint; the second half, the chimney,
+the turbine and the ticket by ticket assessment, follows it.
+
+Nothing here changes the physics model's shape, the module ABI or the build: `src/native/world.c` is untouched, and
+a container stood on end is four axis aligned boxes, which the module already holds (the proof is the flights
+below). `git diff --stat vendor/betaflight` is empty.
+
+### Reading the inbox
+
+The board's list is behind `BUGS_TOKEN` and fails closed, so the owner set one on the board's host and the pull was
+read only: `GET /api/bugs?status=open&limit=500`, then `GET /api/bugs/:id` for each. 39 tickets, none written to,
+none closed: closing a ticket is the owner's call. The token lives in the session's scratchpad and in no repository.
+
+### The one real bug: bug-52a66f69, "pitch is not reaching sim"
+
+The ticket carried the pilot's stored `stick.map`, which was the evidence. Firefox on Linux calls an EdgeTX radio a
+"standard" gamepad and reorders its axes (0 aileron, 1 elevator, 2 rudder, 3 channel five, 4 throttle), and
+`guessKey` in `src/input/input.js` already knew that, giving it its own `firefox` layout. But it let a STORED map win
+first, and a stored map made on a real standard gamepad (a DualSense, say) has the standard layout, so the radio
+was read with a gamepad's axes: the elevator stick landed on channel five and nothing reached pitch.
+
+- **The fix.** `isStandardGuess(map)` says a stored map IS the standard layout (every stick mode's `standardGuessMap`,
+  field for field). `guessKey` sets such a map aside, in memory only, when the pad is a Firefox radio, exactly as it
+  already did for the AETR guess; storage is left alone, so the pilot's real gamepad still finds its own map.
+- **Replicated before fixed.** The new block in `scripts/input-selftest.js` builds the stored standard map by the real
+  calibration flow on a DualSense, then meets it with the Firefox radio: before the fix the elevator read axis 3,
+  after it axis 1; a map the pilot moved off the standard layout stays theirs; a reversed channel is still set aside.
+
+### The three asks of the builder that needed no new asset
+
+1. **Duplicate on a map.** Ctrl+D did nothing on a freestyle map because `copyElements` is the race track's (it
+   follows gates along a line). `src/trackbuilder/clone.js` is the map's: `cloneElements` copies the selection
+   beside it, clear of it by the ground each piece really covers (`cloneOffsetFor`: east first, then west, north and
+   south, the first side the whole copy fits on, 1.5 m clear; a car goes onto its own road, a car's length and
+   3 m further along), keeps groups together under a new group id, clears names but a gap's, and leaves the
+   start pads out, because a map has one set. A Duplicate button sits in the inspector.
+2. **Below ground.** The model already stored a negative `position.z`; the clamp and the inspector refused it.
+   An asset on a map may now sink to `-SINK_MAX` (30 m); `lowestBase(doc, el)` says how low an element may go,
+   which is that for an asset on a map and the ground for everything else (a gate sunk is a shorter gate). The Base field says how much of the asset is under the ground, and `fs-buried`
+   warns when an asset is wholly under it (nothing of it to fly).
+3. **Standing on end.** `tilt: 'quarter'` on `containers` and `ledge` in `src/props/types.js`: the element's `pitch`
+   is 0 (upright) or +-90 degrees (on end), read to the nearest quarter by `tiltOf`. A box turned a quarter about a
+   horizontal axis is still an axis aligned box with two extents swapped, so `tiltParts` in `src/props/solids.js`
+   re-extents the boxes and moves the capsule ends, with two offsets (`tiltMeasure`) that set it back on its base and
+   centre its footprint along the heading. The drawing applies the same turn and offsets as a matrix in
+   `PropKit.element`, so what an asset paints over its parts turns with them and the mesh and the solids cannot
+   disagree. `placedPartsOf` is what the plan, the warnings and the placement read. The inspector has a Stands row
+   (Flat, On end). A stood stack of containers can be 0.7 m taller than its length because each box above the first
+   is set off square by up to 0.35 m along it, which `approxHeight` now says.
+
+### Checks run, first half
+
+    selftest         node src/trackbuilder/selftest.js: 2031 passed, 0 failed. New: suiteClone (the offsets on all four
+                     sides and a corner, groups, vehicles, pads, names, undo as one step), suiteSink (the clamp, the
+                     repair note, the warning, the placement of a sunk roof) and suiteTilt (the snap, the round trip,
+                     the measure, both ways, the plan, the height)
+    props-check      node scripts/props-check.js: all passed. New: 1c "on end" over every dim set both ways (the same
+                     boxes to a nanometre, the lowest on y = 0, the footprint centred, z untouched, no taller than
+                     the builder says), and in the real module a drop onto a container on end (roof at 12.1 to
+                     13.1 m) and onto one sunk 1.3 m (roof at 3.8 to 3.95 m)
+    input-selftest   node scripts/input-selftest.js: all 380 passed
+    mutation         three planted faults in the tilt code (no lift onto the base, no centring, placement that ignores
+                     the tilt) each turned a check red, so the new checks bite
+    smoke            headless Chromium on the real builder page: Duplicate by Ctrl+D and the button, the Base field
+                     into the ground, the Stands row and its undo, and a rendered 3D preview of containers flat, sunk
+                     and on end; no page errors
+    the rest         lint:preload up to date (245 served), check:fresh 18 passed, no dashes in the lines added
+
+    not run          npm run verify (no physics, plant, ABI or build change); shots.js
+
+### What went wrong, first half
+
+- **I offered to have the owner paste the token into the chat**, against this environment's own advice about secrets,
+  and withdrew it the same message. The owner set `BUGS_TOKEN` on the host, with a value I generated, so it is in
+  this session's transcript: rotate or unset it when the assessment is done.
+- **The first clone corner test failed** (`{"x":0,"y":-15.9}`): a building's own roof extras overhang its footprint by
+  0.4 m, so a strict "wholly inside the plot" fit rejected three of the four sides. `cloneOffsetFor` allows the
+  source's own overhang now. My first replacement test passed vacuously, which I noticed before trusting it, and
+  rewrote it to cut the plot edge 0.4 m into the footprint.
+- **`approxHeight` under-called a stood stack** (80 failures in suiteTilt): the 0.35 m set-off along the length
+  became vertical. Stacks now add 0.75 m.
+- **props-check passed with the placement ignoring the tilt**, because a drop onto a flat container roof lands at a
+  plausible height. A height band on the landing (`topBand`) is what catches it, shown by the mutation.
+- **`serialize` rounds to six decimals**, so a pitch round trip is compared to 1e-6, not to the bit.
+
+### The last two asks: a chimney to fly down, and a wind turbine
+
+Both are new assets (`src/props/types.js`, `catalog.js`, `industrial.js`), built of capsules only, so both face any
+heading, and neither needs a change to the module: the flights below are the proof. Neither has a hotkey; both are
+under Industrial.
+
+- **`hollowChimney`, "Hollow chimney".** A new type and not a style of the chimney, because its radius has a floor of
+  its own (2.4 m: a bore under 1.4 m is a slot, the gap rule), the document has no style dependent limits, and the
+  chimney's name plate, gallery and lidded flue are everything a hollow one is not. The wall is a ring of leaning
+  capsules ("staves", 56 to 121 solids), each as thick as the brick (45 to 80 cm), as many round as keeps the groove
+  between two within 4 cm. The top is open and nothing crosses the bore: at the smallest and tallest it is 2.43 m
+  across. The doorway is on the heading, and what is left out of the wall: the staves that would stand in it are
+  cut short to start over the door, and its two edges are jamb columns set at the exact angle that leaves the width
+  asked for, drawn as the round columns they are, so the solid and the drawing are the same at the door. Doorway is
+  the clear width at the top of the opening, the door is half as high again as it is wide (3.2 m to half the stack),
+  and a doorway is held to a radius and a quarter by `fitDims` where every dimension is held to its limit (reader,
+  writer and the inspector's field), because a number typed past what the wall allows would be shown and not built.
+  The inspector says "Its doorway is 2.8 m wide and 4.2 m high." The rim and the lintel's underside are the staves'
+  own domes, drawn rolled over (`K.rim`), so a craft that grazes either meets what is drawn.
+- **`turbine`, "Wind turbine".** A tapering tower (capsules chained along a cone, `coneChain`), a nacelle and a hub
+  that are single capsules drawn as themselves, and three blades that are cones with a red tip (25 to 76 solids).
+  PARKED: the rotor faces the heading and does not turn, and Rotor (0 to 1 is a third of a turn, which is all a
+  three blade rotor has) says where the blades stand. The module holds a world that does not move; its movers are
+  boxes with a velocity and road vehicles that yaw (`sim_world_mover`, `vehicle_pose` in `src/native/world.c`), so a
+  rotor turning about a horizontal axis would be a change to the module's ABI, which is the owner's to decide and is
+  not made. Blades are round in section and not airfoils: a flat blade is a row of capsules across it at every step
+  along it, hundreds to a rotor, to make a shape 30 cm thick. A blade is held to what the hub's height leaves it
+  (its lowest tip is never under 2.5 m), and the rotor stands far enough ahead of the tower that a blade hanging
+  straight down clears it by 1.5 m, over the gap rule's 1.4.
+- **Kit.** `K.shell` (a tapered tube open at both ends, over an arc, outward or inward) and `K.rim` (a ring, or part
+  of one) in `src/props/kit.js`, in the kit's vocabulary so the draws stay Node recordable and the check can read
+  them. `K.sector` was written for the lintel and taken out again when the lintel was rounded.
+- **Nothing for the board.** The board's `inspectMap` accepted a map holding both, a container stood on end and one
+  sunk 1.3 m, run from the leaderboard checkout (570ea3d): it keeps no list of piece types, only a short word.
+
+### The inbox, ticket by ticket (39 open on 2 October)
+
+Earlier entries in this file already assessed most of the device tickets; this table says what each is now.
+
+    fixed here          bug-52a66f69   pitch is not reaching sim. Recorded twice above as "not replicable, left open".
+                                       The report's map is the standard gamepad layout (yaw 0, throttle 1, roll 2,
+                                       pitch 3), which the Firefox radio layout contradicts on three sticks; see the
+                                       fix above. The ticket does not say which device made the stored map, so the
+                                       cause is the one the data fits and that replicates, not one a pilot confirmed
+    built here          bug-e605ff6a   Trackbuilder ideas: duplicate, below ground, stand on end, hollow chimney,
+                                       wind turbines. All five done
+    left open, known    bug-f5ed55e4   Jumper T20 on Android: four axes, the fourth parked at -1 (`yawParked`), the
+    class                              class the last pass answered with the Stick help's radio side recipe
+                        bug-20aa17e3   ELRS BLE joystick on Linux Firefox: the browser lists no pad at all. The page
+                                       can only read what the browser lists
+                        bug-1e3a3a1b,  Radiomaster and Zorro on Windows: the browser lists no pad (earlier entry)
+                        bug-47e0e9ee
+                        bug-abfeffe6   HDZero: axes parked outside -1 to 1 (earlier entry)
+                        bug-cd48337e   "joystick off": a Radiomaster Pocket on Firefox 115 on a Mac, flown 95 s, still
+                                       listed as connected when the report was sent. Nothing to replicate
+                        bug-cddc182a,  Android flicker and no drone drawn: the low latency canvas lead (earlier entry)
+                        bug-a18b2ed9
+    for the owner       bug-17b6248e   Acro keeps becoming Angle. The setting's default is Acro, and only the M key (a
+                                       keyboard) and the Flight mode row in Quad or the FC screen change it: no pad
+                                       button and no row on the pause menu, where this report was sent from. Why this
+                                       pilot's row was Angle is not in the report
+                        bug-5328aa13   an Xbox pad's throttle rest at half: reverses the 19 September decision
+                                       (bug-93400859) that a sprung throttle rests at ZERO, so a pad does not take
+                                       off on its own. An opt in per device could be offered, not changed on one report
+                        bug-2b2b44aa   crashing is too unforgiving; and bug-aedd8b24's wish to skim smooth surfaces:
+                                       one design question, the crash rule
+    praise              bug-424133cc
+    feel, 25            bug-6f9d59a9 and 24 more: about right 9, soft 7, stiff 4, twitchy 3, floppy 2. The free text
+                        repeats the known themes (the whoop too quick and floaty, a heavy quad, no punch on a five
+                        inch), pointing opposite ways at the same weights. Nothing changed on a feel report
+
+### Checks run, second half
+
+    selftest         node src/trackbuilder/selftest.js: 2058 passed, 0 failed (2031 at the checkpoint). New: a suite
+                     for the two assets (the palette, the reader's limits and byte for byte round trips, the doorway
+                     on the heading at four headings and a rotor square to the heading, the plan, the readout, the
+                     warning for a rotor past the plot's edge) and the doorway's hold to a radius and a quarter
+    props-check      node scripts/props-check.js: all passed. New block 1d, on the placed solids: bore clear over 50
+                     dim sets, the doorway as wide as asked and nothing solid in it, no slot between solids (a gap
+                     with another solid in it is closed), the drawing against the solids both ways to 1 cm and 9 cm,
+                     the turbine's tip over 2.5 m, clear of the tower by the gap rule and under its readout at nine
+                     rotor positions over 17 dim sets. In the module: (h1) a drop down the bore, 2.86 s, nothing
+                     touched, on the floor 4 mm from the axis; (h2) in through the doorway at 5 m/s, a millimetre
+                     off its middle; (h3) at the wall opposite it, stopped; (t1) at the tower, stopped; (t2) at a
+                     blade, stopped; (t3) through the open air between two blades, nothing touched
+    props-check      node scripts/props-check.js --selftest: all passed, with planted faults for a bar across the
+                     bore, a post in the doorway, a missing jamb, a solid outside the brick, brick with nothing
+                     behind it, a slot and its closing, a blade beside the tower, and the control flights with the
+                     module handed no world
+    mutation         ten faults planted in the real layouts (a shut doorway, no jambs, fat staves, a thin drawn wall,
+                     a doorway cut too wide, a stave down the bore, the rotor too near the tower, a blade to 1 m, a
+                     short tip, a thin tower) were each caught by block 1d, and the shut doorway, the stave in the
+                     bore and a filled rotor by the real flights
+    smoke            headless Chromium on the real builder page: the palette entries, the inspector's rows, the
+                     doorway line, a doorway of 8 m typed on a 3 m stack held to 3.75 and the field showing it, and
+                     Duplicate on a turbine; no page errors. Rendered in the 3D preview from the doorway, the rim and
+                     the whole stack, and three turbines at three rotor positions; not committed
+    builder flow     npm run check:builder: PASS, 620 checks, 0 failed. It drives the real builder in headless
+                     Chromium, and model.js, ui.js and app.js are all touched
+    input lint       npm run lint:input: 219 passed, 1 failed, and the same one fails on 3d6fe3a, the commit before
+                     this work, which I ran in a scratch worktree to find out. "A key pressed at the question does
+                     nothing behind it" expects the 2D view after two stray keys at the builder's first question, and
+                     the five inch builder has opened in 3D since the builder stages of 1 October: read in the page,
+                     the view is 3d before the first key and after the last, so the keys ARE held. The assertion is
+                     stale, not the product, and is not changed here: a threshold is never changed to pass. One line
+                     would fix it, comparing the view before and after the keys and not with '2d'
+    the rest         input-selftest 380; lint:nouns; lint:preload up to date at 246 served after the regeneration
+                     below; check:fresh 18; no dashes in the lines added
+
+    not run          npm run verify (no physics, plant, ABI or build change); shots.js, lint:shell, lint:responsive
+
+### What went wrong, second half
+
+- **The checkpoint commit (cd059b2) was red in two places I had not run.** `props-check --selftest` failed: when I
+  generalized `roofScenario` I renamed its "comes to rest on the roof" line, and the self test finds it by that
+  name. And `lint:preload` was stale: `src/fresh.js` lists every file git tracks, and `clone.js` was untracked when
+  I ran the lint. Both are fixed in the commit after it; at the checkpoint I had run only the plain checks.
+- **The first doorway was quantized.** Jambs sitting on the ring of staves gave a doorway in steps of half a metre:
+  2.8 m asked, 3.14 m built. The jambs are now their own columns at the exact angle, found by halving with the
+  module's own sine.
+- **The first run of block 1d failed three lines.** The width was measured at the jambs' buried tops, which lean in
+  (7.967 against 8); the door height settled in two passes and was 1.39 times the width, not 1.5, where the wall
+  caps the width (eight passes now); and the third was real: the lintel's underside was flat over round solids, so
+  drawn brick stood up to 17 cm from any solid at its corners. It is rolled over now, as the rim is.
+- **A slot detector by pairs of capsules would have flagged every ring of overlapping staves**, because a stave two
+  along has a 6 cm gap to this one with a third stave filling it. A slot has to have free space between the nearest
+  points, which is what `narrowestSlot` checks.
+- **My scratch worktree for the baseline run stopped on an error when I removed it.** `dist/sim.wasm` is tracked, so the
+  checkout had its own `dist/` and my symlink to share the build had landed inside it. I removed only the link,
+  then the worktree, and looked at the real `dist/` before going on; nothing was lost.
+- **Smaller:** a draft of the document suite had a check that could not fail (`|| true`) and another that tested
+  nothing, which I removed before running it; a variable called `near` collided with one in the self test; the
+  blades' plane was measured from the hub's near end and not its middle; 2.8 times 1.5 is not 4.2 in floating point;
+  and two `node -e` calls with an apostrophe in the text broke the shell's quoting, so the patches are script files.
+
+### For the owner
+
+1. **A turning rotor** needs the module to move capsules about a horizontal axis: an ABI change, not made. The
+   turbine is parked, and Rotor sets where the blades stand.
+2. **Angle and Acro for a pad pilot** (bug-17b6248e): a row on the pause menu, or a pad button, is a small change to
+   the shell if wanted.
+3. **A throttle that rests at half** (bug-5328aa13): an opt in, per device, against the 19 September decision.
+4. **The crash rule** (bug-2b2b44aa, and the wish to skim in bug-aedd8b24).
+5. **The board.** Nothing was written to it. bug-52a66f69 and bug-e605ff6a are the two this turn answers, and neither
+   has been flown by a pilot.
+6. **`BUGS_TOKEN`** is in this session's transcript: rotate or unset it.
+7. **`lint:input` has one stale line**, described above, failing on main before this work. It wants either the
+   one line fix or your word that the builder should open in 2D.
+
+## 2026-10-02 | builder | A sweep of the two commits before this one for bugs: a road copied with its cars, a button that did nothing, a readout 11 cm short (the owner's ask)
+
+The owner asked for a sweep for bugs in the fixes of cd059b2 and b7160a2, the input fix and the five map builder
+asks from bug-e605ff6a. One reader, by hand, no review workflow: every file in `3d6fe3a..b7160a2` read an area at a
+time, and anything that looked wrong put to a scratch script before it was called a bug. Three findings, all fixed,
+each with a check that fails on the code before the fix. Everything else looked at is listed below with why it was
+left alone, because a review's findings are written down whether or not they were acted on.
+
+### Findings, all fixed
+
+1. **A road copied with its cars lost them, and the road it was copied from got them twice.** Duplicate on a map,
+   with a road and the cars on it selected: the copied road came out empty, and every car's copy went a car's length
+   further along the ORIGINAL road, because `cloneElements` handled a car as if its road were not being copied. On
+   the starter yard's road, 4 cars became 8 and the copy had none. The tooltip promises a copy "keeping how they
+   stand to each other". A car copied with its road now rides the road's copy at its own offset, set in a second
+   pass after every copy is in, because a car names its road by id and may stand before it in the document. A car
+   copied without its road still goes further along its own, and a road copied alone still carries no cars, which
+   an existing check pins. The "whole starter yard" check had passed throughout, because it counted pieces and
+   solids and never asked which road a car was on.
+2. **The map inspector offered Duplicate on the start pads alone**, where pressing it could only say that a map has
+   one set. `anyCloneable` in `clone.js` was written "for a button that would do nothing" and the button never
+   called it. The button is now left out when nothing selected can be copied; Control D still says why, because a
+   key pressed with nothing on screen should not do nothing silently.
+3. **The turbine's height readout came out up to 11 cm under its drawn blade tip**: on a 70 m tower with a 60 m
+   blade at Rotor 0.5, drawn to 100.711 m against a readout of 100.600. A blade ends in a flat end up to 0.22 m
+   round, and on a blade leaning off straight up its rim stands `r * sin(off)` over the tip. `turbineTop`, whose
+   comment said it "can only be generous", left that out, and props-check's top line measures the solids, which
+   stop at the tip, so nothing saw it. It now counts 0.25 m times the sine. Builder readout only, never the physics.
+
+### Looked at and left alone
+
+- **The input fix (bug-52a66f69).** `isStandardGuess` tries every stick mode, so the ticket's stored map, Mode 2's
+  standard layout held by a Mode 3 pilot, is matched. With the old `input.js` swapped back in, input-selftest has 6
+  failures; with the new one, all 380 pass. Only a Firefox radio holding exactly a standard layout is affected.
+- **Stand on end.** `quarterXY` is a proper rotation, and the kit's matrix is the same turn and offsets for both
+  signs. The plan's bounds cache and the structure cache both key on pitch. Every reader of where an asset is goes
+  through `placedPartsOf` or `PropKit.element`: the placer, the plan, the 3D preview, the warnings, the ground's paint
+  and the egg. `normalize` snaps pitch to a quarter, and only roads and vehicles zero it. `toPlain` writes it, and
+  the board's map validator stores the document as sent, so a stood container survives publishing.
+- **Sink below ground.** `seatFloating` never lifts a sunk piece. `supportsOf` and `indexTops` keep only box tops over
+  0, so a buried container's roof is never a seat. Every editor path that writes a map piece's base allows a sink;
+  the two `Math.max(0, ...)` clamps left in `view3d.js` and `moveWaypoint` are track waypoints. `standsOnGround` is
+  false on a map, so the 3D height drag is open. The board accepts a negative base.
+- **The hollow chimney.** The shell's arc maps onto three's cylinder angle correctly (theta = pi/2 - a), the rim's
+  torus is turned onto the same convention, and so are the jambs and the lintel staves. Block 1d sweeps the rest.
+- **The turbine, apart from the readout.** Blade 0 points straight up at Rotor 0, so `turbineTop`'s "nearest to
+  up" is the right blade, and `coneChain`'s last dome meets the tip exactly.
+
+### Checks run
+
+    selftest         node src/trackbuilder/selftest.js: 2063 passed, 0 failed. New: a road copied with its cars,
+                     with the road before them in the document and after, and the doubled starter yard's roads each
+                     keeping their own traffic. All five failed on the old clone.js, e.g. riders [25,60,207.5,171]
+                     and none on the copy, and the yard's road carrying 8 with its copy carrying 0
+    props-check      node scripts/props-check.js: all passed. New line in 1d, the turbine's readout against what is
+                     DRAWN, end caps counted, at 9 rotor positions over 17 dim sets. On the old formula it failed at
+                     the biggest corner at Rotor 0.25, 0.375 and 0.5 (130.711 drawn, 130.600 said)
+    props-check      node scripts/props-check.js --selftest: all passed
+    sweep            a scratch sweep of 8 heights x 7 blade lengths x 41 rotor positions: the readout is at least
+                     10.6 cm over the drawn top everywhere now (it was 11 cm under at worst). Not committed
+    probe            headless Chromium on the real builder page with the starter yard loaded, through the flow
+                     check's own page helper: no Duplicate button on the start pads alone, one on a road, and a road
+                     copied with its 4 cars leaving 4 on each road, with no page errors. On the files before the fix
+                     the same probe found a button on the pads and 8 cars on the original road with none on the
+                     copy. Not committed
+    the rest         input-selftest 380; lint:preload up to date at 246 served (clone.js was already in the
+                     builder's graph, so ui.js importing it adds nothing); check:fresh 18; lint:nouns; no dashes in
+                     the lines added
+
+    not run          npm run verify (no physics, plant, ABI or build change); check:builder (none of its cases
+                     looks at the map inspector's Duplicate button, so the probe is the check that can see it);
+                     shots.js; lint:input (input untouched)
+
+### What went wrong
+
+- **The first draft of the fix declared `cars` twice.** The old `cloneElements` had an unused `const cars` at its
+  top, and I added a second. I found it by grep before anything ran, and removed the old one.
+- **The probe was written into the repository's root**, because the page helper serves from there. It was deleted
+  before the commit, and `git status` checked.
+- **The readout bug is a gap in what was measured, not in the arithmetic.** The previous entry says approxHeight is
+  "measured never to come out under what is drawn", and for the turbine it was measured against its solids only.
+  The new line measures the drawing.
+
+### For the owner
+
+Nothing new needs your word. The board was read, not written. The earlier entry's list still stands, the
+`BUGS_TOKEN` rotation and the stale `lint:input` line among it.
+
+## 2026-10-02 | builder, input | The merge with main and the push to main (the owner's ask)
+
+The owner: "push to main". Nothing here changes the physics, the plant, the module ABI or the build, and
+`git diff --stat vendor/betaflight` is empty.
+
+### The merge
+
+Fetched first. `git merge-base HEAD origin/main` answered 3d6fe3a, where this branch left main, and main had four
+commits since: the owner's catalogue in the builder (figures, sections, the hurdle family, handed stacks and a launch
+gate), its write up, its `src/fresh.js` and its push. So origin/main was merged into this branch, the way the five
+inch builder branch was merged before (2ac68a6), and the push to main is a fast forward: nothing rewritten, nothing
+forced.
+
+Two conflicts, each where both sides added to the same place:
+
+- **`src/trackbuilder/app.js`**: an import each on the same line, `clone.js` here and `flightpaths.js` on main. Both
+  kept.
+- **`PROGRESS.md`**: two entries each at the foot. Main's first, because they reached main first, then this
+  branch's.
+
+Ten files changed on both sides merged as text by themselves: the builder's app, ui, model, elements, warnings,
+schema, self test and page, and `src/fresh.js`. A clean text merge was once the wrong merge in this repository (the
+2026-10-01 entry above), so the merged tree was checked whole and not only at the conflicts. The two lines meet less
+than the file list suggests: main's work is on the race canvases (five inch pieces, a pass's `wrap`) and this
+branch's is on the map (Duplicate, sink, stand on end, the hollow chimney and the turbine) and the input path. Read
+where they share a function: Control D in the key handler, the inspector's imports, and `normalize`, which gained a
+pass's `wrap` on one side and an asset's pitch, sink floor and `fitDims` on the other, in different blocks.
+
+`src/fresh.js` came out of the merge right: 250 served, main's 249 and `clone.js`.
+
+### Checks, on the merged tree
+
+    self test         node src/trackbuilder/selftest.js: 2253 passed, 0 failed, so main's checks and this
+                      branch's run together (main's own entry says 2139 on its tree, and this branch had 2063)
+    props-check       node scripts/props-check.js: all passed; --selftest: all passed
+    flow check        npm run check:builder: PASS, 639 checks, 0 failed, the merged builder driven in
+                      headless Chromium, main's new cases for its catalogue among them
+    input-selftest    all 380 passed
+    lint:preload      up to date, boot 127 modules, city 75, built 33; 250 served
+    check:fresh       18 passed, 0 failed
+    lint:nouns        PASS
+    lint:presets      4 of 4 presets clean
+    mission-preset    node scripts/mission-preset.js --check: clean
+    parse             node --check on app.js, ui.js, warnings.js, elements.js and model.js, the builder files
+                      the merge wrote, because no Node check imports app.js or ui.js
+    not run           npm run verify (no physics, plant, ABI or build change); shots.js; lint:input, which has
+                      the one stale line recorded above and reads nothing the merge changed
+
+### For the owner
+
+- **The landing page vendors eight of the files this push changes** (`place.js`, `catalog.js`, `industrial.js`,
+  `kit.js`, `solids.js`, `types.js`, `elements.js`, `model.js`), copied from simulator commit 0e1b0cf. Its lint holds
+  its copies to its own manifest, so nothing there breaks, and they stay as they are until somebody runs
+  `node scripts/vendor.js ../WebFPVSimulator` there. Not done: the yard it draws uses none of this work. The board
+  vendors only the lettering and the roster, which this does not touch.
+- Neither of the other two repositories had anything on its branch to push.
+
+### The push, and what the live site serves
+
+`git fetch origin main` was the last command before the push. Main was still f758c1d, an ancestor of this branch's
+head, so `git push origin HEAD:main` was a fast forward: f758c1d..dabe12f at 03:59:17 UTC. The branch
+`claude/zealous-einstein-mol664` is the same commit.
+
+Before the push, three served files (`ui.js`, `fresh.js`, `types.js`) were read from https://webfpv.org/sim/ through
+a cache busting query and were main's to the byte, so the comparison after it could tell a deploy from none. After
+it, a script asked for `src/fresh.js` every 20 seconds until it was main's (84 seconds, five polls), and only then
+for the other files, so the new `clone.js` was never asked for before it existed: the last push found that a 404 for
+a file not yet deployed is kept at the edge for four hours.
+
+    live              19 of 19 served files this push changed answer 200 and are identical to main by sha256,
+                      clone.js among them
+    not run           a browser against the live site; nobody has flown or built with this on the live site
+
+## 2026-10-02 | builder, plan | The freestyle map is built in the room, as the whoop and the five inch are (the owner's ask)
+
+The owner, after the variants work: "excellent work, now lets improve the freestyle builder to allow for the 3d building like
+we've done with the whoop and 5 inch tracks". Nothing here changes the physics, the plant, the module ABI or the build, no
+field is added to the document (`schemaVersion` stays 3), and `git diff --stat vendor/betaflight` is empty. The plan is
+FREESTYLE-3D-BUILD-PLAN.md; section 6 of it lists the decisions it takes on the owner's behalf, and section 8 what differs.
+
+### How it was read
+
+The map was the one canvas built on the 2D plan, with its 3D view a preview where "a click there places nothing". The whoop
+and the five inch are built in the room: a ghost follows the pointer, a click puts the piece down, a press takes it, a ring
+turns it, a card floats beside it, a line at the foot says what the pointer does. A map is the same gestures with a map's
+things in them: assets that stand on other assets (seat.js), a few that keep to the compass, roads laid node by node, cars
+dropped on roads, named gaps, paint, and no flying order.
+
+### What changed
+
+- **`app.js`.** `buildsIn3D()` is yes on every canvas, so a map opens in the room by itself (waiting for the kit as well as
+  Three.js) with the room's chrome: the drawer, the card, the coach line, the empty state, the bar along the foot.
+  `previewing()`, the hop to 2D a picked tool made, the preview's height drag (`raiseSelected`, `isGrounded`) and the preview's
+  other handlers in `view3d.js` are gone. New: a height on `placeAt`, `moveSelected` carries a piece's height and, with
+  `carriedBy`, what stands on it (an arrow key nudge too); `turnWanted` (the plan's own `snapYaw` on a map, so the room and
+  the plan agree about a heading); `roadAt`, `carGhostAt`; Page Up and Page Down step a gap; F frames what a selection takes
+  on the ground and in the air; Control D puts a copy of a car further along its road; the road draft redraws the coach.
+- **`edit3d.js`.** The ghost of a map's piece, the surface under the pointer for a click and a drag, the grab point kept under
+  the pointer at the height the piece has been carried to, the ring's turn on a roof, the road tool (a click a node, the first
+  node closes, a right click puts a draft away), the car drop and slide, a road's nodes and the knob between two, a press on
+  tarmac selecting the road, and the plan's own rule for what a box takes.
+- **`view3d.js`.** `stage()` (the ghost, guides, distances, ruler and ring were put in the race scene's root, which a map
+  never renders), `surfaceAt` (the nearest solid thing the pointer ray meets, or the ground, then the highest top under it),
+  `landings`, `standAt`, the ghost of a map's piece (its solids, mint, see-through, no depth), the ring sized in pixels
+  (`fitRing`), a hover outline, a selected road's line and handles, a selected car's box, the road being laid, the car about
+  to be dropped, the overlay (warning marks, distances) over a map.
+- **`ui.js`.** The map's card (style, X, Y, Base, Turn, size; a road's shape and lanes; a car's driving and direction; a
+  gap's name and points; paint's size; a label's text; the small bar on a touched screen), its coach line, its empty state,
+  its bar (Things, Solids, Warnings, Plot, Details), the card kept off the whole piece, the palette's Tools group and its
+  help, and the preview note taken out. The inspector's choices for a road and a car are shared with the card.
+- **`place.js`.** `supportsOf` gains `under(x, y, z, ignore)`, `seatFor` is `under` for an element, and `supportsFor(doc)`
+  is exported. Every answer the seat gave is the same.
+- **`seat.js`, `roadtool.js`, `elements.js`, `index.html`, `view2d.js`.** `standingOn`; `copyOffsetAlong`; `MAP_TOOLS` and a
+  mode argument to `toolByKey` (the ruler has no key on a map, because M is the ledge); the dead preview hints and note
+  removed from the page; a map's plan keeps the ten metre grid it had.
+- **`FREESTYLE-3D-BUILD-PLAN.md` (new), `FREESTYLE-MAPS-PLAN.md`, `MENUS-PLAN.md`, `TRACK-BUILDER-5IN-PLAN.md`, `schema.md`.**
+  The plan and what was done against it, and a line in each older document that said a map's 3D was a preview.
+
+### Checked, this turn
+
+    self test            2158 passed, 0 failed (2139 before this work; it holds the seat suite, which is unchanged,
+                         and the 15 map room checks and the 4 for a copy of a car)
+    check:builder        712 PASS, 0 FAIL over 61 cases, one full run started after the last change to the code
+                         (81 of the PASS lines are the six map cases; the five inch's and the whoop's are in the
+                         rest, and are the ones that say the same gestures still work where they were)
+    lint:devices         PASS: every row reachable on every device, every builder bar control on a laptop, the whoop
+                         room with fingers on a tablet, the builder on a phone both ways round on every canvas (the
+                         map's included), the results page clear of its menu, the flight OSD clear of the centre third
+    lint:nouns           PASS
+    lint:preload         up to date, boot 127 modules, city 75, built 33; 249 served (no new module this turn)
+    check:fresh          18 passed, 0 failed
+    check:path           12 passed, 0 failed
+    check:props          all passed
+    check:roads          all passed (8.4 s)
+    vendor/betaflight    git diff --stat empty
+    not run              npm run verify (no physics, plant, ABI or build change), node scripts/shots.js, lint:board,
+                         lint:shell, lint:input, lint:responsive; and nobody has built a map in it with a real mouse
+                         on a real GPU, so nothing here says how it feels
+
+The device check's tablet row is the whoop room's; the map in the room on a touched screen is the flow check's
+"map: by touch" case (the card is the small bar, its buttons finger sized, the ring and a road's handles grabbed by
+touch), not the device check's.
+
+### What went wrong, this turn
+
+- **`group.add(...[])` is an error in Three.js.** A spread of an empty list calls `add` with no argument, which logs "object
+  not an instance of THREE.Object3D". The first road probe showed it as the page's one error; found by the page's own
+  error trap, not by looking. The draft's dots are added one at a time.
+- **The coach did not move while a road was being laid.** It said "lay the first node" after three nodes, because the
+  draft changes `roadDraft` and nothing told the coach. `draftClick`, `finishDraft`, `cancelDraft` and `undoDraftNode` do.
+- **The first screenshot showed Bend line and Square on a map's bar.** They are a track's (a racing line to bend, gates to
+  square), and `room` was now true for a map. Hidden on a map, in the bar and in the phone's More.
+- **The card's size fields had a stray "m" under each.** The unit is in the label on the card, as X and Y are.
+- **Three of my checks were timing, not code.** The ring is made on the frame after a selection, so a press at the knob
+  right after a click was on the last piece's; a road tool button is below the fold of a palette longer than the screen,
+  so a click on it landed on something else; and a car or a road mesh is rebuilt on the next frame, not the one a click
+  was in. Each now waits for the thing it needs, and `tool()` scrolls the button into view.
+- **I edited served files while a full flow run was in progress,** twice, so the cases after the edit loaded the new code
+  and the ones before it the old. That run proved nothing about the final tree and was not counted: the full run in the
+  table above is one started after the last change to the code.
+- **A plan section I wrote claimed counts I had not measured** ("the 25 seat and 20 map checks") and named the wrong
+  scripts: `scripts/seat-selftest.js` is the aircraft's seat, not the map's. Caught on a re-read before the commit and
+  rewritten to say what ran.
+- **A horizontal pole pointed at a roof would have been made at the roof's height,** with its legs through it. A bar on
+  legs (`standsFree`) starts at its own height whatever it is over; the ghost says so too.
+
+### The owner's word
+
+No approval was asked or taken: no change here alters the physics model's shape, the module ABI or the build. The decisions
+the plan takes on the owner's behalf, and how to reverse each, are in its section 6.
+
+### Left open
+
+- Snapping an asset to another's faces (walls and containers that meet), which the plan puts outside this work.
+- A lift handle: a built thing takes its height from what it is put on, and a gap steps with Page Up and Page Down.
+- Nobody has built a map in it with a real mouse on a real GPU: everything here ran in headless Chromium on a software
+  rasteriser, which gives no frame rate, so nothing rests on one. The room's rebuild on the 76 element showpiece is 7 ms
+  and a pointer move is about a millisecond of picking; the pipeline's frame is the rasteriser's.
+
+## 2026-10-02 | builder | The room's map merged with main's six commits, and the sink, the stand on end and the duplicate brought into it
+
+The branch was pushed at 5c5cefc with the map built in the room. The fetch before that push showed that main had moved
+under it: six commits from another session (the board's bug inbox, bug-e605ff6a), 13b9a1b, which touch the same builder
+files. Nothing here changes the physics model's shape, the module ABI or the build, and `git diff --stat vendor/betaflight`
+is empty. `git merge-base` between the branch and main answered f758c1d, a real ancestor, so this is a merge and nothing
+was rewritten. Main was not pushed to.
+
+### What main brought that the room had to meet
+
+Duplicate on a map (`clone.js`), an asset sunk under the ground (`lowestBase`, `SINK_MAX`), an asset stood on end
+(`tilt`, `placedPartsOf`), a hollow chimney and a wind turbine. Three of the five were built on the preview this work
+takes away: Duplicate has its own inspector button because "a map has no card in the room to hold Copy", the sink was
+reached by pulling an asset down with the preview's height drag, and the stood asset's Stands row was only in the
+inspector. Text merged in most files; the meaning did not, so each was read against the room.
+
+### Conflicts, four files
+
+- **`app.js`**: the import line (both kept); `raiseSelected`, which main had edited for the sink and this work had
+  deleted (stays deleted: the room has no height drag, and the sink has the ways below); `copySelection`, where main
+  chose by `buildsIn3D()` and this work had put a car's copy 12 m on.
+- **`ui.js`** and **`selftest.js`**: an import line each, both kept.
+- **`PROGRESS.md`**: both sides' entries at the foot, main's first.
+
+### What changed beyond the text
+
+- **Copy picks by the document, not the view.** `buildsIn3D()` is yes on every canvas now, so main's rule would have sent
+  a map to the track's `copyElements`. A map's is `cloneElements`: beside what it copies, a car on along its own road, a
+  road with its cars. This work's own `copyOffsetAlong` (and its four self test checks) did less and is gone;
+  `roadtool.js` is as it was. The first entry above still names it, as it was true when that commit was made.
+- **The map inspector's Duplicate button is gone**, and `appendDuplicate` with it. Its own comment gave the reason it
+  existed (no card) and the reason a track has none (the card has Copy: "a second button would be a second way to do one
+  thing"). The card has Copy on every canvas now. Reverse: put the function back and call it from the two places.
+- **Sinking in the room.** The card's Base takes a negative number down to `-SINK_MAX` for an asset and says how far it
+  is sunk; Page Down sinks an asset that is on the ground a quarter metre (a metre with Shift) and Page Up brings it back,
+  stopping at the paving, with what stands on it going the same way; and a drag keeps a sunk piece sunk while it is over
+  the ground and sets it on a roof when it is taken over one. That last rule is not decoration: carrying the sink on to a
+  roof leaves the piece 1 m inside the building and the seat then drops it to the ground inside it (shown by the
+  mutation below). Page Up and Page Down still say where a built thing's height comes from, once, when no piece can
+  take the step.
+- **Stands on the card.** The inspector's Flat and On end are one function now (`standItems`) offered by the card too. The
+  card's area (which keeps the card off the piece) and F read the height with the tilt.
+- The ring, the plan's footprint and the placement already read `placedPartsOf`, which the merge brought in, so a
+  stood container is ringed and landed on as it stands (the new case points at the top of one). The ghost is only ever of
+  a new piece, which is made flat.
+
+### Checked, on the merged tree
+
+    self test            node src/trackbuilder/selftest.js: 2268 passed, 0 failed. Main's merged tree was 2253; this work
+                         adds the 15 checks of the map room suite. The four for a copy of a car went with the code they
+                         tested
+    check:builder        a full run on the merged tree: PASS, 726 checks, 0 failed, over 62 cases: the earlier 712 and
+                         the new case's 14. "Every tool" walks 36 tools now, the hollow chimney and the wind turbine
+                         among them, and each arms, ghosts, puts one piece down and has a card. Then one hint span was
+                         taken out of the keys bar, which no case reads, and the twelve cases that read the map room and
+                         the bar's chrome were run again after it, the new case with one more line: 154 PASS, 0 FAIL
+    new case             "map: sinking, standing on end and copying", 15 checks: the card's Stands, a stood container as
+                         tall as it is long and landed on at its top, a typed sunk Base and what the card says of it,
+                         Page Up and Page Down, a drag that keeps the sink over the ground and sets the piece on a roof,
+                         the card's Copy and Control D. With the drag's rule for a sunk piece taken out it fails two
+                         lines (0 against a roof at 11.6, and a toast that it was set down); put back, it passes
+    lint:devices         PASS on the merged tree, before that span went: every row reachable on every device, every
+                         builder bar control on a laptop, the whoop room with fingers on a tablet, the builder on a phone
+                         both ways round on every canvas, the results page and the flight OSD
+    lint:input           1 failed, 219 passed: the one stale line main recorded, "a key pressed at the question does
+                         nothing behind it", which expects the 2D view of a five inch canvas that has opened in 3D since
+                         1 October. Main's own count, so nothing here adds to it. Not changed: a threshold is never
+                         changed to pass, and main's entry has the one line fix
+    lint:preload         up to date, boot 127 modules, city 75, built 33; 250 served (run after the paths were staged)
+    check:fresh          18 passed, 0 failed
+    lint:nouns           PASS
+    lint:presets         4 of 4 presets clean
+    mission-preset       --check clean
+    props-check          all passed, and --selftest all passed
+    roads-check          all passed (8.3 s)
+    path-check           12 passed, 0 failed
+    input-selftest       all 380 passed
+    parse                node --check on every builder file the merge touched
+    probe                headless Chromium on the merged room, looked at and not committed: a container stood on end with
+                         the card's Stands row lit and the ring at its foot, one sunk 1.2 m with the card saying so, the
+                         inspector's Stands row in the drawer and no Duplicate button in it; no page errors
+    vendor/betaflight    git diff --stat empty
+
+    not run              npm run verify (no physics, plant, ABI or build change), node scripts/shots.js, lint:shell,
+                         lint:responsive, lint:board; and nobody has built a map in the room with a real mouse on a real
+                         GPU, so nothing here says how it feels
+
+### What went wrong
+
+- **Main moved under this work and I did not look until the push.** The other session pushed to main at 03:59 UTC, while
+  this was being built on f758c1d; I fetched again only before pushing the branch, at 04:5x, when the gap was six
+  commits and the overlap was in the files I had rewritten. The conflicts were small and the meaning was not: the
+  Duplicate button, the sink and the copy of a car each needed deciding. CLAUDE.md says to fetch before reasoning about a
+  branch; one fetch in the middle of the work would have let me meet it in smaller pieces.
+- **`lint:preload` said STALE, 256 served, in the middle of the merge.** `gen-preload` takes its list from `git ls-files`,
+  which names an unmerged path three times, so `app.js`, `ui.js` and `selftest.js` were listed three times each. Not a real
+  difference: regenerating would have written a wrong `src/fresh.js`, so the file was put back as it was and the lint was
+  run again after `git add` (250 served, up to date). Run it after the paths are staged, never while any is unmerged.
+- **My first rewrite of `liftSelection` would have failed my own flow check.** It said where a building's height comes
+  from only when nothing selected could take a step, so Page Up on a building on the ground, which cannot rise, said
+  nothing. Found by reading the case that pins the sentence before running it; the sentence is said when no piece can
+  take the step.
+- **The new case's first run failed one line, which was mine:** it read the ring's `radius`, and the ring has `parts`.
+- **Mutation, to see the new case bite.** With the drag's rule for a sunk piece taken out, the case failed on the roof
+  (0 against a roof at 11.6) and on a toast that said the piece had been set down, and passed again with it put back.
+
+### The owner's word
+
+No approval was asked or taken: no change here alters the physics model's shape, the module ABI or the build. Three
+decisions were taken on the owner's behalf and each is one place to reverse: the inspector's Duplicate button is gone
+because the card has Copy; the preview's drag to sink is replaced by Base, Page Down and the drag's rule, with no lift
+handle; and a map's copy is the other session's `cloneElements`, not this work's smaller rule.
+
+### Left open
+
+- **Nobody has built a map in the room with a real mouse on a real GPU,** and nobody has flown a map that was built
+  there. Everything here ran in headless Chromium on a software rasteriser.
+- **The landing page vendors `place.js`** among the eight simulator files main's push changed, from an older commit. This
+  work adds two exports to it and changes no answer it gave, and the yard the landing page draws uses neither; its lint
+  holds its copy to its own manifest, so nothing there breaks and it stays as it is until somebody runs
+  `node scripts/vendor.js ../WebFPVSimulator` there.
+- **Pushing to main** is not done. The owner asked for the build, not the push, and the branch has everything.
+
+## 2026-10-02 | builder | The push to main, and what the live site serves (the owner's ask)
+
+The owner: "push to main". Nothing here changes the physics, the plant, the module ABI or the build, and
+`git diff --stat vendor/betaflight` is empty.
+
+### The push
+
+Fetched first. Main was 13b9a1b, the other session's last commit, and an ancestor of this branch's head 7f3b3a1, which
+is the merge of that main into the branch (the entry above). So `git push origin HEAD:main` was a fast forward:
+13b9a1b..7f3b3a1 at 06:15:00 UTC. Nothing was rewritten or forced. The branch `claude/cool-faraday-kc254c` is the same
+commit. What went is the map built in the room (two commits) and the merge, which brings the work of the six commits
+before it into the room.
+
+### The live site
+
+Before the push, the 10 served files it changes (`place.js`, `app.js`, `edit3d.js`, `elements.js`, `index.html`, `seat.js`,
+`selftest.js`, `ui.js`, `view2d.js`, `view3d.js`) were read from https://webfpv.org/sim/ through a cache busting query and
+each was main's to the byte, so the comparison after it could tell a deploy from none. `src/fresh.js` is not among them,
+so it could not be the sentinel it was last time: `view3d.js` was polled every 20 seconds, still the old one at 1, 22 and
+42 s and the new one at 63 s. Only then were the others asked for. All ten already existed on the site, so there was no
+404 for the edge to keep.
+
+    live              10 of 10 changed served files answer 200 and are identical to main by sha256; the front page
+                      and the builder page answer 200
+    deploy stamp      Last-Modified 06:15:54 UTC on the builder page, 54 s after the push, which is the stamp
+                      src/fresh.js turns into the modules' addresses, so a returning browser asks for this deploy's
+                      scripts and not the ones it kept
+    not run           a browser against the live site; nobody has built a map in the room on the live site, or flown
+                      one built there
+
+### For the owner
+
+- **The landing page vendors `place.js` and `elements.js`** among the files this push changes, copied from an older
+  simulator commit. Its lint holds its copies to its own manifest, so nothing there breaks, and they stay as they are
+  until somebody runs `node scripts/vendor.js ../WebFPVSimulator` there. This work adds `supportsFor` to the first and
+  `MAP_TOOLS` and a mode argument on `toolByKey` to the second, and changes no answer either gave; the yard the front
+  door draws uses none of them.
+- Neither of the other two repositories had anything on its branch to push.
+- **The fly it pass from the entry above is still open.** The push does not stand in for it.
+
+## 2026-10-02 | review | Every pull request read, and the patch notes brought up to 2 October (the owner's ask)
+
+Nothing here changes the physics, the plant, the module ABI or the build, and `git diff --stat vendor/betaflight` is empty. No code in this repository changed: this entry is the record of a review, which the working rules ask for whether or not a finding was acted on. The patch notes live in the front door's repository, and the work on them went there, on its branch.
+
+### The ask
+
+"review all pr's and update the patch notes". Taken as: read every pull request on the three repositories, find what the patch notes had not said, and bring them up to what has landed. Nothing was merged, closed, commented on or pushed on any pull request. A review of someone else's pull request, and above all one that is already merged, is the owner's to act on.
+
+### What was read
+
+31 pull requests. Here, 21: #1 to #22, where #20 is an issue (a reader asking to fly any drone on any track, answered by the owner and closed by the reader on 28 September). The board, 4. The front door, 6. State and bodies from GitHub, every head commit fetched from refs/pull/N/head and tested against main. The three clones were shallow, so they were fetched whole before anything was reasoned from them.
+
+- 27 are merged and their work is on main. For 24 of them the head is itself an ancestor of main. Three were squash merged, the board's #2 and #3 and the front door's #3, so their heads are not ancestors; their squash commits are on main (242757a, 818d416, 6c6fca7) and their content is there (`support_click` in the board's validate, store and server; `/cw/webfpv` in the board's app.js).
+- 3 are closed unmerged, all here: #2 (a draft, closed on 28 August), #17 (replaced by #19, which says so: #17 had grown to 44 commits) and #18 (closed as folded into #17). Their work is not on main, correctly.
+- 1 is open: the board's #4.
+- Against the patch notes: #3 to #14 (26 and 27 August) are the 22 August section; #15, the board's #1 and the front door's #1 and #2 are 25 September; #19, the board's #2 and #3 and the front door's #3 and #4 are 26 and 27 September; the front door's #5 is "Back in the wiki opens the article". Not in the notes, on purpose, and left so: #1 (14 August, before the notes begin), #16 (a pilotless replay link for recording clips: a capture tool and not something a pilot flies), #21 (a dev script) and the front door's #6 (a cache address). Not in the notes and should have been: #22, which is in them now.
+
+### Findings
+
+1. **#22, Matt's Flooring as a maps only partner, was merged by cursor[bot] ten seconds after it was opened (14:04:51 to 14:05:01 UTC on 1 October), with no review and no comment.** Its one check, GitGuardian, finished at 14:06:40, after the merge. What it does is sound: `npm run lint:partners` is 59 of 59 on main and leaves the tree clean, the made file is current, and the logo is transparent, not on white as its body says (70 per cent of its pixels are clear), so the one colour file is a proper cream silhouette. Four things it does not say:
+   - `roster.js` is vendored byte for byte into the board (public/sim/partners/) and the front door (src/sim/partners/), and #22 changes it, so the body's "no vendor re-run is needed" is true of behaviour and not of the copies. `cmp` finds both copies different from this repository's file. Nothing fails, because each repository holds its copy to its own manifest and neither reads the new export. The three CLAUDE.md files say the copies are byte for byte, so `node scripts/vendor.js ../WebFPVSimulator` in each is owed.
+   - A found mark's callout reads `${roleTitle(partner)} · found`, and `roleTitle` is empty for a partner with no role, so Matt's Flooring's second line reads " · found" with nothing before the dot (roster.js, ui.js partnerFound). The results row "Partner marks found" filters on PARTNERS alone (ui.js partnerRows), so a find never reaches it.
+   - The board refuses every event for the slug (`kind: 'mark'`, seen or found): its closed list is its own copy of PARTNERS, which does not have it (validate.js, "That is not a partner of this board."). That fits "not on the board", and it means nothing is counted for this partner and each seen and found sends a request that is turned away.
+   - The logo's own tagline, GET LAID BY MATT, goes on every freestyle map's wall. Said so it is a decision and not a surprise.
+2. **The board's #4, "Patreon tiers: show the live $3, $8, $20 prices", is open, conflicted, and still wanted.** It is a six line change (the note in app.js and the three anchors in index.html, and 14 checks in the self test). `git merge-tree` against main conflicts in public/index.html and src/selftest.js, both places main rewrote on 1 October. The simulator says $3, $8 and $20 a month (src/share/patreon.js). The board still says $5, $12 and $25, plus GST on join (public/app.js:70, public/index.html three anchors), and so does the front door (src/config.js:63, index.html, wiki/index.html twice, notes/index.html), which never had a pull request for it. So two of the three products tell a visitor the old price while the 26 September notes say it came down. Not fixed here: the numbers are the owner's, the front door's change needs the stamp rule, and #4 is the owner's own.
+3. **#21, "add URL validation in boardcards.js (CWE-918)", an automated outside change merged on 28 September, does nothing a pilot or the board needs.** `--board` is typed by whoever runs the script, so there is no attacker to keep from the metadata address. It refuses two hosts by name, which any other address gets round, and its own body says it is unverified and "a suggestion". It breaks nothing: the default and the board's own address pass. Left as it is.
+4. **The front door still says "Tracks and Times" in six places** (index.html twice, wiki/index.html, notes/index.html, src/main.js, one wiki article), where the owner's glossary of 1 October (MENUS-PLAN.md 3.1) says "Tracks and times" and the board and the simulator now do. The plan sized 3.1 as small on each side and did not name the front door. Not changed: the same letter in a module needs the stamp rule.
+
+### What the patch notes needed, and what was done
+
+The newest section was 29 September, written that morning. Missing from it: that afternoon's three changes (the outline switch, the floating fix, Mantis FPV's card), all of 30 September, 1 October and 2 October, and #22. The front door's notes/index.html now has those, in the page's voice, with the kicker, the jump list, the three descriptions and the footer moved to 2 October, and the velocity graph regenerated to the same day (53 days, 1,139 commits). Perth days, taken from the day each change reached main.
+
+Five read only readers digested the slices of this file, the commits and the board's history, and each claim that went into the notes was then held to its source here, in the log or in the code. That corrected three digest lines before they were written: the iPhone and iPad words say "use a computer", not "try Chrome"; a road copied alone carries no cars, only a road copied with its cars does; and Page Up and Page Down raise and sink a piece, they do not "step a gap". Three more wordings follow a caution in a digest or in the log: Fly order is N now, so the O in the whoop entries is not quoted; the Firefox fix is told without a cause, because this log, the code's comment and the ticket give three; and the qualifier is said to be rebuilt from the event's diagram, which is what the log's own account of it says, and not from a published plan.
+
+### Checked, and not
+
+    lint:page            32 of 32 before the change and 32 of 32 after it, with the graph regenerated to 2 October
+                         (its last line checks that the graph reaches the newest entry)
+    lint:wiki            ok
+    npm test             13, 10 and 16 tests passed
+    the page             looked at in headless Chromium at 1280, 900, 430 and 360 wide: no horizontal overflow of the
+                         page, no console error, every jump link has its section, the graph and the new sections read
+                         at 1280 and 430. The Site end label is dropped at 1280 by the generator's own rule (a label
+                         that would sit on another), and the key above the graph carries it
+    dashes               none in notes/index.html
+    not run              npm run verify (nothing here is physics, the plant, the ABI or the build), node scripts/shots.js
+                         (it drives the simulator's shell, which did not change), and nobody has looked at the notes on a
+                         real phone
+
+### For the owner
+
+- #4: close it and have the prices ported onto the board's main and the front door, or have it rebased. Either way the front door is owed the same change, which is a module and so a stamp.
+- #22: the two vendor re-runs, whether the empty role line and the results row should read as they do, whether the board should count a maps only partner's marks, and whether the tagline is meant to be on every map.
+- The notes carry one sentence you may want to reword before they ship: the board's list of bug reports was readable by anyone until the fix of 1 October, and the 1 October section says so. It is true, and it is also a disclosure.
+
+## 2026-10-03 | builder, shell | The builder report and the two stuck reports: three fixed, one added, and one decision for the owner (the owner's ask)
+
+The owner: "Fix the stuck bugs and the builder bug". The board had 52 open tickets, 13 more than the 39 read on 2 October,
+and three of them are these: bug-d7247563 "stuck in a container hole" (a radio, a built map, 540 s flown),
+bug-ad038907 "ITS GETTING STUCK THE DRONE" (a Chromebook keyboard, the city, 32 frames a second, "the drone got stuck on
+the ground and couldn't move") and bug-67ae1762 "Trackbuilder bugs" (three points, from somebody using the map room).
+Nothing here changes the physics, the plant, the module ABI or the build, and `git diff --stat vendor/betaflight` is
+empty. The board was read and not written: closing a ticket is the owner's call.
+
+### The builder report (bug-67ae1762), point by point
+
+1. **"The specs card ... duplicates the right side panel and covers the view, obstructs placing and moving": real, fixed.**
+   The map room (2 October) gave a map the card the whoop and the five inch have. With the drawer open it holds every
+   field the card has, and the card floated over the view saying the same again; and it followed a piece while the
+   piece was pulled. On a map the card now steps aside for the open drawer (`renderCard`, and `toggleDrawer` renders it
+   again either way) and for a pull (`placeCard` hides it while `gesturing()`, an edit between `beginEdit` and
+   `endEdit`, and shows it the frame the piece is put down). It is still how a map piece is edited with the drawer shut,
+   which is the room's design. A track's card is unchanged.
+2. **"Vertical objects ... snap to ground if move object underneath": real, fixed for typed positions.** Dragging a piece
+   and an arrow key carry what stands on it (`carriedBy`), and a typed X or Y did not: with a container stood on end on
+   another, typing X into the one underneath moved it and left the other in the air, and the seat set it on the
+   ground (z 5.232 to 0 in the check). `setElementCoord` carries riders, and the card's and the inspector's X and Y use it.
+   **"They would snap to the centre": not found.** Standing a piece on end keeps its plan centre, which the checks of
+   2 October measure, and nothing in the room snaps a piece to the middle of another. The report calls the whole point
+   "not a big deal", so nothing is changed on a guess. One thing that is true and left alone: what a piece stands on is
+   read at its ORIGIN (`seatFor`), for every asset, so a tall piece whose middle is off the roof it leans on is set on
+   the ground.
+3. **"Turn on and off the spotter voice in racing": not done, and the owner's to decide.** It is a wish ("would be cool")
+   and a menu decision, not a fix. The voice is the lap call (`src/render/voice.js`, "Lap 3, 1 minute 3.20"), which
+   follows Sound and Volume and has no switch of its own. Two designs were built and backed out, because the shell check
+   refuses both and the rule is never to change a threshold to make a check pass:
+   - **A separate Lap voice row in Settings, Sound**: `lint:shell` fails with "pilot: overflow grew from 634 to 678 px".
+     That check holds each screen to the length it has (`tests/shell-baseline.json`), and only `node scripts/shell-check.js
+     --record` accepts a longer one. The menus plan is about shorter lists.
+   - **A third state of the Sound row (On, No voice, Off)**: `lint:shell` fails with five lines about the "switch row",
+     because the check uses Sound as its own example of a plain switch (Enter flips, Left is off, Right is on, no popup).
+   The options: (a) the separate row, and you re-record the baseline (+44 px on Settings), a one line change to approve;
+   (b) a flight key for it, as M is for Angle and Acro, which costs a line on the keys screen and is the least findable;
+   (c) leave it. My choice would be (a). Nothing of it is in this commit.
+
+### The stuck reports: what was tried, what was found
+
+Both tickets say "stuck" and nothing else: no steps, no map, and a report carried the pilot's settings and devices and
+nothing about the craft. The code already had four ways out (a crash is set down on the nearest flat surface with room,
+a craft still and not upright is set down after 1.5 s, X, R), and a ticket from 30 September (bug-d1d3f4fb) was a
+Chromebook whose keys did nothing, fixed in 71e06c8. Everything below was run in headless Chromium against the real
+shell, through Betaflight and the plant, on a copy of the starter yard (its one open container, a tunnel 12.2 m long
+and 2.32 m wide, at world (12, 40)) and on a map with an open container stood on end (a shaft 12.2 m deep).
+
+**Found, and fixed: a craft set down by a crash lifted off again by itself.** With the sticks where a pilot leaves them
+when they crash (throttle up, roll and pitch over), the set down was followed by lift off within one frame, a crash into
+the wall within a third of a second, a set down, and again: five set downs in 1.8 s, and the craft in the air for 132 of
+133 frames. The shell puts the keys and the thumb sticks at idle at a set down because "a recovery that kept them high
+would relaunch the wreck by itself" (`resetKeyboardSticks`), and a radio's gimbals cannot be put anywhere, so a radio
+was the one device left out. bug-d7247563 was a radio ("Unknown Gamepad", ten axes, calibrated), but the ticket does not
+say this is what happened to them: it is the cause that replicates, in a tunnel 2.3 m wide, where a relaunch is a wall.
+
+`holdUntilCentred(why)` in `main.js`: a set down made by a crash or a stuck call, with the right stick (an arrow key, or
+the right thumb pad) off centre at that moment, parks the craft as a craft just turtled over is parked, which is the
+same state and the same words, "Centre the right stick, then fly" (`turtleRecover`). Only that stick is waited for: the
+throttle is free, so full throttle with the sticks centred takes it off at once. X is the pilot's own and is not held.
+Checked by a new scenario in `crash-check.js`, "head-on 10 m/s, hand still on the sticks": before, 132 of 133 frames
+in the air and five set downs; after, 0 of 133 and two (the two real crashes), and 16 ms to take off once the sticks are
+centred with the throttle still up.
+
+**The cost, and the owner's number.** `crash-check`'s target "full throttle frees it from the wall within 0.5 s" read
+370, 369 and 388 ms with the hold off and reads 549, 551, 549 ms with it on (and 550 and 551 in two more full runs): 49
+ms over its line. The old figure was met because the craft had already relaunched while the scripted pilot was still
+pushing; now it frees itself from rest when they let go. Both free it. The target is not changed ("never change a
+threshold to make a check pass"): it prints "not met", and the decision is below. No other target moved with the hold
+(three runs each of the 10 m/s and 5 m/s hits, hold off and on).
+
+**Not found, and written down so nobody repeats it:**
+- **Set down after a crash in the tunnel: 100 of 100 points** across the bore were set down inside it, upright, landed,
+  on the floor, by the X key's own search. Never on the roof of the stack, never outside, never on the start line.
+- **A careful exit works.** After a crash into the side wall at 6 m/s, a pilot flying out at 2 m/s left the east mouth
+  with no second crash, and at 4 m/s.
+- **A fuzz of crashes inside the tunnel** (random entry, angle, speed and face, a careful exit after each): 17 of 18 and
+  36 of 36 got out. The one that did not was not the craft: a guided pilot that holds its sticks never centres them, and
+  after a turtle flip the shell waits for them ("Centre the right stick, then fly"), so an upright craft sat parked. It
+  is the rule, and a person lets go.
+- **The shaft**: a crash anywhere in it (54 points) sets the craft down on the ground at the bottom, 12 m below, and a
+  pilot climbs out at 2.5 m/s without touching a wall.
+- **The keyboard in 'hold' mode, on the city, with and without touch emulation** (a Chromebook is often a touch laptop):
+  W takes off, X sets the quad down with the keys at idle, W takes it off again. **bug-ad038907 was not reproduced** and
+  remains undiagnosed: nothing above is known to be its cause. (The hold above also applies to a keyboard pilot with an
+  arrow key still down at a crash, who gets "Let go of the arrows, then fly"; that was not measured.)
+- **`crash-check`**: every "never left stuck" guard passes in every run.
+
+What a pilot can still feel as stuck without a defect: a crash inside a tunnel or a shaft always sets the craft down
+inside it, so a pilot who cannot yet thread 2.3 m crashes again, and is set down inside again. See "For the owner".
+
+### What was added for the next one
+
+Every report now carries one more key, `craft` (21 top level keys of the board's 32, and about 300 of its 8000
+characters): landed, which turtle state it is in (wait, flip, or recover: waiting for a stick to centre), attitude,
+speed, where, how long it had been still, how many set downs in the last two minutes and why (crash, stuck, X, or the
+start line when no flat surface was found), the stick keys the page believes are down (a lost key release holds a
+throttle at zero for good, and this is the only place it would show) and what the sticks were feeding the sim. A
+"stuck" ticket can now say which of these it was.
+
+### Two things the checks showed about the checks
+
+- **The first flight after boot is a cold one.** The first scenario of every `crash-check` run never came within 0.25 m of
+  its wall (the one failed guard of an earlier run), and one run alone with `--only` failed the same way. A warm-up flight
+  the same as the second scenario is now flown and not measured. With it the targets read as the owner's own runs of 24
+  September did: the same handful not met, which move from run to run (this turn's full runs read 7, 4, 7 and 4 not
+  met); the cold run's 19 met was the unusual one.
+- **`lint:input` is green, 223 passed.** The one stale line recorded on 2 October (a key pressed at the question) was
+  fixed on main by the map room work, and the three new checks for the craft block are among the 223.
+
+### What each ticket is now
+
+    bug-67ae1762   points 1 and 2 fixed (the card, the typed position); point 3, the voice switch, is the owner's to decide
+    bug-d7247563   a mechanism that replicates was found and fixed (a radio's relaunch loop in a tunnel); not confirmed
+                   with the reporter, and the tunnel's set down policy is the owner's to decide
+    bug-ad038907   not reproduced, not diagnosed; the next one will say what the craft was doing
+
+### Checks run, on the tree that is committed
+
+    selftest         node src/trackbuilder/selftest.js: 2268 passed, 0 failed
+    seat-selftest    node scripts/seat-selftest.js: 25 of 25 clean
+    input-selftest   node scripts/input-selftest.js: all 380 passed
+    check:builder    PASS, 738 checks, 0 failed, 576 s. The new case, "map: the card steps aside, and a typed position
+                     carries what stands on the piece", failed three ways before the fix (the card over the open
+                     drawer, the card over a pull, the container left in the air and set on the ground, z 5.232 to 0)
+                     and passes now, with a real mouse pull among its checks
+    check:crash      crash-check: 0 guards failed (0 in each of the five full runs after the hold, and in the
+                     A/B runs). The new scenario, "head-on 10 m/s, hand still on the sticks": 132 of 133 frames in
+                     the air and five set downs before the hold, 0 of 132 and two after, 16 ms to take off with the
+                     sticks centred. Targets 20 met, 4 not met in this run (7 and 4 in earlier full runs), among
+                     them "full throttle frees it from the wall within 0.5 s" at 549 ms, which was 370, 369 and 388
+                     ms with the hold off over three runs and 549, 551 and 549 with it on
+    lint:input       all 223 passed here, and 223 passed in this turn's first run. It also failed in two runs between
+                     them on "a key pressed at the question does nothing behind it", the line recorded as stale on 2
+                     October: it reads the builder's view two key taps after the question appears, and that is '2d'
+                     only when Three.js has not yet opened the room, so it is a race and not a fault of this work. The
+                     three new checks for the craft block pass in every run (21 keys, 1716 characters)
+    lint:shell       PASS (with the Lap voice row it failed, "pilot: overflow grew from 634 to 678 px"; with Sound as
+                     three states it failed on the switch row; both are backed out)
+    lint:devices     PASS, 137 s
+    the rest         lint:nouns PASS; lint:preload up to date, boot 127 modules, city 75, built 33; 250 served;
+                     check:fresh 18 passed; git diff --stat vendor/betaflight empty; no dashes in the lines added
+
+    not run          npm run verify (no physics, plant, module ABI or build change; it loads the module and
+                     tests/browser/harness.html and never main.js, so a green run would not be evidence about this);
+                     node scripts/shots.js; check:props and check:roads (no prop or road change); lint:board and
+                     lint:responsive. Flight feel is not something any of this can say: nobody has flown it.
+
+### What went wrong
+
+- **My first crash-check baseline was a cold run and I nearly compared against it.** Its first scenario never touched
+  its wall and its other targets read green (19 met, 1 not), values the owner's own runs of 24 September never had. Run
+  with a warm-up flight, the targets read as they always have. The comparison that mattered, the hold on and off
+  against the same warmed harness, took eighteen runs.
+- **A "stuck" craft in my fuzz was my own pilot.** A guided pilot never centres its sticks, so after a turtle flip it sat
+  in the recover state; the same trial alone got out. Found by replaying it alone with a trace.
+- **A first draft of the hold was a throttle gate and would have moved the owner's target further.** The attitude sticks
+  are what drive the craft into the wall, so only they are waited for, which is also what the turtle already did.
+- **The voice switch cost two full check chains.** A separate row failed `lint:shell`, a three state Sound row failed it
+  again on a different line, and I had run the slow checks on code that then changed. I stopped them and ran the chain
+  once more on the final tree.
+- **A `pkill -f` with the script's name in it killed my own shell**, and the next call's leftovers had to be found and
+  stopped by process id.
+- **A claim written into a draft before it was measured:** that a keyboard pilot cannot be relaunched by a held key. It was
+  not measured, and the hold covers an arrow key held at a crash, so it is out of the entry.
+- **Smaller:** my `held` metric sat after an early return and read `undefined` for a scenario that never touched; a
+  variable named `off` collided in the seat self test; a check label said "one undo step more" and tested only that the
+  piece moved.
+
+### For the owner
+
+1. **The hold after a crash (`holdUntilCentred`, `main.js`).** A craft set down by a crash or a stuck call with the right
+   stick off centre waits for it to centre, with the turtle's banner, instead of lifting off again with the sticks it
+   crashed with. It costs the target above 49 ms over its line, because the old figure was met by a relaunch during the
+   push. If you would rather have the relaunch, `holdUntilCentred` returns at its first line: one line. I made the call
+   because it is the only mechanism that replicates for "crashed inside and cannot fly out", and the keys and thumb
+   sticks already had the same promise.
+2. **A switch for the lap voice** (bug-67ae1762, point 3): (a) a separate row in Settings, Sound, and you re-record
+   the shell baseline (`node scripts/shell-check.js --record`, Settings 634 to 678 px); (b) a flight key, as M is for
+   Angle and Acro; (c) leave it. My choice is (a).
+3. **A crash inside a tunnel or a shaft is set down inside it, by your 24 September rule** ("as near as possible to where
+   the accident happened"). A pilot who cannot yet thread 2.3 m is set down inside again each time, and the shaft's
+   floor is 12 m below. Options: (a) leave it, and let the next report's `craft` block say whether it matters; (b) after
+   three set downs within 20 seconds and 4 metres, set down on the nearest open ground instead, which is an escalation
+   and leaves the first crash as it is; (c) always prefer the nearest mouth, which reverses your rule for enclosed
+   places and would move a pilot practising inside the bando halls. My choice is (a) now and (b) if it comes again.
+4. **The stale `lint:input` line** is a race, as above: either compare the view before and after the keys once the room
+   has settled, or say the builder should open in 2D.
+5. **The board** was read, not written. Whether bug-d7247563 and bug-67ae1762 are closed is yours. `BUGS_TOKEN` is
+   still in this session's transcript: rotate or unset it.
+6. `main` moved while this was done (13b9a1b to 3628663, the map room's merge) and this branch is built on 3628663. Nothing
+   was pushed to `main`.
+
+## 2026-10-03 | board, deploy | The push to main, and every ticket on the board closed (the owner's ask)
+
+The owner: "Push to main and close all tickets on the board so it's starts fresh". Git and the board only: no code
+changed in this entry, and `git diff --stat vendor/betaflight` is empty.
+
+### The push
+
+`git fetch origin main` was the last command before it. Main was still 3628663, an ancestor of this branch's head, so
+`git push origin HEAD:main` was a fast forward: 3628663..a91623d, one commit (the map card, the typed position, the
+crash hold and the craft block). The branch `claude/zealous-einstein-mol664` is the same commit.
+
+What the live site serves: a script asked https://webfpv.org/sim/src/main.js through a cache busting query until it was
+main's, and then compared the four served files the push changed. It matched at the first poll, so the deploy had
+finished before the script started and the time it takes was not measured. This time there was no read of the live
+files before the push, which the 2 October entry did; the comparison still tells new from old, because the live bytes
+equal the new file and the new names (`holdUntilCentred`, `setCraftProbe`, `setElementCoord`, `gesturing`) are in the
+live files and were in none of them before the push. No new served file, so nothing was asked for before it existed.
+
+    live              4 of 4 served files this push changed answer 200 and are identical to main by sha256
+    not run           a browser against the live site; nobody has flown or built with this on the live site
+
+### The board
+
+A ticket is closed by `POST /api/bugs/:id` with a status (open, in_progress, fixed, wontfix or duplicate) and a note
+(`resolution`, up to 4000 characters). `BUGS_TOKEN` opens that like an admin sign in does (`bugsAuthorized` in the
+board's `src/server.js`). There is no delete, and none was used. 52 tickets were open and none in progress; all 52 are
+closed, by the board's own convention (the sweeps of 19, 21 and 24 September and the 30 September close):
+
+    fixed, a note each (4)           bug-52a66f69 (pitch, cd059b2), bug-e605ff6a (the builder's five asks, cd059b2 and
+                                     b7160a2), bug-67ae1762 (two of three points; the note says the lap voice switch is not
+                                     built), bug-d7247563 (a likely cause fixed, not confirmed; the note says so)
+    wontfix, a note each (15)        could not reproduce: bug-ad038907, bug-a18b2ed9, bug-cddc182a, bug-cd48337e
+                                     the browser lists no controller: bug-47e0e9ee, bug-1e3a3a1b, bug-20aa17e3
+                                     what the radio sends: bug-abfeffe6 (constant 2.79), bug-f5ed55e4 (Jumper T20 on
+                                     Android), bug-7358566d and bug-e1d9902a (yaw on Chrome on Android, which fit the
+                                     four channel limit of commit 9687cbe; their notes say they were not assessed one by one)
+                                     a decision not taken: bug-2b2b44aa (the crash rule), bug-5328aa13 (a throttle that
+                                     rests at half), bug-17b6248e (Acro and Angle from a pad)
+                                     praise: bug-424133cc
+    wontfix, no note (33)            the Flight feel reports, closed the way the earlier sweeps closed theirs
+
+`wontfix` here means closed without a change, and each of the 15 notes says which of those it is; a note on a ticket
+that was closed for the clean start ends "Closed on 3 October 2026 with every other open ticket, to start the board
+fresh." The four marked fixed carry a fix that is on main, and where it is a likely cause and not a confirmed one
+(bug-52a66f69, bug-d7247563) the note says so.
+
+    checked           the server's own listing by status, split by kind: open 0, in progress 0, fixed 154 (150 and 4
+                      more), wontfix 223 (175 and 48 more), duplicate 1. 378 tickets, as before
+                      every one of the 52 is in the status the plan gave it, and every older ticket is still there with
+                      its `updatedUtc` unchanged, so nothing outside the plan was touched
+                      the 19 tickets with a note were read back by id: status and note equal what was written
+    not run           anything on the board's page; the notes were read through the API, not as the owner sees them
+
+### What went wrong
+
+- **The first check read 23 tickets short.** Open 0 and wontfix 200 gave 355 against 378. The listing sorts newest first
+  and cuts at 200 (`listBugRows`, the cap the 30 September entry also met), so wontfix, now 223, showed its newest 200. I
+  did not take that for success or for loss: it was read in the source, then the lists were split by kind, where the
+  largest slice is 179, and they add up.
+- **Two tickets are closed without having been looked at one by one.** bug-7358566d and bug-e1d9902a were filed after
+  the assessment of 2 October. Their reports (Chrome on Android, four axes, no mapping, yaw not arriving) fit the class
+  the Stick help now answers, and nothing was replicated for them.
+- **The live files were not read before the push**, as the last push did. Argued above, not skipped silently.
+
+### For the owner
+
+1. **The statuses were my choice**, by the convention above. If you wanted every ticket the same, each is one write
+   back: none of the 52 had a note before, so undoing one is `POST /api/bugs/:id` with status open and an empty
+   resolution. The before record (status, note, `updatedUtc` of each) was kept in the session's scratchpad and not in this
+   repository, because a ticket is a tester's own words, is behind the token on the board, and this repository is public.
+2. **Several tickets described a thing still not built, and no longer show on the open list:** the lap voice switch
+   (bug-67ae1762), a throttle that rests at half (bug-5328aa13), a pad button or a pause menu row for Acro and Angle
+   (bug-17b6248e), the crash rule (bug-2b2b44aa), whether the low latency canvas should be off by default on Android
+   (bug-a18b2ed9, bug-cddc182a), and where a crash inside a tunnel or shaft sets the quad down (bug-d7247563). Their
+   options are in the entries of 2 and 3 October above, and in each ticket's note.
+3. **`BUGS_TOKEN`** is still in this session's transcript: rotate or unset it.

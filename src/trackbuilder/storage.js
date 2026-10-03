@@ -98,6 +98,23 @@ function shippedMap(id) {
   return shippedMaps.find((d) => d.id === id) ?? null;
 }
 
+/*
+ * THE SHIPPED FIVE INCH TRACKS, handed in by the builder for the same reason the maps are: they are builder
+ * content (src/trackbuilder/presets5.js), and this file is on the simulator's boot graph. They list under the
+ * canvas of their class beside the RaceGOW set, open as a copy under a fresh id, and cannot be deleted. Returned as
+ * a deep copy, because the caller edits what it is given.
+ */
+let shippedTracks = [];
+
+export function shipTracks(docs) {
+  shippedTracks = Array.isArray(docs) ? docs : [];
+}
+
+function shippedTrack(id) {
+  const found = shippedTracks.find((d) => d.id === id);
+  return found ? JSON.parse(JSON.stringify(found)) : null;
+}
+
 /* ------------------------------------------------------------------ */
 /* The library                                                         */
 /* ------------------------------------------------------------------ */
@@ -117,10 +134,15 @@ export function listTracks(cls = activeTrackClass(), mode = 'race') {
       id: doc.id,
       name: doc.name,
       modifiedUtc: doc.modifiedUtc,
-      mix: formatElementCounts(countElementsByType(doc.elements)),
+      mix: formatElementCounts(countElementsByType(doc.elements, doc.trackClass)),
       sequence: doc.sequence.length,
       preset,
       credit: doc.credit,
+      /* Which race canvas it belongs to, so the builder's Load lists a five
+       * inch track on the five inch canvas and a whoop track on the whoop's
+       * (rowsForCanvas in ./words.js). The simulator's Track room reads the
+       * class off the loaded document itself and ignores this. */
+      trackClass: doc.trackClass === 'micro' ? 'micro' : 'full',
     };
   };
   /* A map lists with maps and a track with tracks: the Load list of one
@@ -148,7 +170,7 @@ export function listTracks(cls = activeTrackClass(), mode = 'race') {
    * the builder could not open. The showpiece is the yard with a drift
    * course and a tandem, the map the front door flies.
    */
-  const stock = (mode === 'freestyle' ? shippedMaps : presetsForClass(cls))
+  const stock = (mode === 'freestyle' ? shippedMaps : [...presetsForClass(cls), ...shippedTracks.filter((d) => d.trackClass === cls)])
     .map((d) => summarise(d, true));
   return [...mine, ...stock];
 }
@@ -172,7 +194,7 @@ export function loadTrack(id) {
      * by running the board's own validate.js over all six. The copy keeps
      * the credit, because saving a layout does not make it yours.
      */
-    const stock = presetById(id) ?? shippedMap(id);
+    const stock = presetById(id) ?? shippedMap(id) ?? shippedTrack(id);
     return stock ? normalize(duplicateTrack(stock, stock.name)) : null;
   }
   return normalize(lib[id]);
@@ -189,8 +211,35 @@ export function deleteTrack(id) {
   return writeJson(LIBRARY_KEY, lib);
 }
 
+/*
+ * A saved document exactly as the library holds it, or null: what Load's
+ * Undo puts back after a Delete. Not loadTrack, which normalises and hands a
+ * shipped track back as a copy; and put back by restoreTrack rather than
+ * saveTrack, which would stamp it as changed now and move it to the top of
+ * the list it was deleted from.
+ */
+export function savedTrack(id) {
+  const raw = readLibrary()[id];
+  return raw ? JSON.parse(JSON.stringify(raw)) : null;
+}
+
+export function restoreTrack(raw) {
+  if (!raw || typeof raw !== 'object' || !raw.id) {
+    return false;
+  }
+  const lib = readLibrary();
+  lib[raw.id] = raw;
+  return writeJson(LIBRARY_KEY, lib);
+}
+
+/* Whether this browser has a document of its own in the library: what the
+ * builder's storage notice reads to know it has been read once. */
+export function librarySize() {
+  return Object.keys(readLibrary()).length;
+}
+
 export function trackExists(id) {
-  return Boolean(readLibrary()[id]) || isPresetId(id) || Boolean(shippedMap(id));
+  return Boolean(readLibrary()[id]) || isPresetId(id) || Boolean(shippedMap(id)) || Boolean(shippedTrack(id));
 }
 
 /*
@@ -215,7 +264,7 @@ export function keepDisplaced(doc) {
   }
   const lib = readLibrary();
   if (!lib[doc.id]) {
-    if (isPresetId(doc.id) || shippedMap(doc.id)) {
+    if (isPresetId(doc.id) || shippedMap(doc.id) || shippedTrack(doc.id)) {
       return { ok: true, saved: null };
     }
     return saveTrack(doc) ? { ok: true, saved: doc } : { ok: false, saved: null };

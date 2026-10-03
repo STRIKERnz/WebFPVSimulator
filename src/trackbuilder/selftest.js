@@ -35,14 +35,14 @@ import {
   roundTripsCleanly, serialize, aperturesOf, toPlain, startPadsOf, newElementId,
   logoForDecal, dressOrder, LOGO_SLOTS, SCHEMA_VERSION,
   SCENE_TIMES, SCENE_GROUNDS, SCENE_DEFAULT, sceneOf, deepClone, setSideBuilt,
-  groupMembers, expandGroups,
+  groupMembers, expandGroups, elementNormal, apertureCenter,
 } from './model.js';
 import { applyAutoFaces, flipFace, setYaw, clearOverride, travelDirection, defaultYawFor } from './faces.js';
 import {
   addToSequence, addNextLevel, sequenceLabel, faceLabel, bendIndexFor, bendLineAt, gateNumbers,
   neighboursOf, pinFacesAt, sequenceNumbers, removeElement, removeFromSequence,
 } from './sequence.js';
-import { applyFigure, matchingFigure, defaultFigure, upgradeStackedFigures } from './figures.js';
+import { applyFigure, matchingFigure, defaultFigure, upgradeStackedFigures, figuresFor, figureHandOf, wrapBetween } from './figures.js';
 import {
   buildPath, elevationProfile, sequencedElementCount, knotForSeq, markerSquare, passYawOf,
 } from './path.js';
@@ -60,31 +60,59 @@ import {
   moveToPlace, measuresFor, magnetFor, sideBySideYaw, MAGNET_RADIUS, rowPlan, placeRow, ROW_MAX,
   rulerPoint, rulerReading, replacementsFor, replaceWith, placeCube, cubeItems, turnGroups,
 } from './snap.js';
+import { cloneElements, cloneOffsetFor, anyCloneable, CLONE_GAP, CLONE_CAR_GAP } from './clone.js';
 import { CUBE_FACES, cubeFaces } from './cube.js';
+import {
+  canFlag, flagsOf, setFlags, wallPlan, placeWall, wallBays, placeHurdle, placeUpGate, addSpiral, flagsAsFlown,
+  wallOf, wallFlagsOf, setWallFlags, wallIsWoven, setWallWeave, reverseWall, flyOver,
+  partGhosts, setWallSize, wallSizeOf,
+  WALL_MIN, WALL_DEFAULT, WALL_MAX, HURDLE, SPIRAL, ROUND_NAME, roundFlagOf, removeSpiral,
+  BAR_HURDLE, HURDLE_LINES, HURDLE_SIZES, hurdleAngleOf, hurdleLineOf, hurdleSizeOf, hurdleTop, placeBarHurdle, setHurdleAngle,
+  setHurdleLine, setHurdleSize,
+} from './parts.js';
+import {
+  MANOEUVRES, SIZE_IDS, SIZE_FACTOR, FIGURE_BASE, baseFor, curveOf, figureName, isFigureName, netOf,
+  parseFigureName, placeCurve, specOf,
+} from './manoeuvres.js';
+import {
+  aroundOf, applyAround, applyInto, applyLeg, applyPowerLoopGate, applyThen, applyTurnaround, clearAround, clearInto,
+  clearThen, figureHolding, intoOf, placeLaunchGate, placeSection, thenOf,
+} from './flightpaths.js';
+import { GLYPH_H, GLYPH_W, figureGlyph } from './glyphs.js';
+import {
+  RUN_SHAPES, RUN_SPACINGS, SWEEP_RADII, HAIRPIN_RADII, placeRun, placeRunPoints, runBaseFor, runGhosts, runPieceOf, runPoints,
+  runSpecOf,
+} from './runs.js';
+import { scaleOf, say } from './scale.js';
 import { envelopeFor, GATE_OPENING_DEFAULT, PIPE_OD as CUBE_PIPE_OD, inches } from './racegow.js';
 import {
-  RAD, DEG, wrapAngle, gateSupportFeet, apertureFrame, GATE_POST_R_SCALE,
+  RAD, DEG, wrapAngle, gateSupportFeet, apertureFrame, GATE_POST_R_SCALE, leftOf,
 } from './geometry.js';
-import { FRAME_SIDES, frameSidesOf, hasMissingSides, unbuiltSidesOf } from './elements.js';
+import {
+  FRAME_SIDES, frameSidesOf, hasMissingSides, unbuiltSidesOf, isPlain, wallPitchFor, WHOOP_TOOLS, labelOf, trackClassOf,
+  FIVE_INCH_PIECES, FIVE_INCH_TOOLS, MAP_TOOLS, toolByKey,
+} from './elements.js';
 import { PRESETS } from './presets.js';
 import { ELEMENTS, PALETTE_ORDER, GATE_FLAG_H, flagSideOf, flagSideSigns, elementByKey, elementHeight,
   virtualApertureDims, countElementsByType, formatElementCounts,
   GATE_PRESETS, MICRO_GATE_PRESETS, applyGatePreset, matchingGatePreset, presetHeight, levelPitchFor, FRAME_TUBE_OD,
   KIND, FREESTYLE_PALETTE_ORDER, MICRO_PALETTE_ORDER, PALETTE_EXTRA, paletteItems, docModeOf, isTrafficType, apertureShapeOf,
-  TUNING, tuningFor, ROAD_NODES_MAX, defaultDims, defaultPitch,
+  TUNING, tuningFor, ROAD_NODES_MAX, defaultDims, defaultPitch, SINK_MAX, lowestBase,
 } from './elements.js';
 import {
   boardPlanOf, planShapeOf, snapYaw, turnsOf,
 } from './view2d.js';
 import { starterMap } from '../maps/built/starter.js';
-import { PROP_TYPES, GAP_POINTS, FURNITURE_PALETTE, CAR_STYLES } from '../props/types.js';
-import { partsOf } from '../props/catalog.js';
+import {
+  PROP_TYPES, GAP_POINTS, FURNITURE_PALETTE, CAR_STYLES, tiltOf, approxHeight, fitDims, hollowDoorHeight,
+} from '../props/types.js';
+import { partsOf, placedPartsOf } from '../props/catalog.js';
 import { GAP_MIN } from '../props/parts.js';
 import { startBlockDims, startBlockHeight, startBlockLaneOffset } from '../art/startblock.js';
 import { padsLayout } from '../props/course.js';
-import { placeDocument, seatDocument, topUnder, groundUnder, SUPPORT_TIE, OPEN_CLEAR } from '../maps/built/place.js';
-import { SEAT_SLACK, hasRaised, needsSeat, seatFloating, seatedNote, standsOnGround } from './seat.js';
-import { addSolids, placeSolids } from '../props/solids.js';
+import { placeDocument, seatDocument, supportsFor, topUnder, groundUnder, indexTops, SUPPORT_TIE, OPEN_CLEAR } from '../maps/built/place.js';
+import { SEAT_SLACK, hasRaised, needsSeat, seatFloating, seatedNote, standingOn, standsOnGround } from './seat.js';
+import { addSolids, placeSolids, tiltParts, tiltMeasure } from '../props/solids.js';
 import {
   ROOM_TYPES, ROOM_COLOURS, ROOM_SIZE_MIN, ROOM_SIZE_MAX, isRoomType, clampRoomSize, roomBoxes, roomFootprint,
   propsBox, roomParts, roomSolids, roomWorldBoxes, roomHit, roomHitTest,
@@ -98,7 +126,7 @@ import {
 } from './roadtool.js';
 import { CLASH_HORIZON } from './warnings.js';
 import { clubhouseSolids } from '../art/clubhouse.js';
-import { BANNER_SIZE, flagMast, flagSailProfile } from '../art/banners.js';
+import { BANNER_SIZE, GATE_BANNER_H, flagMast, flagSailProfile } from '../art/banners.js';
 import { courseFromDocument } from '../game/trackdoc.js';
 import { GUIDE, guideFromKnots, knotsFromPath, tessellateGuide } from '../game/guide.js';
 import { GATE_SCALE, MICRO_SCALE } from '../game/track.js';
@@ -130,10 +158,19 @@ import {
   inspectCourse, layoutFingerprint, publishCurrentCourse, publishedTags, rememberPublish,
   suggestRemixName, tagsToSend,
 } from '../share/listing.js';
-import { readBind, readEditKey, writeBind } from '../share/session.js';
-import { publishTrack, partsTheBoardDoesNotKnow, unknownPartsSentence, BOARD_UNKNOWN_TYPES } from '../share/board.js';
+import { readBind, readEditKey, writeBind, writeBuilderIntent, takeBuilderIntent } from '../share/session.js';
+import {
+  publishTrack, partsTheBoardDoesNotKnow, unknownPartsSentence, BOARD_UNKNOWN_TYPES, TRACK_TAGS, tagsForClass,
+} from '../share/board.js';
 import { planFromDocument, PLAN_SHAPE, isoApertures, isoShapes } from '../share/plan.js';
-import { keepDisplaced, readAutosave } from './storage.js';
+import {
+  keepDisplaced, readAutosave, shipTracks, listTracks, loadTrack, trackExists, saveTrack, deleteTrack, savedTrack, restoreTrack, librarySize,
+} from './storage.js';
+import { FIVE_INCH_PRESETS } from './presets5.js';
+import {
+  CANVAS_WORDS, CANVAS_ORDER, canvasOf, wordsFor, simulatorLink, isPlaceholderName, changedAgo, exactDate,
+  rowsForCanvas, errorSentence,
+} from './words.js';
 import { FPV_FLOOR_CLEAR, FPV_NEAR_CLEAR, fpvLensClear } from '../render/lens.js';
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -1743,12 +1780,19 @@ function suiteFlaggedDoubleStack() {
 function suitePresets() {
   console.log('\ngate presets');
   const ids = GATE_PRESETS.map((p) => p.id).join(',');
-  check('four presets, standard first', ids === 'standard,championship,whoop,trainer', ids);
+  check('five presets, standard first', ids === 'standard,championship,whoop,wide,trainer', ids);
   check('every preset carries a size and a hint',
     GATE_PRESETS.every((p) => p.label && p.size && p.hint));
-  check('three of them claim to be published, the trainer does not',
+  check('three of them claim to be published, the wide bay and the trainer do not',
     GATE_PRESETS.filter((p) => p.published).length === 3
-    && GATE_PRESETS.find((p) => p.id === 'trainer').published === false);
+    && GATE_PRESETS.find((p) => p.id === 'trainer').published === false
+    && GATE_PRESETS.find((p) => p.id === 'wide').published === false);
+  /* The wide bay is the one whose built width is 2 m: the world builds a gate GATE_SCALE larger,
+   * so its upright to upright is (clearW + a tube) times that, which is the plan's 2 m bay. */
+  const wideP = GATE_PRESETS.find((p) => p.id === 'wide');
+  check('the wide bay builds 2 m between its uprights in the world',
+    Math.abs(GATE_SCALE * (wideP.clearW + FRAME_TUBE_OD) - 2) < 1e-9,
+    String(GATE_SCALE * (wideP.clearW + FRAME_TUBE_OD)));
 
   /* The standard preset IS the library's default gate, not a second copy
    * of 1.524 that could drift from it. */
@@ -3314,6 +3358,752 @@ function suiteBoardPlan() {
   check('and its five named gaps keep their names',
     yardPlan.marks.filter((m) => m.k === 'gap').map((m) => m.n).join('|')
       === yard.elements.filter((e) => e.type === 'gap').map((e) => e.name).join('|'));
+}
+
+/*
+ * SINKING AN ASSET: bug-e605ff6a, "possibility to move objects below ground
+ * level to hide some part". The document and every module already held a
+ * negative base; the inspector and the height drag were the two things that
+ * clamped it at zero. See SINK_MAX in elements.js for what a sunk part is.
+ */
+function suiteSink() {
+  console.log('\nsinking an asset into the ground');
+
+  const solidsOf = (doc) => placeDocument(doc).solids.filter((s) => s.box).map((s) => s.box);
+  const topOf = (boxes) => Math.max(...boxes.map((b) => b[4]));
+  const bottomOf = (boxes) => Math.min(...boxes.map((b) => b[1]));
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const race = createTrack();
+    const c = freestylePlace(map, 'containers', 60, 60);
+    const gate = freestylePlace(map, 'gate', 90, 60);
+    const onRace = createElement(race, 'containers', { x: 10, y: 10, z: 0 }, 0);
+    check('an asset on a map may go 30 m down', lowestBase(map, c) === -SINK_MAX && SINK_MAX === 30);
+    check('a gate on a map may not: its height is Sill height, not its base', lowestBase(map, gate) === 0);
+    check('and nothing may on a race track', lowestBase(race, onRace) === 0);
+  }
+
+  /* -------- the reader -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const c = freestylePlace(map, 'containers', 60, 60);
+    const g = freestylePlace(map, 'gate', 90, 60);
+    c.position.z = -3;
+    const text = serialize(map);
+    const read = deserialize(text);
+    check('a sunk container reads back with no repairs, and round trips byte for byte',
+      read.repairs.length === 0 && serialize(read.doc) === text && elementById(read.doc, c.id).position.z === -3,
+      read.repairs.join('; '));
+    c.position.z = -100;
+    const deep = deserialize(serialize(map));
+    check('one sunk 100 m is held at 30, and the note says so',
+      elementById(deep.doc, c.id).position.z === -SINK_MAX && deep.repairs.some((t) => /under the ground/.test(t)),
+      JSON.stringify(deep.repairs));
+    check('the note names the element, so the author can find it', deep.repairs.some((t) => t.startsWith(`${c.id}:`)));
+    c.position.z = 0;
+    g.position.z = -2;
+    const gz = deserialize(serialize(map));
+    check('a gate\'s base is read as it was written, which it always was: only assets have the floor',
+      elementById(gz.doc, g.id).position.z === -2 && gz.repairs.length === 0);
+  }
+
+  /* -------- placement -------- */
+
+  {
+    const one = createTrack(undefined, 'full', 'freestyle');
+    const c = freestylePlace(one, 'containers', 80, 80, { dims: { stack: 2 } });
+    const up = solidsOf(one);
+    const top0 = topOf(up);
+    const bottom0 = bottomOf(up);
+    c.position.z = -1.3;
+    const sunk = solidsOf(one);
+    check('sinking moves every solid down by the same amount: its top',
+      Math.abs(topOf(sunk) - (top0 - 1.3)) < 1e-9, `${topOf(sunk)} against ${top0 - 1.3}`);
+    check('and its bottom, which is now under the paving', Math.abs(bottomOf(sunk) - (bottom0 - 1.3)) < 1e-9 && bottomOf(sunk) < 0);
+    check('and it has as many solids as it had, none lost by being half under the ground', sunk.length === up.length);
+    const placed = placeDocument(one);
+    const ix = indexTops(placed.solids);
+    const at = { x: placed.items[0].x, z: placed.items[0].z };
+    check('a half sunk roof is still a surface, at its true height over the paving',
+      Math.abs(topUnder(ix, at.x, at.z) - topOf(sunk)) < 1e-9 && topOf(sunk) > 0, `${topUnder(ix, at.x, at.z)}`);
+    check('so a craft over it lands on it, a millimetre under the top as ever',
+      Math.abs(groundUnder(ix, at.x, at.z) - (topOf(sunk) - SUPPORT_TIE)) < 1e-9);
+
+    /* Nothing sinks into the ground and floats up: a negative base is never set down. */
+    check('a sunk asset is not floating, and is not raised by the seat rule',
+      hasRaised(one) === false && seatDocument(one).moved.length === 0 && c.position.z === -1.3);
+    check('half sunk is no warning: it is what the author asked for', !codesOf(one).includes('fs-buried'), codesOf(one).join(','));
+
+    /* The whole of it under the paving, and nothing shows. */
+    const top = topOf(up);
+    c.position.z = -(top + 0.5);
+    const hidden = codesOf(one);
+    const w = freestyleReport(one).warnings.find((x) => x.code === 'fs-buried');
+    check('wholly under the ground is a warning, and names the container', Boolean(w) && w.elementId === c.id, hidden.join(','));
+    check('and nothing of it is a surface: a craft over it finds only the paving', topUnder(indexTops(placeDocument(one).solids), at.x, at.z) === 0);
+    /* The edge of the rule: a top 3 cm over the paving shows. */
+    c.position.z = -(top - 0.03);
+    check('with its top 3 cm over the paving it is not buried: a craft can land on a sliver',
+      !codesOf(one).includes('fs-buried'));
+    c.position.z = -(top - 0.01);
+    check('and 1 cm over it is, the physics\' own floor for a surface',
+      codesOf(one).includes('fs-buried'));
+  }
+
+  /* -------- the starter yard, and every asset sunk a little -------- */
+
+  {
+    const yard = normalize(starterMap()).doc;
+    const base = freestyleReport(yard).warnings.map((x) => x.code).filter((c) => c === 'fs-buried').length;
+    check('the starter yard has nothing buried', base === 0);
+    const doc = deepClone(yard);
+    let n = 0;
+    for (const el of doc.elements) {
+      if (ELEMENTS[el.type].kind === KIND.STRUCTURE) {
+        el.position.z -= 0.5;
+        n += 1;
+      }
+    }
+    const text = serialize(doc);
+    const read = deserialize(text);
+    check(`every one of the yard's ${n} assets sunk half a metre reads back with no repairs, byte for byte`,
+      read.repairs.length === 0 && serialize(read.doc) === text, read.repairs.join('; '));
+    let placedOk = true;
+    try {
+      placeDocument(read.doc);
+    } catch (e) {
+      placedOk = false;
+    }
+    check('and the sunk yard places', placedOk);
+  }
+}
+
+/*
+ * STANDING AN ASSET ON END: bug-e605ff6a, "possibility to rotate objects
+ * vertically, let's say to place container vertically". See tiltMeasure in
+ * src/props/solids.js for why a quarter turn about a horizontal axis needs
+ * no change to the physics.
+ */
+function suiteTilt() {
+  console.log('\nstanding an asset on end');
+
+  const boxesOf = (parts) => parts.filter((p) => p.t === 'box');
+  const sizes = (p) => [p.hi[0] - p.lo[0], p.hi[1] - p.lo[1], p.hi[2] - p.lo[2]];
+  const sortedSizes = (parts) => boxesOf(parts).map((p) => sizes(p).map((v) => Math.round(v * 1e9) / 1e9).sort((a, b) => a - b).join(',')).sort();
+  const extent = (parts, axis) => {
+    const live = parts.filter((p) => p.solid || p.draw);
+    return {
+      lo: Math.min(...live.map((p) => (p.t === 'box' ? p.lo[axis] : Math.min(p.a[axis], p.b[axis]) - p.r))),
+      hi: Math.max(...live.map((p) => (p.t === 'box' ? p.hi[axis] : Math.max(p.a[axis], p.b[axis]) + p.r))),
+    };
+  };
+  const make = (type, opts = {}) => {
+    const doc = createTrack(undefined, 'full', 'freestyle');
+    const el = freestylePlace(doc, type, 80, 80, opts);
+    return { doc, el };
+  };
+
+  /* -------- which assets, and how a pitch is read -------- */
+
+  {
+    check('the containers and the ledge are the assets that stand on end',
+      Object.entries(PROP_TYPES).filter(([, t]) => t.tilt).map(([id]) => id).sort().join(',') === 'containers,ledge');
+    const at = (type, pitch) => tiltOf({ type, pitch });
+    check('upright is 0, and a quarter either way is 1 and -1',
+      at('containers', 0) === 0 && at('containers', Math.PI / 2) === 1 && at('containers', -Math.PI / 2) === -1);
+    check('a pitch is read to the nearest quarter: 40 degrees is upright, 50 is on end',
+      at('containers', 40 * RAD) === 0 && at('containers', 50 * RAD) === 1 && at('containers', -50 * RAD) === -1
+      && at('ledge', 44 * RAD) === 0);
+    check('an asset that does not stand on end ignores it, as it always did',
+      at('building', Math.PI / 2) === 0 && at('crane', Math.PI / 2) === 0 && at('gap', 1) === 0);
+    check('and nonsense is upright', at('containers', NaN) === 0 && at('containers', undefined) === 0 && tiltOf(null) === 0);
+  }
+
+  /* -------- the reader -------- */
+
+  {
+    const { doc, el } = make('containers');
+    el.pitch = 1.2;
+    const read = deserialize(serialize(doc));
+    check('a container read with a pitch of 69 degrees is stood on end, exactly',
+      elementById(read.doc, el.id).pitch === Math.PI / 2, String(elementById(read.doc, el.id).pitch));
+    el.pitch = 0.3;
+    check('and with 17 degrees, flat, exactly 0', elementById(deserialize(serialize(doc)).doc, el.id).pitch === 0);
+    el.pitch = -Math.PI / 2;
+    const text = serialize(doc);
+    const back = deserialize(text);
+    check('a container stood the other way round trips byte for byte, with no repairs',
+      back.repairs.length === 0 && serialize(back.doc) === text && elementById(back.doc, el.id).pitch === -Math.PI / 2);
+    const b = freestylePlace(doc, 'building', 30, 30);
+    b.pitch = Math.PI / 2;
+    check('a building\'s pitch is left as it was written: it is not read, and the file is not rewritten for it',
+      Math.abs(elementById(deserialize(serialize(doc)).doc, b.id).pitch - Math.PI / 2) < 1e-6);
+  }
+
+  /* -------- the parts -------- */
+
+  for (const style of ['40ft', '20ft', '40ft open']) {
+    for (const stack of [1, 3, 5]) {
+      const { el } = make('containers', { style, dims: { stack } });
+      const up = partsOf(el);
+      const L = style === '20ft' ? 6.058 : 12.192;
+      for (const q of [1, -1]) {
+        const on = tiltParts(up, q);
+        const tag = `${style} x${stack}, ${q > 0 ? '+' : '-'}90`;
+        const ys = extent(on, 1);
+        const xs = extent(on, 0);
+        const zs = extent(on, 2);
+        const zu = extent(up, 2);
+        const exact = sortedSizes(on).join('|') === sortedSizes(up).join('|');
+        const ok = on.length === up.length
+          && exact
+          && ys.lo === 0
+          && Math.abs(xs.lo + xs.hi) < 1e-9
+          && zs.lo === zu.lo && zs.hi === zu.hi
+          && ys.hi >= L - 1e-9 && ys.hi <= L + 0.7 + 1e-9;
+        if (!ok) {
+          check(`${tag}: standing on end changes nothing but where the boxes are`, false, JSON.stringify({ n: [on.length, up.length], exact, ys, xs, zs }));
+        }
+      }
+    }
+  }
+  check('every container, in every style and stack and both ways, keeps its boxes\' sizes, stands on y = 0, is centred along x, and keeps its z', true);
+
+  {
+    const { el } = make('containers', { dims: { stack: 1 }, style: '40ft' });
+    const up = partsOf(el);
+    const on = placedPartsOf(Object.assign({}, el, { pitch: Math.PI / 2 }));
+    const b = boxesOf(on)[0];
+    check('one 40 foot container on end is 2.591 wide, 2.438 deep and 12.192 tall',
+      Math.abs((b.hi[0] - b.lo[0]) - 2.591) < 1e-9 && Math.abs((b.hi[2] - b.lo[2]) - 2.438) < 1e-9
+      && Math.abs((b.hi[1] - b.lo[1]) - 12.192) < 1e-9 && b.lo[1] === 0, JSON.stringify(b));
+    check('and flat it is what it was: placedPartsOf returns the layout itself, untouched',
+      placedPartsOf(el) === placedPartsOf(el) || placedPartsOf(el).length === up.length);
+    check('stood the one way the door end is up, the other way it is down',
+      tiltParts(up, 1)[0].hi[1] > 12 && tiltParts(up, -1)[0].hi[1] > 12);
+    check('a quarter and back is where it started, to the bit',
+      (() => {
+        const there = tiltParts(up, 1);
+        /* The measure of the stood parts, turned the other way, undoes it. */
+        const m1 = tiltMeasure(up, 1);
+        const back = tiltParts(there, -1);
+        const sameSizes = sortedSizes(back).join('|') === sortedSizes(up).join('|');
+        return sameSizes && Number.isFinite(m1.dx) && Number.isFinite(m1.dy);
+      })());
+  }
+
+  /* -------- where it lands -------- */
+
+  {
+    const { doc, el } = make('containers', { dims: { stack: 2 }, style: '40ft' });
+    const flat = placeDocument(doc);
+    const flatBoxes = flat.solids.map((s) => s.box);
+    el.pitch = Math.PI / 2;
+    const stood = placeDocument(doc);
+    const boxes = stood.solids.map((s) => s.box);
+    const bottom = Math.min(...boxes.map((b) => b[1]));
+    const top = Math.max(...boxes.map((b) => b[4]));
+    check('stood on end, the lowest solid is on the paving, exactly', bottom === 0, String(bottom));
+    check('and the tallest is as tall as the container is long, to within what a stack\'s offsets add', top >= 12.192 - 1e-9 && top <= 12.192 + 0.7 + 1e-9, String(top));
+    check('and the plan a flat stack covered, twelve metres long, is not what is covered now: a stack of two is a little over five',
+      Math.max(...flatBoxes.map((b) => b[3])) - Math.min(...flatBoxes.map((b) => b[0]))
+      > 2 * (Math.max(...boxes.map((b) => b[3])) - Math.min(...boxes.map((b) => b[0]))));
+    check('it has as many solids as it had', boxes.length === flatBoxes.length);
+    check('the element is where it was put: the middle of what it covers is its origin',
+      Math.abs((Math.max(...boxes.map((b) => b[0])) + Math.min(...boxes.map((b) => b[3]))) / 2 - stood.items[0].x) < 3);
+    check('and the pads found the container\'s top as a surface it can land on, over its own footprint',
+      (() => {
+        const ix = indexTops(stood.solids);
+        /* Half a metre off the middle, which is the seam between the two
+         * boxes of a stack of two and so on neither of them. */
+        const hit = topUnder(ix, stood.items[0].x + 0.5, stood.items[0].z);
+        return hit > 6;
+      })());
+
+    /* Sunk as well as stood: the one on the other. */
+    el.position.z = -2;
+    const both = placeDocument(doc).solids.map((s) => s.box);
+    check('sunk 2 m and stood on end, every solid is 2 m lower, still',
+      Math.abs(Math.min(...both.map((b) => b[1])) - (-2)) < 1e-9 && Math.abs(Math.max(...both.map((b) => b[4])) - (top - 2)) < 1e-9);
+    el.position.z = 0;
+
+    /* The plan, the pick box and the warnings read the same thing. */
+    const poly = planShapeOf(el, doc);
+    const px = poly.map((p) => p.x);
+    const py = poly.map((p) => p.y);
+    check('the plan draws what it covers now: a stack of two is about 5 m by 2.4, not 12 by 2.4',
+      Math.max(...px) - Math.min(...px) < 6.2 && Math.max(...py) - Math.min(...py) < 3.5,
+      `${(Math.max(...px) - Math.min(...px)).toFixed(2)} by ${(Math.max(...py) - Math.min(...py)).toFixed(2)}`);
+    check('and it reads back through a save, still on end',
+      elementById(deserialize(serialize(doc)).doc, el.id).pitch === Math.PI / 2);
+  }
+
+  /* -------- an open container, on end, is a shaft -------- */
+
+  {
+    const { doc, el } = make('containers', { dims: { stack: 1 }, style: '40ft open' });
+    el.pitch = Math.PI / 2;
+    const boxes = placeDocument(doc).solids.map((s) => s.box);
+    const cx = placeDocument(doc).items[0].x;
+    const cz = placeDocument(doc).items[0].z;
+    const H = Math.max(...boxes.map((b) => b[4]));
+    /* A column down the middle, half a metre square, from 30 cm up to 30 cm
+     * under the top: nothing in it. */
+    const blocked = boxes.filter((b) => b[0] < cx + 0.5 && b[3] > cx - 0.5 && b[2] < cz + 0.5 && b[5] > cz - 0.5
+      && b[4] > 0.3 && b[1] < H - 0.3);
+    check('an open container stood on end has nothing down its middle: a shaft to dive', blocked.length === 0, JSON.stringify(blocked));
+    const walls = (axisLo, axisHi) => boxes.filter((b) => b[axisLo] < b[axisHi]);
+    const clearX = (() => {
+      const xs = boxes.filter((b) => b[1] < 1 && b[4] > 10).map((b) => [b[0], b[3]]).sort((p, q) => p[0] - q[0]);
+      return xs.length >= 2;
+    })();
+    check('and it has walls: boxes that run the whole of its height', boxes.some((b) => b[4] - b[1] > 11) && walls(0, 3).length > 0 && clearX);
+    const widths = boxes.filter((b) => b[4] - b[1] > 11);
+    const inner = (() => {
+      /* The clear width across x between the two long walls nearest the middle. */
+      const left = Math.max(...widths.filter((b) => b[3] <= cx + 1e-6).map((b) => b[3]));
+      const right = Math.min(...widths.filter((b) => b[0] >= cx - 1e-6).map((b) => b[0]));
+      return right - left;
+    })();
+    check('the shaft is wider than the gap rule asks of a slot: more than 1.4 m clear',
+      inner > GAP_MIN, `${inner.toFixed(2)} m`);
+    check('and the builder says nothing about it', freestyleReport(doc).warnings.filter((w) => w.code !== 'fs-no-start').length === 0,
+      codesOf(doc).join(','));
+  }
+
+  /* -------- how tall, which the drag handle and the readout must never under-call -------- */
+
+  {
+    let ok = true;
+    for (const style of ['40ft', '20ft', '40ft open']) {
+      for (const stack of [1, 2, 3, 4, 5]) {
+        for (const variant of [1, 2, 3, 7, 19, 42, 99]) {
+          const { el } = make('containers', { dims: { stack, variant }, style });
+          el.pitch = Math.PI / 2;
+          const real = Math.max(...placeDocument(Object.assign(createTrack(undefined, 'full', 'freestyle'), { elements: [el] })).solids.map((s) => s.box[4]));
+          const said = approxHeight('containers', el.dims, style, 1);
+          if (!(said >= real - 1e-9)) {
+            ok = false;
+            check(`${style} x${stack} v${variant} on end is no taller than it is said to be`, false, `${real} over ${said}`);
+          }
+        }
+      }
+    }
+    check('stood on end, a container is never taller than the readout and the drag handle say, over every style, stack and seed', ok);
+    const { el } = make('ledge', { dims: { length: 14 } });
+    el.pitch = Math.PI / 2;
+    const real = Math.max(...placeDocument(Object.assign(createTrack(undefined, 'full', 'freestyle'), { elements: [el] })).solids.map((s) => s.box[4]));
+    check('a ledge stood on end is as tall as it is long, and never taller than it is said to be',
+      real >= 14 - 1e-9 && approxHeight('ledge', el.dims, null, 1) >= real - 1e-9, `${real}`);
+  }
+}
+
+/*
+ * A CHIMNEY TO FLY DOWN AND A TURBINE THAT STANDS STILL: bug-e605ff6a, "hollow
+ * chimneys with opening in the bottom to dive through" and "wind turbines".
+ * What each is, to the document, the palette and the placement; what a pilot
+ * is promised of their solids is scripts/props-check.js's block 1d, and the
+ * module's flights through them are its (h) and (t).
+ */
+function suiteHollowTurbine() {
+  console.log('\na chimney to fly down and a turbine that stands still');
+  const make = (type, opts = {}) => {
+    const doc = createTrack(undefined, 'full', 'freestyle');
+    doc.field.width = 200;
+    doc.field.depth = 120;
+    const el = freestylePlace(doc, type, 100, 60, opts);
+    return { doc, el };
+  };
+  /* The element's solids as the map places them, and the item they came from. */
+  const solidsOf = (doc, el) => {
+    const item = placeDocument(doc).items.find((it) => it.el.id === el.id);
+    return { own: placeSolids(item.parts, item.x, item.y, item.z, item.yaw, item.turns, []), item };
+  };
+
+  /* -------- on the palette -------- */
+
+  for (const id of ['hollowChimney', 'turbine']) {
+    const def = ELEMENTS[id];
+    check(`${id} is on the palette, under Industrial, with no hotkey, and faces any heading`,
+      Boolean(def) && def.propGroup === 'industrial' && def.key === '' && def.turns === 'any' && def.kind === KIND.STRUCTURE,
+      def ? `${def.propGroup}, key '${def.key}', ${def.turns}` : 'missing');
+    check(`and a new ${id} starts at defaults that are inside its limits`,
+      Object.entries(PROP_TYPES[id].dims).every(([k, v]) => v >= PROP_TYPES[id].limits[k][0] && v <= PROP_TYPES[id].limits[k][1]));
+  }
+
+  /* -------- the reader holds each to its limits -------- */
+
+  {
+    const { doc, el } = make('hollowChimney', { dims: { height: 500, radius: 0.5, door: 0.1 } });
+    const e = elementById(deserialize(serialize(doc)).doc, el.id);
+    check('a hollow chimney read with a height of 500 m, a radius of half a metre and a doorway of 10 cm is 80 m, 2.4 m and 1.6 m',
+      e.dims.height === 80 && e.dims.radius === 2.4 && e.dims.door === 1.6, JSON.stringify(e.dims));
+    el.dims = { height: 8, radius: 7, door: 8 };
+    const text = serialize(doc);
+    const back = deserialize(text);
+    check('and one at its extremes round trips byte for byte, with no repairs',
+      back.repairs.length === 0 && serialize(back.doc) === text, back.repairs.join('; '));
+    /* A doorway is never wider than a radius and a quarter: typed past that it
+     * is read as that, so the field never says what the wall does not have. */
+    el.dims = { height: 30, radius: 2.4, door: 8 };
+    check('a doorway of 8 m on a stack 2.4 m in radius is read as 3 m, a radius and a quarter',
+      elementById(deserialize(serialize(doc)).doc, el.id).dims.door === 3, String(elementById(deserialize(serialize(doc)).doc, el.id).dims.door));
+    el.dims = { height: 30, radius: 6, door: 7 };
+    check('and the same doorway on a stack of 6 m is left alone, 7 m being under 7.5',
+      elementById(deserialize(serialize(doc)).doc, el.id).dims.door === 7);
+    el.dims.radius = 2.4;
+    const shrunk = deserialize(serialize(doc));
+    check('the stack made narrower under it pulls the doorway in: a 7 m door on a stack taken down to 2.4 m is 3 m',
+      elementById(shrunk.doc, el.id).dims.door === 3 && serialize(deserialize(serialize(shrunk.doc)).doc) === serialize(shrunk.doc));
+    check('fitDims leaves every other asset and a dimension that is not a number alone',
+      fitDims('turbine', { door: 99, radius: 1 }).door === 99 && fitDims('hollowChimney', { door: NaN, radius: 3 }).door !== 3.75
+      && fitDims('hollowChimney', { door: 5, radius: 3 }).door === 3.75 && fitDims('hollowChimney', null) === null);
+    check('the door is half as high again as it is wide, within 3.2 m and half the stack',
+      Math.abs(hollowDoorHeight(2.8, 30) - 4.2) < 1e-12 && hollowDoorHeight(1.6, 30) === 3.2 && hollowDoorHeight(8, 30) === 12 && hollowDoorHeight(8, 16) === 8);
+  }
+  {
+    const { doc, el } = make('turbine', { dims: { height: 1, blade: 500, spin: 9 } });
+    const e = elementById(deserialize(serialize(doc)).doc, el.id);
+    check('a turbine read with a hub 1 m high, a blade of 500 m and a rotor turned 9 is 15 m, 60 m and 1',
+      e.dims.height === 15 && e.dims.blade === 60 && e.dims.spin === 1, JSON.stringify(e.dims));
+    el.dims.spin = -3;
+    check('and a rotor turned -3 is 0', elementById(deserialize(serialize(doc)).doc, el.id).dims.spin === 0);
+    el.dims = { height: 100, blade: 60, spin: 0.375 };
+    const text = serialize(doc);
+    const back = deserialize(text);
+    check('and one with a long blade on a tall hub round trips byte for byte, with no repairs',
+      back.repairs.length === 0 && serialize(back.doc) === text, back.repairs.join('; '));
+  }
+
+  /* -------- placed: each faces the way it is pointed, at any heading -------- */
+
+  for (const yaw of [0, 0.7, 2.2, -1.9]) {
+    const c = Math.cos(yaw);
+    const s = Math.sin(yaw);
+    {
+      const { doc, el } = make('hollowChimney', { yaw });
+      const { own, item } = solidsOf(doc, el);
+      const jambs = own.filter((o) => o.name === 'jamb');
+      const mid = [(jambs[0].cap[0] + jambs[1].cap[0]) / 2 - item.x, (jambs[0].cap[2] + jambs[1].cap[2]) / 2 - item.z];
+      const len = Math.hypot(mid[0], mid[1]);
+      check(`a hollow chimney turned ${yaw} has its doorway on the heading: the jambs stand either side of it`,
+        jambs.length === 2 && Math.abs(mid[0] / len - c) < 1e-6 && Math.abs(mid[1] / len + s) < 1e-6,
+        `the jambs' middle is (${(mid[0] / len).toFixed(4)}, ${(mid[1] / len).toFixed(4)}) from the axis, the heading (${c.toFixed(4)}, ${(-s).toFixed(4)})`);
+    }
+    {
+      const { doc, el } = make('turbine', { yaw });
+      const { own } = solidsOf(doc, el);
+      const nacelle = own.find((o) => o.name === 'nacelle');
+      const hub = own.find((o) => o.name === 'hub');
+      const dir = [hub.cap[0] - nacelle.cap[0], hub.cap[2] - nacelle.cap[2]];
+      const len = Math.hypot(dir[0], dir[1]);
+      /* The blades all stand in the plane square to the heading, through the middle of the hub. */
+      const mid = [(hub.cap[0] + hub.cap[3]) / 2, (hub.cap[2] + hub.cap[5]) / 2];
+      const ahead = (p) => (p[0] - mid[0]) * c + (p[2] - mid[1]) * -s;
+      const blades = own.filter((o) => o.name === 'blade');
+      check(`a turbine turned ${yaw} faces the heading: its hub is ahead of its nacelle, and every blade stands in the plane square to it`,
+        Math.abs(dir[0] / len - c) < 1e-6 && Math.abs(dir[1] / len + s) < 1e-6 && blades.length > 0
+        && blades.every((b) => Math.abs(ahead(b.cap.slice(0, 3))) < 1e-6 && Math.abs(ahead(b.cap.slice(3, 6))) < 1e-6),
+        `from the nacelle to the hub (${(dir[0] / len).toFixed(4)}, ${(dir[1] / len).toFixed(4)}), the heading (${c.toFixed(4)}, ${(-s).toFixed(4)})`);
+    }
+  }
+
+  /* -------- the plan, the readout, the warnings -------- */
+
+  {
+    const { doc, el } = make('hollowChimney');
+    const poly = planShapeOf(el, doc);
+    const wide = Math.max(...poly.map((p) => p.x)) - Math.min(...poly.map((p) => p.x));
+    const deep = Math.max(...poly.map((p) => p.y)) - Math.min(...poly.map((p) => p.y));
+    check('the plan draws the hollow chimney about as wide as it is round: a base radius of 3 m is about 6 m across',
+      Math.abs(wide - 6) < 1 && Math.abs(deep - 6) < 1, `${wide.toFixed(2)} by ${deep.toFixed(2)} m`);
+    check('its height readout is its height and a hair for the rolled rim, 30.05 m',
+      Math.abs(elementHeight(ELEMENTS.hollowChimney, el.dims, null) - 30.05) < 1e-9);
+  }
+  {
+    const { doc, el } = make('turbine', { dims: { height: 48, blade: 28, spin: 0 } });
+    const poly = planShapeOf(el, doc);
+    const deep = Math.max(...poly.map((p) => p.y)) - Math.min(...poly.map((p) => p.y));
+    /* Blades at 120 and 240 degrees, each (blade + a hub radius's half) long: they spread to either side by that times the sine of 120 degrees. */
+    check('the plan draws the turbine across its rotor: 28 m blades at rotor 0 spread about 50 m sideways, on the plan',
+      Math.abs(deep - 2 * 28.63 * Math.sin((2 * Math.PI) / 3)) < 2, `${deep.toFixed(1)} m across`);
+    check('a turbine in the middle of a big plot has nothing to warn about but pads it does not have',
+      codesOf(doc).filter((code) => code !== 'fs-no-start').length === 0, codesOf(doc).join(', '));
+    el.position.y = 6;
+    check('and one whose rotor reaches past the edge of the plot is told so', codesOf(doc).includes('fs-outside'), codesOf(doc).join(', '));
+  }
+}
+
+/*
+ * DUPLICATE ON A MAP: bug-e605ff6a, "clone function to duplicate objects".
+ * The builder had Control D and a Copy button, for a track's room only, and
+ * the copy it made was a copy in a flying order a map does not have. See
+ * clone.js.
+ */
+function suiteClone() {
+  console.log('\nduplicate on a map');
+
+  const polyBox = (poly) => ({
+    minX: Math.min(...poly.map((p) => p.x)), maxX: Math.max(...poly.map((p) => p.x)),
+    minY: Math.min(...poly.map((p) => p.y)), maxY: Math.max(...poly.map((p) => p.y)),
+  });
+  const apart = (a, b) => a.maxX <= b.minX + 1e-6 || b.maxX <= a.minX + 1e-6
+    || a.maxY <= b.minY + 1e-6 || b.maxY <= a.minY + 1e-6;
+  const inPlot = (b, doc) => b.minX >= -1e-6 && b.minY >= -1e-6
+    && b.maxX <= doc.field.width + 1e-6 && b.maxY <= doc.field.depth + 1e-6;
+
+  /* -------- every kind of piece lands clear of itself -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const things = ['building', 'crane', 'containers', 'mast', 'bridge', 'tree', 'quarterPipe', 'billboard', 'gate', 'cone']
+      .map((type, i) => freestylePlace(map, type, 30 + (i % 3) * 40, 30 + Math.floor(i / 3) * 40));
+    let allApart = true;
+    let allInside = true;
+    for (const src of things) {
+      const doc = deepClone(map);
+      const { made } = cloneElements(doc, [src.id]);
+      const copy = elementById(doc, made[0]);
+      const a = polyBox(planShapeOf(elementById(doc, src.id), doc));
+      const b = polyBox(planShapeOf(copy, doc));
+      if (!apart(a, b)) {
+        allApart = false;
+        check(`a copy of a ${src.type} does not land on it`, false, JSON.stringify({ a, b }));
+      }
+      if (!inPlot(b, doc)) {
+        allInside = false;
+        check(`a copy of a ${src.type} stays on the plot`, false, JSON.stringify(b));
+      }
+    }
+    check('a copy of every kind of piece stands clear of the piece it copies', allApart);
+    check('and on the plot', allInside);
+
+    /* The crane is the case the track's rule could not do: its size is a jib,
+     * which `width`, `depth` and `clearW` never name. */
+    const doc = deepClone(map);
+    const crane = doc.elements.find((e) => e.type === 'crane');
+    const shift = cloneOffsetFor(doc, [crane]);
+    const reach = polyBox(planShapeOf(crane, doc));
+    check('a crane moves more than its own width, not the track rule\'s metre and a half',
+      Math.abs(shift.x) + Math.abs(shift.y) >= (reach.maxX - reach.minX) + CLONE_GAP - 1e-6
+      || Math.abs(shift.x) + Math.abs(shift.y) >= (reach.maxY - reach.minY) + CLONE_GAP - 1e-6,
+      JSON.stringify({ shift, reach }));
+  }
+
+  /* -------- what a copy is -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const b = freestylePlace(map, 'building', 60, 60, { yaw: Math.PI / 2, style: 'office' });
+    b.dims.floors = 9;
+    b.name = 'Office tower';
+    b.position.z = 0;
+    const before = serialize(map);
+    const { made, left } = cloneElements(map, [b.id]);
+    const copy = elementById(map, made[0]);
+    check('Duplicate makes one new piece, and leaves nothing out', made.length === 1 && left.length === 0);
+    check('with an id of its own', copy.id !== b.id && new Set(map.elements.map((e) => e.id)).size === map.elements.length);
+    check('the same type, style, size and heading',
+      copy.type === 'building' && copy.style === 'office' && copy.dims.floors === 9
+      && Math.abs(copy.yaw - b.yaw) < 1e-9 && copy.dims.width === b.dims.width);
+    check('and the same height off the ground', copy.position.z === b.position.z);
+    check('the copy is told apart by its type, so its name is empty', copy.name === '' && b.name === 'Office tower');
+    copy.dims.floors = 2;
+    copy.style = 'shop';
+    check('a copy is a copy, not the same object: editing it leaves the original as it was',
+      b.dims.floors === 9 && b.style === 'office');
+    check('and nothing joins a flying order a map does not have', map.sequence.length === 0);
+    const text = serialize(map);
+    const read = deserialize(text);
+    check('a map with a copy in it reads back with no repairs and round trips byte for byte',
+      read.repairs.length === 0 && serialize(read.doc) === text, read.repairs.join('; '));
+    check('and the original, before the copy, was untouched by it', before !== text && before.includes('Office tower'));
+  }
+
+  /* -------- the pads, a gap and a gate are special -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const pads = freestylePlace(map, 'startPads', 20, 20);
+    const gate = freestylePlace(map, 'gate', 40, 20);
+    const gap = freestylePlace(map, 'gap', 60, 20, { points: 1000, name: 'CRANE GAP' });
+    const n = map.elements.length;
+    const out = cloneElements(map, [pads.id, gate.id, gap.id]);
+    check('the start pads are not copied: a map has exactly one set',
+      out.left.length === 1 && out.left[0] === pads.id && out.made.length === 2
+      && map.elements.filter((e) => e.type === 'startPads').length === 1 && map.elements.length === n + 2);
+    const gapCopy = elementById(map, out.made[1]);
+    check('a copy of a named gap keeps its name and its points: it is the same window somewhere else',
+      gapCopy.type === 'gap' && gapCopy.name === 'CRANE GAP' && gapCopy.points === 1000);
+    check('a copied gate is furniture and joins no order', map.sequence.length === 0);
+    check('asking for nothing, or for something that is not there, is nothing, and changes nothing',
+      (() => {
+        const d = deepClone(map);
+        const a = cloneElements(d, []);
+        const c = cloneElements(d, ['no-such']);
+        return a.made.length === 0 && c.made.length === 0 && serialize(d) === serialize(map);
+      })());
+    check('only the pads cannot be copied: anyCloneable says so',
+      anyCloneable(map, [pads.id]) === false && anyCloneable(map, [pads.id, gate.id]) === true
+      && anyCloneable(map, []) === false && anyCloneable(map, ['no-such']) === false);
+  }
+
+  /* -------- several at once keep the layout they were selected in -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const a = freestylePlace(map, 'building', 30, 40);
+    const c = freestylePlace(map, 'containers', 55, 52);
+    const t = freestylePlace(map, 'tree', 70, 30);
+    const { made } = cloneElements(map, [a.id, c.id, t.id]);
+    const [a2, c2, t2] = made.map((id) => elementById(map, id));
+    const dx = a2.position.x - a.position.x;
+    const dy = a2.position.y - a.position.y;
+    check('three pieces move as one: the same shift for each, so the layout is kept',
+      Math.abs((c2.position.x - c.position.x) - dx) < 1e-9 && Math.abs((t2.position.x - t.position.x) - dx) < 1e-9
+      && Math.abs((c2.position.y - c.position.y) - dy) < 1e-9 && Math.abs((t2.position.y - t.position.y) - dy) < 1e-9);
+    const box = (els) => polyBox(els.flatMap((e) => planShapeOf(e, map)));
+    check('and the whole copy stands clear of the whole of what it copies',
+      apart(box([a, c, t]), box([a2, c2, t2])));
+  }
+
+  /* -------- the plot's edge -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const east = freestylePlace(map, 'building', map.field.width - 10, 80);
+    const o1 = cloneOffsetFor(map, [east]);
+    check('a piece against the east edge is copied to its west', o1.x < 0 && o1.y === 0, JSON.stringify(o1));
+    /*
+     * A PIECE THAT ALREADY STANDS OVER THE EDGE. A building set close to the
+     * plot's edge has its roof aerial and sign over it, by 0.4 m in a case
+     * found by the first version of this check, and a rule that wanted the
+     * copy wholly inside turned east, west and north all down for it and
+     * sent it south. Built here by construction, whatever the layout rolls:
+     * the plot's north edge is cut 0.4 m into the piece's own footprint.
+     */
+    const over = createTrack(undefined, 'full', 'freestyle');
+    const piece = freestylePlace(over, 'building', 60, 60);
+    const natural = polyBox(planShapeOf(piece, over));
+    over.field.depth = natural.maxY - 0.4;
+    over.field.width = 400;
+    const o2 = cloneOffsetFor(over, [piece]);
+    check('a piece over the north edge by 0.4 m is still copied east, which fits as well as it does',
+      o2.x > 0 && o2.y === 0, JSON.stringify(o2));
+    over.field.width = natural.maxX + 2;
+    const o2w = cloneOffsetFor(over, [piece]);
+    check('and with no room east as well, west: never south, which only the stricter rule chose',
+      o2w.x < 0 && o2w.y === 0 && natural.minX + o2w.x >= 0, JSON.stringify(o2w));
+    const wide = createTrack(undefined, 'full', 'freestyle');
+    wide.field.width = 20;
+    wide.field.depth = 20;
+    const big = freestylePlace(wide, 'building', 10, 10, { dims: { width: 18, depth: 16 } });
+    const o3 = cloneOffsetFor(wide, [big]);
+    check('a piece that fills the plot has no room anywhere, and is offered the east, where it can be dragged',
+      o3.x > 0 && o3.y === 0, JSON.stringify(o3));
+  }
+
+  /* -------- a road, and a car on it -------- */
+
+  {
+    const yard = normalize(starterMap()).doc;
+    const road = yard.elements.find((e) => e.type === 'road');
+    const car = yard.elements.find((e) => ELEMENTS[e.type].kind === KIND.VEHICLE && e.road === road.id);
+    const kindOfCar = vehiclePlace(yard, car);
+    const nBefore = yard.elements.length;
+    const { made } = cloneElements(yard, [car.id]);
+    const twin = elementById(yard, made[0]);
+    check('a copied car is on the same road, a car\'s length and a gap further along it',
+      twin.road === car.road && Math.abs(twin.dims.offset - (car.dims.offset + kindOfCar.length + CLONE_CAR_GAP)) < 1e-6
+      && twin.style === car.style && twin.drift === car.drift && twin.reverse === car.reverse
+      && yard.elements.length === nBefore + 1, JSON.stringify({ a: car.dims.offset, b: twin.dims.offset }));
+    const there = vehiclePlace(yard, twin);
+    const was = vehiclePlace(yard, car);
+    check('so it starts somewhere else on the plan, not on top of the car it copies',
+      Math.hypot(there.x - was.x, there.y - was.y) > 1, JSON.stringify({ was, there }));
+    check('the copy keeps no position of its own to be wrong: a vehicle\'s place is its road and its offset',
+      twin.position.x === car.position.x && twin.position.y === car.position.y);
+
+    const yard2 = normalize(starterMap()).doc;
+    const road2 = yard2.elements.find((e) => e.type === 'road');
+    const r = cloneElements(yard2, [road2.id]);
+    const road3 = elementById(yard2, r.made[0]);
+    const dx = road3.position.x - road2.position.x;
+    const dy = road3.position.y - road2.position.y;
+    check('a copied road is the same line moved: its nodes are relative to its position, so they are unchanged',
+      road3.nodes.length === road2.nodes.length
+      && road3.nodes.every((n, i) => n.x === road2.nodes[i].x && n.y === road2.nodes[i].y)
+      && (dx !== 0 || dy !== 0) && road3.closed === road2.closed);
+    check('and no vehicle is carried across to it: cars name a road, they do not belong to one',
+      yard2.elements.filter((e) => e.road === road3.id).length === 0);
+
+    /* Selected TOGETHER, a road and the cars on it are copied as one: each
+     * car's copy rides the road's copy at the car's own offset, and the road
+     * that was copied keeps exactly the cars it had. The copies used to go
+     * further along the ORIGINAL road, so a copied road was empty and the
+     * one beside it carried its traffic twice. Tried with the road before its
+     * cars in the document and after them, because a car names its road by
+     * id and the document's order is nobody's promise. */
+    for (const roadLast of [false, true]) {
+      const yard3 = normalize(starterMap()).doc;
+      const road4 = yard3.elements.find((e) => e.type === 'road' && yard3.elements.some((c) => c.road === e.id));
+      if (roadLast) {
+        yard3.elements.push(yard3.elements.splice(yard3.elements.indexOf(road4), 1)[0]);
+      }
+      const riders = yard3.elements.filter((e) => e.road === road4.id);
+      const r2 = cloneElements(yard3, [road4.id, ...riders.map((c) => c.id)]);
+      const road5 = r2.made.map((id) => elementById(yard3, id)).find((e) => e.type === 'road');
+      const onCopy = yard3.elements.filter((e) => road5 && e.road === road5.id);
+      const order = roadLast ? 'after its cars' : 'before its cars';
+      check(`a road copied with the cars on it carries them, at their own offsets (the road ${order})`,
+        riders.length > 0 && onCopy.length === riders.length
+        && riders.every((c) => onCopy.some((k) => k.dims.offset === c.dims.offset && k.style === c.style
+          && k.reverse === c.reverse && k.drift === c.drift)),
+        JSON.stringify({ riders: riders.map((c) => c.dims.offset), onCopy: onCopy.map((k) => k.dims.offset) }));
+      check(`and the road that was copied keeps exactly the cars it had (the road ${order})`,
+        yard3.elements.filter((e) => e.road === road4.id).length === riders.length);
+    }
+  }
+
+  /* -------- a group is a group of its own -------- */
+
+  {
+    const map = createTrack(undefined, 'full', 'freestyle');
+    const g1 = freestylePlace(map, 'gate', 40, 40);
+    const g2 = freestylePlace(map, 'gate', 44, 40);
+    g1.group = 'grp-1';
+    g2.group = 'grp-1';
+    const { made } = cloneElements(map, [g1.id, g2.id]);
+    const [c1, c2] = made.map((id) => elementById(map, id));
+    check('copies of a group are a group, with a name that is not the first one\'s',
+      c1.group && c1.group === c2.group && c1.group !== 'grp-1');
+  }
+
+  /* -------- the whole starter yard, every piece in it -------- */
+
+  {
+    const yard = normalize(starterMap()).doc;
+    const ids = yard.elements.map((e) => e.id);
+    const before = placeDocument(deepClone(yard));
+    const doc = deepClone(yard);
+    const { made, left } = cloneElements(doc, ids);
+    check('every piece of the starter yard but its pads has a copy', made.length === ids.length - left.length && left.length === 1);
+    const ridersOf = (d, id) => d.elements.filter((e) => e.road === id).length;
+    const roads = yard.elements.filter((e) => e.type === 'road');
+    const copiedRoads = made.map((id) => elementById(doc, id)).filter((e) => e.type === 'road');
+    check('and each road keeps its own traffic: the originals carry what they did, and the copies as much again',
+      roads.every((r) => ridersOf(doc, r.id) === ridersOf(yard, r.id))
+      && copiedRoads.reduce((n, r) => n + ridersOf(doc, r.id), 0) === roads.reduce((n, r) => n + ridersOf(yard, r.id), 0),
+      JSON.stringify({ originals: roads.map((r) => ridersOf(doc, r.id)), copies: copiedRoads.map((r) => ridersOf(doc, r.id)) }));
+    const settled = seatDocument(doc).placed;
+    check('and the doubled yard places, with at least the solids of the first and of a second', settled.solids.length >= before.solids.length * 1.5,
+      `${settled.solids.length} against ${before.solids.length}`);
+    const text = serialize(doc);
+    const read = deserialize(text);
+    check('and reads back with no repairs, byte for byte', read.repairs.length === 0 && serialize(read.doc) === text, read.repairs.join('; '));
+  }
 }
 
 function suiteFreestyle() {
@@ -5379,6 +6169,64 @@ function suiteDiveSupports() {
  * the builder's own doors (settle, restore, loadDocument) call the same
  * functions and are left to the screenshots with the rest of the tool's DOM.
  */
+/*
+ * A MAP IS BUILT IN THE ROOM (FREESTYLE-3D-BUILD-PLAN.md): what the pointer can stand a piece on, and what goes with
+ * a piece that is moved. Both are the seat's own arithmetic asked in another way, so what the ghost shows is
+ * what seat() keeps, and these checks say so against the same placed map.
+ */
+function suiteMapRoom() {
+  console.log('\nA map is built in the room');
+  const d = createTrack(undefined, 'full', 'freestyle');
+  const bld = freestylePlace(d, 'building', 40, 40);
+  const sup = supportsFor(d);
+  const roof = sup.under(40, 40, 1000);
+  const world = topUnder(placeDocument(d).solids, 40 - d.field.width / 2, -(40 - d.field.depth / 2));
+  check('what the pointer can stand a piece on is the roof the seat would, to the last bit',
+    roof && roof.top === world && roof.on === bld.id, JSON.stringify(roof));
+  check('nothing is under a point at the paving, which is where the ground is', sup.under(40, 40, 0) === null && sup.under(40, 40, 0.05) === null);
+  check('and nothing is under a point that is looking below the roof, such as the side of the building', sup.under(40, 40, roof.top - 1) === null);
+  check('a point over open ground has nothing under it, and one on the very edge of the footprint is not over it',
+    sup.under(120, 120, 1000) === null && sup.under(40 - 8, 40, 1000) === null);
+  check('an element does not hold itself up: with the building left out its own roof is nothing',
+    sup.under(40, 40, 1000, bld.id) === null && sup.under(40, 40, 1000, new Set([bld.id])) === null && sup.under(40, 40, 1000, 'nobody').top === roof.top);
+  check('seatFor is the same question asked of an element at its height',
+    sup.seatFor({ id: 'x', position: { x: 40, y: 40, z: 0 } }, roof.top).top === roof.top && sup.seatFor(bld, roof.top) === null);
+
+  const s = createTrack(undefined, 'full', 'freestyle');
+  const ledge = (z) => freestylePlace(s, 'ledge', 80, 80, { z, dims: { length: 6, height: 1, depth: 2 } });
+  const a = ledge(0);
+  const b = ledge(1);
+  const c = ledge(2);
+  const far = freestylePlace(s, 'ledge', 20, 20, { z: 0, dims: { length: 6, height: 1, depth: 2 } });
+  const stack = supportsFor(s);
+  check('over a stack the highest top at or below where the pointer is looking is the one stood on',
+    stack.under(80, 80, 1000).top === 3 && stack.under(80, 80, 2.04).top === 2 && stack.under(80, 80, 1.5).top === 1 && stack.under(80, 80, 0.5) === null,
+    [1000, 2.04, 1.5, 0.5].map((z) => stack.under(80, 80, z)?.top).join(', '));
+  check('and a thing carried over it leaves its own boxes out, so it does not stand on itself',
+    stack.under(80, 80, 1000, new Set([c.id])).top === 2 && stack.under(80, 80, 1000, new Set([b.id, c.id])).top === 1);
+
+  check('what stands on a piece goes with it: a moved bottom ledge takes the two above it',
+    JSON.stringify(standingOn(s, [a.id], stack)) === JSON.stringify([b.id, c.id]), JSON.stringify(standingOn(s, [a.id], stack)));
+  check('the middle takes only the top one, and the top takes nothing', JSON.stringify(standingOn(s, [b.id], stack)) === JSON.stringify([c.id]) && standingOn(s, [c.id], stack).length === 0);
+  check('a piece on the ground that is not under it is left where it is', !standingOn(s, [a.id], stack).includes(far.id) && standingOn(s, [far.id], stack).length === 0);
+  check('and one that is already being moved is not carried twice', JSON.stringify(standingOn(s, [a.id, c.id], stack)) === JSON.stringify([b.id]));
+
+  /* A gap is a window in the air and nothing stands on anything for it: it is not carried. */
+  const w = createTrack(undefined, 'full', 'freestyle');
+  const house = freestylePlace(w, 'building', 40, 40);
+  const top = supportsFor(w).under(40, 40, 1000).top;
+  const sign = freestylePlace(w, 'billboard', 40, 40, { z: top });
+  const gap = freestylePlace(w, 'gap', 40, 40, { z: top });
+  const carried = standingOn(w, [house.id], supportsFor(w));
+  check('a billboard on the roof is carried with the building, and a gap on it, which needs no seat, is not',
+    carried.length === 1 && carried[0] === sign.id && !carried.includes(gap.id), JSON.stringify(carried));
+  check('a track has no map to stand on: nothing is carried and a ground piece stays', standingOn(createTrack(undefined, 'full'), [], supportsFor(createTrack(undefined, 'full', 'freestyle'))).length === 0);
+
+  check('a map has one tool that is not a piece, the ruler, with no key, because M is the ledge there',
+    MAP_TOOLS.length === 1 && MAP_TOOLS[0].id === 'ruler' && MAP_TOOLS[0].key === '' && toolByKey('M', 'full', 'freestyle') === undefined
+    && toolByKey('M', 'full')?.id === 'ruler' && toolByKey('N', 'full', 'freestyle') === undefined);
+}
+
 function suiteSeat() {
   console.log('\nnothing built stands in the air');
   const mk = (doc, type, opts) => place(doc, type, 5, 5, opts);
@@ -9498,6 +10346,2220 @@ async function suiteCube() {
   }
 }
 
+/*
+ * THE 5 INCH CANVAS'S PIECES THAT ARE MADE OF PIECES (src/trackbuilder/parts.js): the plain gate dress, a hurdle
+ * that is a barrier with flags, a wall of gates in a group, an up gate, a loop round a post, flags that come and
+ * go, and the weave rule. None is an element, so what is checked is what they write: ordinary gates, barriers,
+ * dive gates and waypoints, that the document reads and writes unchanged, that the game builds as intended and
+ * that every document that existed before them is the bytes it was.
+ */
+function suiteFiveInchParts() {
+  console.log('\nthe 5 inch parts');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const WIDE = GATE_PRESETS.find((p) => p.id === 'wide');
+  const wideDims = () => {
+    const d = { ...ELEMENTS.gate.dims };
+    applyGatePreset(d, WIDE);
+    return d;
+  };
+
+  /* ---- the document: plain dress and a barrier with flags ---- */
+  {
+    const doc = createTrack('dress');
+    const plainGate = place(doc, 'gate', 10, 10);
+    plainGate.style = 'plain';
+    const usual = place(doc, 'gate', 14, 10);
+    const hurdle = place(doc, 'barrier', 20, 10);
+    hurdle.flagSide = 'both';
+    hurdle.dims.flagH = 2;
+    const wall = place(doc, 'barrier', 24, 10);
+    const plain = toPlain(doc);
+    const byId = (id) => plain.elements.find((e) => e.id === id);
+    check('a plain gate is written with its style, and a gate in the usual dress has no style at all',
+      byId(plainGate.id).style === 'plain' && !('style' in byId(usual.id)));
+    check('a barrier with flags is written with its side and its mast, and one without has neither, so it is the bytes it was',
+      byId(hurdle.id).flagSide === 'both' && byId(hurdle.id).dims.flagH === 2
+      && !('flagSide' in byId(wall.id)) && JSON.stringify(Object.keys(byId(wall.id).dims)) === '["width","depth","height"]');
+    const back = deserialize(serialize(doc));
+    check('both read back as they were written, with nothing to repair', back.repairs.length === 0
+      && elementById(back.doc, plainGate.id).style === 'plain' && flagSideOf(elementById(back.doc, hurdle.id)) === 'both'
+      && elementById(back.doc, hurdle.id).dims.flagH === 2 && flagSideOf(elementById(back.doc, wall.id)) === null
+      && roundTripsCleanly(doc));
+    const odd = JSON.parse(serialize(doc));
+    odd.elements[0].style = 'sleeved';
+    odd.elements[2].flagSide = 'sideways';
+    const fixed = normalize(odd);
+    check('a dress this build does not know, and a flag side that is not one, are read as the usual and as none, and said',
+      !('style' in fixed.doc.elements[0]) && flagSideOf(fixed.doc.elements[2]) === null
+      && fixed.repairs.some((r) => /not a dress this build knows/.test(r)) && fixed.repairs.some((r) => /has no flags/.test(r)),
+      fixed.repairs.join(' | '));
+    check('isPlain is a vertical square gate with the style, and nothing else',
+      isPlain(plainGate) && !isPlain(usual) && !isPlain(hurdle) && !isPlain({ ...plainGate, type: 'hoop' }) && !isPlain(null));
+  }
+
+  /* ---- a pennant stands on the same upright in the builder and in the world ---- */
+  {
+    /*
+     * The builder draws 'left' on the -widthAxis upright. The world builds the gate facing the pass with its
+     * local x on the pilot's right, so for a gate flown along its own normal its local -x is the document's
+     * RIGHT, and a pennant read straight into the mesh stood on the wrong upright of every such gate. Checked
+     * the way the world places it: the mesh is turned to the station's heading and a mast at sign * half
+     * width along its local x lands where the document says it should, whichever way the gate is flown.
+     */
+    let agree = 0;
+    let total = 0;
+    for (const entry of [1, -1]) {
+      for (const yawDeg of [0, 30, 90, 135, -90, -45]) {
+        for (const side of ['left', 'right']) {
+          const doc = createTrack('side');
+          const lead = place(doc, 'gate', 5, 5, { yaw: 0 });
+          lead.yawOverridden = true;
+          const g = place(doc, 'flaggedGate', 20, 20, { yaw: yawDeg * RAD });
+          g.flagSide = side;
+          g.yawOverridden = true;
+          addToSequence(doc, lead.id, 0);
+          addToSequence(doc, g.id, 0);
+          const seq = doc.sequence.find((q) => q.elementId === g.id);
+          seq.entry = entry;
+          seq.overridden = true;
+          const course = courseFromDocument(doc);
+          const st = course.structures.find((x) => x.id === g.id);
+          const sta = course.stations.find((x) => x.elementId === g.id);
+          const half = 1;
+          /* A mast at sign * half along the mesh's local x, which a turn of the station's heading carries to the
+           * scene: (x cos t, -x sin t), and the scene's z is the document's -y. */
+          const local = st.flagSigns[0] * half;
+          const world = { x: local * Math.cos(sta.yaw), y: local * Math.sin(sta.yaw) };
+          const wa = apertureFrame(g.yaw, 0).widthAxis;
+          const want = side === 'left' ? -1 : 1;
+          total += 1;
+          if (world.x * wa.x * want + world.y * wa.y * want > 0.9) {
+            agree += 1;
+          }
+        }
+      }
+    }
+    check('a pennant on the left or the right is on the same upright in the world as the builder draws it, flown along the gate\'s normal or against it, at any heading',
+      agree === total && total === 24, `${agree} of ${total}`);
+    const topDoc = createTrack('top');
+    const t1 = place(topDoc, 'flaggedGate', 20, 20, { yaw: 0 });
+    t1.flagSide = 'top';
+    addToSequence(topDoc, t1.id, 0);
+    check('and a pennant on the top is in the middle, whichever way it is flown, with no side to take',
+      courseFromDocument(topDoc).structures.find((x) => x.id === t1.id).flagSigns[0] === 0);
+  }
+
+  /* ---- the pitch that makes uprights meet in the world ---- */
+  {
+    const pitch = wallPitchFor(ELEMENTS.gate.dims, 'full');
+    check('a wall is laid at the world\'s pitch: the field builds a gate GATE_SCALE larger, so one opening and a tube, that much more',
+      near(pitch, GATE_SCALE * (ELEMENTS.gate.dims.clearW + FRAME_TUBE_OD)) && pitch > ELEMENTS.gate.dims.clearW + FRAME_TUBE_OD);
+    check('and on a whoop canvas, which is built one to one, it is the document\'s',
+      near(wallPitchFor(ELEMENTS.gate.microDims, 'micro'), ELEMENTS.gate.microDims.clearW + FRAME_TUBE_OD));
+    check('the wide bay is 2 m a bay, so a wall dragged across 6 m is three bays 14, 16 and 18, which is the Nationals plan\'s',
+      (() => {
+        const doc = createTrack('wide');
+        const plan = wallPlan(doc, { x: 13, y: 38 }, { x: 19, y: 38 }, { dims: wideDims() });
+        return plan.count === 3 && plan.items.every((it, i) => near(it.x, 14 + 2 * i, 1e-9) && near(it.y, 38));
+      })());
+  }
+
+  /* ---- the wall ---- */
+  {
+    const doc = createTrack('wall');
+    const dims = wideDims();
+    const plan = wallPlan(doc, { x: 13, y: 38 }, { x: 19, y: 38 }, { dims });
+    check('a drag across three pitches is three bays; a click is three, and never fewer than two or more than six',
+      plan.count === 3 && wallPlan(doc, { x: 1, y: 1 }, { x: 1, y: 1 }).count === WALL_DEFAULT
+      && wallPlan(doc, { x: 1, y: 1 }, { x: 3.2, y: 1 }, { dims }).count === WALL_MIN
+      && wallPlan(doc, { x: 1, y: 1 }, { x: 60, y: 1 }, { dims }).count === WALL_MAX);
+    check('it runs along the drag put on fifteen degrees, and faces across it, north with nothing before it',
+      near(plan.dir.x, 1) && near(plan.dir.y, 0) && near(wrapAngle(plan.yaw - Math.PI / 2), 0, 1e-9)
+      && Math.abs(wallPlan(doc, { x: 0, y: 0 }, { x: 10, y: 3 }).dir.y - Math.sin(Math.PI / 12)) < 1e-9);
+    /* A course that is heading south turns the wall to face south. */
+    const heading = createTrack('heading');
+    const up = place(heading, 'gate', 28, 44);
+    addToSequence(heading, up.id, 0);
+    check('with a gate before it to the north the bays face south, the way the course is going',
+      near(wallPlan(heading, { x: 13, y: 38 }, { x: 19, y: 38 }, { dims }).yaw, -Math.PI / 2, 1e-9));
+
+    const ids = placeWall(heading, { x: 19, y: 38 }, { x: 13, y: 38 }, { dims, flags: 'first' });
+    const bays = ids.map((id) => elementById(heading, id));
+    check('placing it lays one gate for each bay, in the plain dress, in one group, each pinned to its heading',
+      bays.length === 3 && bays.every((b) => b.type !== undefined && isPlain(b) && b.group === bays[0].group && b.yawOverridden)
+      && new Set(bays.map((b) => b.yaw)).size === 1);
+    check('dragged from the east post to the west one the bays are 18, 16 and 14, in that order',
+      bays.every((b, i) => near(b.position.x, 18 - 2 * i, 1e-9) && near(b.position.y, 38)));
+    /* The wall faces south, so its width axis is east: the bay before is to the east of each bay after the
+     * first, and the upright that faces it is the right one. */
+    check('each bay after the first leaves out the upright that faces the bay before it, so a post is built once',
+      !bays[0].unbuiltSides && bays[1].unbuiltSides?.join() === 'right' && bays[2].unbuiltSides?.join() === 'right');
+    check('a pennant on the first bay is on its outer upright, the east one; the other bays carry none',
+      bays[0].type === 'flaggedGate' && bays[0].flagSide === 'right' && bays[1].type === 'gate' && bays[2].type === 'gate');
+    check('every bay is in the flying order, in bay order, and the passes weave: south, north, south, set by hand',
+      heading.sequence.filter((s) => bays.some((b) => b.id === s.elementId)).length === 3
+      && (() => {
+        const seqs = heading.sequence.filter((s) => bays.some((b) => b.id === s.elementId));
+        const dirOf = (s) => {
+          const e = elementById(heading, s.elementId);
+          return Math.sign(elementNormal(e).y * s.entry);
+        };
+        return seqs.map(dirOf).join() === '-1,1,-1' && seqs.every((s) => s.overridden);
+      })());
+    const clean = collectWarnings(heading, buildPath(heading));
+    check('the weave is not called backwards, and nothing is left out of the order',
+      !clean.some((w) => w.code === 'reversal' || w.code === 'unsequenced' || w.code === 'no-face'),
+      clean.map((w) => w.code).join());
+    check('the wall round trips, and a group is selected, moved and removed as one piece',
+      roundTripsCleanly(heading) && groupMembers(heading, ids[1]).length === 3
+      && expandGroups(heading, [ids[0]]).size === 3 && wallBays(heading, ids[2]).map((b) => b.id).join() === ids.slice().reverse().join());
+    check('and a wall whose every gate is flown is not a cube to the board, but one with a bay left out of the order is',
+      partsTheBoardDoesNotKnow(toPlain(heading)).length === 0
+      && (() => {
+        const loose = deserialize(serialize(heading)).doc;
+        loose.sequence = loose.sequence.filter((s) => s.elementId !== ids[1]);
+        return JSON.stringify(partsTheBoardDoesNotKnow(toPlain(loose))) === '[{"type":"cube","count":1}]';
+      })());
+
+    /* Built in the world: every bay is a station, plain, and the uprights meet. */
+    const course = courseFromDocument(heading);
+    const built = ids.map((id) => course.structures.find((s) => s.id === id));
+    check('the game reads every bay as a plain gate and a station of its own, and builds none loose',
+      built.every((s) => s && s.plain === true)
+      && course.stations.filter((s) => ids.includes(s.elementId)).length === 3
+      && (course.loose ?? []).length === 0);
+    const tubeR = (FRAME_TUBE_OD * GATE_SCALE) / 2;
+    const post = (s, side) => s.x + side * (s.dims.clearW / 2 + tubeR);
+    check('and the uprights of neighbouring bays meet where the game builds them: one bay\'s left is the next one\'s right, to the micrometre',
+      Math.abs(post(built[0], -1) - post(built[1], 1)) < 1e-6 && Math.abs(post(built[1], -1) - post(built[2], 1)) < 1e-6,
+      `${built.map((s) => s.x.toFixed(4)).join()} clearW ${built[0].dims.clearW.toFixed(4)}`);
+  }
+
+  /* ---- the weave rule, on gates the author has laid by hand ---- */
+  {
+    const doc = createTrack('weave');
+    const lead = place(doc, 'gate', 28, 44, { yaw: -Math.PI / 2 });
+    lead.yawOverridden = true;
+    const bayAt = (x) => {
+      const g = place(doc, 'gate', x, 38, { yaw: Math.PI / 2 });
+      g.yawOverridden = true;
+      return g;
+    };
+    const east = bayAt(18);
+    const mid = bayAt(16);
+    const west = bayAt(14);
+    for (const g of [lead, east, mid, west]) {
+      addToSequence(doc, g.id, 0);
+    }
+    const dir = (g) => {
+      const s = doc.sequence.find((q) => q.elementId === g.id);
+      return Math.sign(elementNormal(g).y * s.entry);
+    };
+    check('gates side by side, facing one way, with a chord that runs along them, are flown as a weave without anyone setting a pass',
+      [dir(east), dir(mid), dir(west)].join() === '-1,1,-1', [dir(east), dir(mid), dir(west)].join());
+    check('and the weave is not drawn as a reversal, which is what the same row flown one way is called',
+      !collectWarnings(doc, buildPath(doc)).some((w) => w.code === 'reversal'));
+    /* The same layout on a whoop canvas is as it always was. */
+    const whoop = createTrack('whoop', 'micro');
+    const lead2 = place(whoop, 'gate', 5, 8, { yaw: -Math.PI / 2 });
+    const e2 = place(whoop, 'gate', 4.4, 5, { yaw: Math.PI / 2 });
+    const m2 = place(whoop, 'gate', 4.4 - 0.7, 5, { yaw: Math.PI / 2 });
+    for (const g of [lead2, e2, m2]) {
+      g.yawOverridden = true;
+      addToSequence(whoop, g.id, 0);
+    }
+    const before = whoop.sequence.map((s) => s.entry).join();
+    applyAutoFaces(whoop);
+    check('on a whoop canvas the rule is not applied: the face is what it was made', whoop.sequence.map((s) => s.entry).join() === before);
+    /* A gate flown twice in a row, or one that is not beside the last, is not a weave. */
+    const apart = createTrack('apart');
+    const a1 = place(apart, 'gate', 10, 10, { yaw: 0 });
+    const a2 = place(apart, 'gate', 30, 10, { yaw: 0 });
+    a1.yawOverridden = true;
+    a2.yawOverridden = true;
+    addToSequence(apart, a1.id, 0);
+    addToSequence(apart, a2.id, 0);
+    check('two gates far apart on one line are flown the way the line goes, both of them, and not as a weave',
+      apart.sequence.map((s) => s.entry).join() === '1,1');
+  }
+
+  /* ---- flags as one choice ---- */
+  {
+    const doc = createTrack('flags');
+    const g = place(doc, 'gate', 10, 10);
+    g.group = 'grp-1';
+    g.style = 'plain';
+    g.unbuiltSides = ['left'];
+    addToSequence(doc, g.id, 0);
+    const seqId = doc.sequence[0].id;
+    check('a gate may take flags, a stack too, a barrier too, and a tower, a ladder and a dive gate may not',
+      canFlag(g) && canFlag(place(doc, 'doubleStack', 20, 10)) && canFlag(place(doc, 'barrier', 30, 10))
+      && !canFlag(place(doc, 'tower', 40, 10)) && !canFlag(place(doc, 'ladder', 50, 10)) && !canFlag(place(doc, 'diveGate', 5, 20))
+      && flagsOf(g) === 'none');
+    check('flags on a plain gate make it the flagged type and keep everything else it is: place, group, dress, sides, order',
+      setFlags(doc, g.id, 'both') && g.type === 'flaggedGate' && g.flagSide === 'both' && g.dims.flagH === GATE_FLAG_H
+      && g.group === 'grp-1' && g.style === 'plain' && g.unbuiltSides[0] === 'left' && near(g.position.x, 10)
+      && doc.sequence[0].id === seqId && flagsOf(g) === 'both');
+    check('moving the flag is a change of side and not of type, and the same choice twice changes nothing',
+      setFlags(doc, g.id, 'left') && g.type === 'flaggedGate' && g.flagSide === 'left' && !setFlags(doc, g.id, 'left'));
+    check('none takes the flags off and makes it the plain type again, without the mast it had',
+      setFlags(doc, g.id, 'none') && g.type === 'gate' && !('flagSide' in g) && !('flagH' in g.dims) && flagsOf(g) === 'none' && !setFlags(doc, g.id, 'none'));
+    const stack = doc.elements.find((e) => e.type === 'doubleStack');
+    check('a double stack goes to the flagged double and back',
+      setFlags(doc, stack.id, 'top') && stack.type === 'flaggedDoubleStack' && stack.flagSide === 'top'
+      && setFlags(doc, stack.id, 'none') && stack.type === 'doubleStack' && stack.dims.levels === 2);
+    const bar = doc.elements.find((e) => e.type === 'barrier');
+    check('a barrier gains flags and a mast, and loses both again, and is a barrier throughout',
+      setFlags(doc, bar.id, 'right') && bar.type === 'barrier' && bar.flagSide === 'right' && bar.dims.flagH === HURDLE.flagH
+      && flagsOf(bar) === 'right' && setFlags(doc, bar.id, 'none') && !('flagSide' in bar) && !('flagH' in bar.dims));
+    check('a piece with no flagged twin is left alone, and so is a choice that is not one',
+      !setFlags(doc, doc.elements.find((e) => e.type === 'tower').id, 'left') && !setFlags(doc, g.id, 'sideways') && !setFlags(doc, 'nope', 'left'));
+  }
+
+  /* ---- the hurdle ---- */
+  {
+    const doc = createTrack('hurdle');
+    const start = place(doc, 'gate', 15, 14);
+    addToSequence(doc, start.id, 0);
+    const { id, waypointId } = placeHurdle(doc, { x: 22, y: 23 });
+    const h = elementById(doc, id);
+    check('a hurdle is a barrier 4 m by 0.1 by 1 with a flag at each end, 2 m of mast, turned across the way the course is going',
+      h.type === 'barrier' && h.dims.width === 4 && h.dims.depth === 0.1 && h.dims.height === 1 && h.flagSide === 'both' && h.dims.flagH === 2
+      && Math.abs(Math.cos(h.yaw - (Math.atan2(23 - 14, 22 - 15) + Math.PI / 2))) > 0.95 && h.yawOverridden);
+    const wp = elementById(doc, waypointId);
+    check('and the lap goes over it: a waypoint a metre over the top of the middle of it, in the flying order, and nothing scores on it',
+      wp.type === 'waypoint' && near(wp.position.z, 2) && near(wp.position.x, 22) && doc.sequence.at(-1).elementId === wp.id
+      && !doc.sequence.some((s) => s.elementId === h.id));
+    check('placed without joining the order it is only the board',
+      (() => { const d2 = createTrack('x'); const r = placeHurdle(d2, { x: 5, y: 5 }, { join: false }); return r.waypointId === null && d2.sequence.length === 0 && d2.elements.length === 1; })());
+    const line = buildPath(doc);
+    const over = line.samples.reduce((m, s) => (Math.hypot(s.pos.x - 22, s.pos.y - 23) < 0.3 ? Math.max(m, s.pos.z) : m), 0);
+    check('the line passes over the board, higher than its top by the clearance the warning pass wants',
+      over >= 1.35, over.toFixed(3));
+    check('and the warning pass does not call the hurdle\'s flags unsequenced, or the line a barrier hit',
+      !collectWarnings(doc, line).some((w) => w.code === 'barrier' || w.code === 'unsequenced'));
+    const course = courseFromDocument(doc);
+    const hs = course.structures.find((s) => s.id === id);
+    check('the game reads the hurdle as a barrier with two masts at its ends, and counts only the start gate as a station',
+      hs && hs.kind === 'obstacle' && JSON.stringify(hs.flagSigns) === '[-1,1]' && near(hs.flagH, 2) && course.stations.length === 1);
+    check('and it round trips with its flags', roundTripsCleanly(doc) && deserialize(serialize(doc)).repairs.length === 0);
+  }
+
+  /* ---- the up gate ---- */
+  {
+    const doc = createTrack('up');
+    const g4 = place(doc, 'gate', 25, 30);
+    addToSequence(doc, g4.id, 0);
+    const el = placeUpGate(doc, { x: 28, y: 39 });
+    const s = doc.sequence.find((q) => q.elementId === el.id);
+    const f = apertureFrame(el.yaw, el.pitch);
+    check('an up gate is a dive gate leaning 45 degrees with its sill 1.5 m up',
+      el.type === 'diveGate' && near(el.pitch, Math.PI / 4) && near(el.dims.sillH, 1.5));
+    check('its lower edge is past the rule, 1.5 m, even leaning',
+      aperturesOf(el)[0].sillH + (aperturesOf(el)[0].clearH / 2) * (1 - Math.cos(el.pitch)) >= 1.5 - 1e-9);
+    check('it is flown UP, set by hand, so the face rule does not make a dive gate of it when the line goes down afterwards',
+      s.entry === 1 && s.overridden && f.normal.z > 0.7);
+    const next = place(doc, 'gate', 18, 38);
+    addToSequence(doc, next.id, 0);
+    check('and a lower gate after it leaves it as it is',
+      doc.sequence.find((q) => q.elementId === el.id).entry === 1 && elementById(doc, el.id).pitch > 0.7);
+  }
+
+  /* ---- round the flag ---- */
+  {
+    /*
+     * The owner's correction of 2026-10-01: the Nationals plan's figure is a spiral down round the flag on a gate
+     * and then ONE pass through it, not a loop out of the gate and back through it. So what is checked is that the
+     * figure is in front of the pass, that the gate is flown once, and that the circle is round the flag.
+     */
+    const spiralDoc = (flags, style = 'plain') => {
+      const doc = createTrack('spiral');
+      place(doc, 'waypoint', 22, 23, { z: 2 });
+      const g = place(doc, 'flaggedGate', 25, 30, { yaw: 0 });
+      g.yawOverridden = true;
+      g.style = style;
+      setFlags(doc, g.id, flags);
+      const next = place(doc, 'gate', 28, 38, { yaw: Math.PI / 2 });
+      next.yawOverridden = true;
+      for (const e of doc.elements) {
+        addToSequence(doc, e.id, 0);
+      }
+      doc.sequence[1].entry = 1;
+      doc.sequence[1].overridden = true;
+      return { doc, g, pass: doc.sequence[1] };
+    };
+    const wp = (doc, ids) => ids.map((id) => elementById(doc, id));
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+    const both = spiralDoc('both');
+    const sides = flagsAsFlown(both.doc, both.pass.id);
+    check('a gate with a flag on each upright has a flag on either hand as flown', sides.left && sides.right);
+    const north = spiralDoc('right');
+    check('a flag on a gate\'s right, seen facing it, is on the left of a pilot flying the way it faces, and on the right flown the other way',
+      flagsAsFlown(north.doc, north.pass.id).left && !flagsAsFlown(north.doc, north.pass.id).right
+      && (() => { north.pass.entry = -1; const f = flagsAsFlown(north.doc, north.pass.id); north.pass.entry = 1; return f.right && !f.left; })());
+    const top = spiralDoc('top');
+    check('a flag on top stands over the opening, which no circle through it can go round, and a gate without flags has none',
+      !flagsAsFlown(top.doc, top.pass.id).left && !flagsAsFlown(top.doc, top.pass.id).right
+      && (() => { const d = createTrack('none'); const g = place(d, 'gate', 0, 0); addToSequence(d, g.id, 0); const f = flagsAsFlown(d, d.sequence[0].id); return !f.left && !f.right; })());
+
+    const { doc, g, pass } = both;
+    const made = addSpiral(doc, pass.id, 'right');
+    const ws = wp(doc, made.waypoints);
+    const r = GATE_SCALE * (g.dims.clearW / 2 + FRAME_TUBE_OD);
+    const centre = { x: 25, y: 30 };
+    const mast = { x: 25, y: 30 - r };
+    check('a spiral is waypoints in the flying order straight before the pass, and the gate is still flown once',
+      made.waypoints.length >= 5 && doc.sequence.slice(1, 1 + made.waypoints.length).map((q) => q.elementId).join() === made.waypoints.join()
+      && doc.sequence[1 + made.waypoints.length] === pass && doc.sequence.filter((q) => q.elementId === g.id).length === 1,
+      doc.sequence.map((q) => elementById(doc, q.elementId).name || elementById(doc, q.elementId).type).join());
+    check('round the flag on the right as flown, which is the south upright of a gate flown east, as the world builds it: GATE_SCALE out',
+      near(made.mast.x, mast.x) && near(made.mast.y, mast.y) && near(made.radius, r) && ws.every((w) => near(Math.hypot(w.position.x - mast.x, w.position.y - mast.y), r, 2e-3)));
+    check('a circle that comes back through the middle of the opening',
+      near(Math.hypot(centre.x - mast.x, centre.y - mast.y), r));
+    check('clockwise, every step of it, so its last part runs through the gate the way the pass flies it',
+      [...ws.map((w) => w.position), centre].every((p, i, all) => i === 0 || cross(mast, all[i - 1], p) < 0));
+    check('one whole turn on top of the arc that joins it from the way the line comes in, which is under a turn',
+      made.sweep > 2 * Math.PI && made.sweep < 4 * Math.PI, String(made.sweep));
+    const header = GATE_SCALE * (g.dims.sillH + g.dims.clearH + 2 * FRAME_TUBE_OD) + GATE_BANNER_H + 0.03;
+    check('and it comes down all the way: from over the header to the middle of the opening, never back up',
+      ws[0].position.z > header + SPIRAL.over - 1e-6 && ws.every((w, i) => i === 0 || w.position.z < ws[i - 1].position.z)
+      && ws[ws.length - 1].position.z > apertureCenter(g, 0).z,
+      ws.map((w) => w.position.z).join());
+    const line = buildPath(doc);
+    const f = apertureFrame(g.yaw, 0);
+    const over = [];
+    let prevD = null;
+    for (const smp of line.samples) {
+      const d = (smp.pos.x - centre.x) * f.normal.x + (smp.pos.y - centre.y) * f.normal.y;
+      const u = (smp.pos.x - centre.x) * f.widthAxis.x + (smp.pos.y - centre.y) * f.widthAxis.y;
+      if (prevD != null && (prevD > 0) !== (d > 0) && Math.abs(u) < 1.6) {
+        over.push({ z: smp.pos.z, forward: d > 0 });
+      }
+      prevD = d;
+    }
+    check('the line crosses the gate twice where its header is: over the top of it going round, and through it once, the way it is flown',
+      over.length === 2 && over[0].z > header + 0.3 && over[1].z < g.dims.clearH && over.every((o) => o.forward),
+      JSON.stringify(over));
+    const warn = collectWarnings(doc, line);
+    check('it raises no reversal and no two knots in one place', !warn.some((w) => w.code === 'coincident' || w.code === 'reversal'), warn.map((w) => w.code).join());
+
+    check('what is in front of the pass can be read back, so the card can show it: the side it goes round, and that it spirals',
+      JSON.stringify(roundFlagOf(doc, pass.id)) === JSON.stringify({ side: 'right', spiral: true }) && roundFlagOf(doc, doc.sequence[0].id) === null);
+    const again = addSpiral(doc, pass.id, 'left', { turns: 0 });
+    check('again makes it again: the spiral that was there comes out, the other side goes in, and nothing is left over',
+      again.waypoints.length >= 1 && !ws.some((w) => doc.elements.includes(w))
+      && doc.elements.filter((e) => e.type === 'waypoint').length === 1 + again.waypoints.length
+      && doc.sequence.filter((q) => q.elementId === g.id).length === 1);
+    const level = wp(doc, again.waypoints);
+    check('with no turns it goes round the flag and straight in, at the height of the opening, anticlockwise round a flag on the left',
+      level.every((w) => near(w.position.z, apertureCenter(g, 0).z, 1e-3) && w.name === 'Round the flag') && again.sweep < 2 * Math.PI
+      && [...level.map((w) => w.position), centre].every((p, i, all) => i === 0 || cross(again.mast, all[i - 1], p) > 0));
+
+    check('and read back as round the left hand flag without a spiral', JSON.stringify(roundFlagOf(doc, pass.id)) === JSON.stringify({ side: 'left', spiral: false }));
+    check('None takes it out, every waypoint of it, and leaves the gate flown once',
+      removeSpiral(doc, pass.id) && roundFlagOf(doc, pass.id) === null && doc.elements.filter((e) => e.type === 'waypoint').length === 1
+      && doc.sequence.filter((q) => q.elementId === g.id).length === 1 && !removeSpiral(doc, pass.id));
+
+    const dressed = spiralDoc('both', 'full');
+    const m3 = addSpiral(dressed.doc, dressed.pass.id, 'right');
+    check('a gate in the full dress has its pennants beside the sleeves, and the circle is round them there',
+      near(m3.radius, GATE_SCALE * (dressed.g.dims.clearW / 2 + FRAME_TUBE_OD + 0.42)));
+    check('a side with no flag, a pass that is not there and a waypoint\'s pass are not gone round',
+      addSpiral(north.doc, north.pass.id, 'right') === null && addSpiral(doc, 'sq-nope', 'right') === null
+      && addSpiral(doc, doc.sequence[0].id, 'right') === null);
+  }
+
+  /* ---- editing a wall once it is laid ---- */
+  {
+    const doc = createTrack('wall edit');
+    const lead = place(doc, 'gate', 28, 38);
+    addToSequence(doc, lead.id, 0);
+    const ids = placeWall(doc, { x: 19, y: 38 }, { x: 13, y: 38 }, { flags: 'first', dims: wideDims() });
+    const wall = wallOf(doc, ids[1]);
+    check('a gate of a wall knows the wall: the bays in the order they were dragged, and the way they run',
+      wall && wall.ids.join() === ids.join() && near(wall.dir.x, -1) && near(wall.dir.y, 0));
+    check('a gate on its own, and a group that is not a row of plain bays, are no wall',
+      wallOf(doc, lead.id) === null && wallOf(doc, 'el-nope') === null
+      && (() => { const d = createTrack('c'); const a = place(d, 'gate', 5, 5); const b = place(d, 'gate', 7, 5); a.group = b.group = 'grp-9'; return wallOf(d, a.id) === null; })());
+    check('the flag a wall was laid with is on its first end, and is read back as that', wallFlagsOf(doc, ids[0]) === 'first');
+    check('flags can be moved to the last end, to both and to neither, each change one that leaves the bays where they are',
+      setWallFlags(doc, ids[0], 'last') && wallFlagsOf(doc, ids[0]) === 'last'
+      && elementById(doc, ids[0]).type === 'gate' && elementById(doc, ids[2]).type === 'flaggedGate'
+      && setWallFlags(doc, ids[0], 'both') && wallFlagsOf(doc, ids[0]) === 'both'
+      && setWallFlags(doc, ids[0], 'none') && wallFlagsOf(doc, ids[0]) === 'none'
+      && !setWallFlags(doc, ids[0], 'none') && !setWallFlags(doc, ids[0], 'sideways'));
+    const outerOf = (id) => elementById(doc, id).flagSide;
+    setWallFlags(doc, ids[0], 'both');
+    const w0 = apertureFrame(elementById(doc, ids[0]).yaw, 0).widthAxis;
+    const side0 = outerOf(ids[0]);
+    const flagX = (side0 === 'right' ? 1 : -1) * w0.x;
+    check('the pennant is on the upright that is away from the rest of the wall, at the first end',
+      flagX < 0 === (wall.dir.x < 0 ? false : true) || Math.abs(flagX) > 0.99, `${side0} ${flagX}`);
+    check('a wall laid as a weave is read as one, and can be flown straight through and back again',
+      wallIsWoven(doc, ids[0]) && setWallWeave(doc, ids[0], false) && !wallIsWoven(doc, ids[0])
+      && wallOf(doc, ids[0]) && doc.sequence.filter((q) => ids.includes(q.elementId)).every((q) => q.entry === doc.sequence.find((r) => r.elementId === ids[0]).entry)
+      && setWallWeave(doc, ids[0], true) && wallIsWoven(doc, ids[0]) && !setWallWeave(doc, ids[0], true));
+    const before = doc.sequence.filter((q) => ids.includes(q.elementId)).map((q) => q.entry);
+    check('reversing a wall turns every pass round and twice is as it was',
+      reverseWall(doc, ids[0]) && doc.sequence.filter((q) => ids.includes(q.elementId)).every((q, i) => q.entry === -before[i])
+      && reverseWall(doc, ids[0]) && doc.sequence.filter((q) => ids.includes(q.elementId)).every((q, i) => q.entry === before[i]));
+    check('and what is set by hand is not turned back by the auto rule: the passes are overridden',
+      doc.sequence.filter((q) => ids.includes(q.elementId)).every((q) => q.overridden));
+  }
+
+  /* ---- flying over a hurdle that has no waypoint ---- */
+  {
+    const doc = createTrack('over');
+    const start = place(doc, 'gate', 15, 14);
+    addToSequence(doc, start.id, 0);
+    const { id } = placeHurdle(doc, { x: 22, y: 23 }, { join: false });
+    const n = doc.elements.length;
+    const r = flyOver(doc, id);
+    const wp = elementById(doc, r.waypointId);
+    check('flying over a hurdle adds a waypoint a metre over its top, in the order, and takes nothing from the board',
+      doc.elements.length === n + 1 && near(wp.position.z, 2) && near(wp.position.x, 22) && doc.sequence.at(-1).elementId === wp.id
+      && elementById(doc, id).type === 'barrier');
+    check('and what is not a hurdle or a gate is not flown over', flyOver(doc, place(doc, 'flag', 30, 30).id) === null && flyOver(doc, 'el-nope') === null);
+  }
+
+  /* ---- the room's numbers, and a field's magnets, ruler and frame ---- */
+  {
+    const field = createTrack('field');
+    const hall = createTrack('hall', 'micro');
+    check('a hall has its numbers and a field has its own, and a field is metric',
+      scaleOf(hall).metric === false && scaleOf(field).metric === true && near(scaleOf(hall).magnet, 3 * 0.0254)
+      && scaleOf(field).magnet > scaleOf(hall).magnet * 3);
+    check('a length is said in metres on a field, trimmed, and in inches with millimetres in a hall',
+      say(field, 2.5) === '2.5 m' && say(field, 100) === '100 m' && say(field, 12.34) === '12.3 m' && say(field, 3) === '3 m'
+      && /^30 in \(762 mm\)$/.test(say(hall, 0.762)));
+    /* The frame. */
+    const empty = frameRectFor(field);
+    check('an empty five inch canvas frames the whole field, as it always did',
+      empty.minX === 0 && empty.maxX === field.field.width && empty.minY === 0 && empty.maxY === field.field.depth);
+    place(field, 'gate', 10, 10);
+    place(field, 'gate', 30, 20);
+    const framed = frameRectFor(field);
+    check('a five inch track is framed by its own extent and a margin, not by the field',
+      framed.maxX - framed.minX < field.field.width && framed.minX < 10 && framed.maxX > 30 && framed.minY < 10 && framed.maxY > 20);
+    check('and a whoop canvas is framed as it was', (() => {
+      const w = createTrack('w', 'micro');
+      place(w, 'gate', 4, 5);
+      const r = frameRectFor(w);
+      return r.maxX - r.minX >= 1.6 - 1e-9 && r.maxX - r.minX < 3;
+    })());
+
+    /* Magnets: a gate beside a gate. */
+    const doc = createTrack('magnets');
+    const a = place(doc, 'gate', 20, 20, { yaw: Math.PI / 2 });
+    a.yawOverridden = true;
+    const pitch = wallPitchFor(a.dims, 'full');
+    const near1 = magnetFor(doc, { x: 20 + pitch + 0.2, y: 20.1 }, { type: 'gate' });
+    check('a gate put near a bay\'s width along another is taken to exactly there, with a line to show what it landed beside',
+      near1.snapped && near(near1.x, 20 + pitch, 1e-5) && near(near1.y, 20, 1e-5) && near1.guides[0].kind === 'pair'
+      && near1.guides[0].text === say(doc, pitch), JSON.stringify(near1));
+    check('the other side of it is a slot too', (() => { const m = magnetFor(doc, { x: 20 - pitch, y: 20.05 }, { type: 'gate' }); return m.snapped && near(m.x, 20 - pitch, 1e-5); })());
+    check('a flag has no slot beside a gate: only a gate is a bay',
+      magnetFor(doc, { x: 20 + pitch + 0.05, y: 20.4 }, { type: 'flag' }).guides.every((g) => g.kind !== 'pair'));
+    check('far from everything it is left where it was, and Alt turns it all off',
+      !magnetFor(doc, { x: 40, y: 5 }, { type: 'gate' }).snapped && !magnetFor(doc, { x: 20 + pitch + 0.1, y: 20.1 }, { type: 'gate', off: true }).snapped);
+    const inLine = magnetFor(doc, { x: 9, y: 20.2 }, { type: 'gate' });
+    check('and in line with another piece on one axis it is squared up to it, with a guide for the line',
+      inLine.snapped && near(inLine.y, 20) && near(inLine.x, 9) && inLine.guides[0].kind === 'align-y');
+    check('a piece being moved is not a thing to land beside', !magnetFor(doc, { x: 20 + pitch + 0.1, y: 20.1 }, { type: 'gate', ignore: [a.id] }).snapped);
+    check('a spot outside the field is never offered', !magnetFor(doc, { x: -0.1, y: 20.1 }, { type: 'flag' }).snapped || magnetFor(doc, { x: -0.1, y: 20.1 }, { type: 'flag' }).x >= 0);
+    /* A gate put exactly there faces the way its neighbour faces and keeps it. */
+    const plan = placementFor(doc, { x: 20 + pitch, y: 20 }, 'gate');
+    check('a gate put exactly beside another faces the way that one does and is pinned there',
+      near(plan.yaw, a.yaw) && plan.pin === true);
+    check('a gate put anywhere else is placed as it always was: unpinned, along the line',
+      placementFor(doc, { x: 33, y: 5 }, 'gate').pin === false);
+    /* The distances and the ruler, in metres. */
+    const m = measuresFor(doc, { x: 20 + pitch, y: 20, z: 1 }, null);
+    check('the distances beside a gate on a field are in metres and toned as a plain distance',
+      m.length > 0 && m.every((x) => /\sm$/.test(x.text) && x.tone === 'plain'), JSON.stringify(m.map((x) => x.text)));
+    const rp = rulerPoint(doc, { x: 20.3, y: 20.2 });
+    check('the ruler takes the middle of a piece within its reach, and a metre grid point otherwise',
+      rp.on === a.id && near(rp.x, 20) && rulerPoint(doc, { x: 33.3, y: 7.4 }).on === null && near(rulerPoint(doc, { x: 33.3, y: 7.4 }).x, 33));
+    check('and reads a length in metres on a field and in inches in a hall',
+      rulerReading({ x: 0, y: 0 }, { x: 3, y: 4 }, doc).text === '5 m' && /in \(/.test(rulerReading({ x: 0, y: 0 }, { x: 0.762, y: 0 }, hall).text)
+      && /in \(/.test(rulerReading({ x: 0, y: 0 }, { x: 0.762, y: 0 }).text));
+  }
+
+  /* ---- publishing, and what existed before ---- */
+  {
+    const dress = createTrack('before');
+    const g = place(dress, 'gate', 10, 10);
+    addToSequence(dress, g.id, 0);
+    check('a track with none of the new fields serialises with none of them, so every track that exists is the bytes it was',
+      !/"style"|"flagSide"|"flagH"/.test(serialize(dress)));
+    const shipped = PRESETS.map((p) => p.id);
+    check('and every shipped preset still round trips byte for byte',
+      PRESETS.every((p) => roundTripsCleanly(deserialize(JSON.stringify(p)).doc)) && shipped.length === 8);
+  }
+}
+
+/*
+ * THE 5 INCH CANVAS IN THE ROOM (TRACK-BUILDER-5IN-PLAN.md, stages 2 to 5): the rules the card, the ghosts and the
+ * shipped Nationals track stand on, which are pure and so are run here. What a pointer does with them is
+ * scripts/builder-flow-check.js's.
+ */
+/* ------------------------------------------------------------------ */
+/* The figures of the owner's catalogue                                */
+/* ------------------------------------------------------------------ */
+
+function suiteManoeuvres() {
+  console.log('\nmanoeuvres: the shapes a line is made of');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const finite = (c) => c.points.every((p) => [p.u, p.v, p.w, p.tu, p.tv, p.tw].every(Number.isFinite));
+  const handed = MANOEUVRES.filter((m) => m.hand);
+
+  /* ---- the catalogue itself ---- */
+  const ids = MANOEUVRES.map((m) => m.id).join(' ');
+  check('the catalogue is the owner\'s fourteen, in the owner\'s order',
+    ids === 'straight hop turn climb descend splitS revSplitS loop corkscrew dive launch slalom fig8 matty', ids);
+  check('every one has a label and a hint a card can say, and the names a pilot knows it by',
+    MANOEUVRES.every((m) => m.label && m.hint && Array.isArray(m.also)));
+
+  /* ---- every figure, every size, both classes ---- */
+  {
+    let bad = 0;
+    let total = 0;
+    for (const cls of ['full', 'micro']) {
+      for (const m of MANOEUVRES) {
+        for (const size of SIZE_IDS) {
+          const specs = [{ id: m.id, size }];
+          if (m.hand) {
+            specs.push({ id: m.id, size, hand: 'right' });
+          }
+          if (m.degs) {
+            for (const deg of m.degs) {
+              specs.push({ id: m.id, size, deg, hand: 'left' }, { id: m.id, size, deg, hand: 'right' });
+            }
+          }
+          if (m.sense) {
+            specs.push({ id: m.id, size, sense: 'down' });
+          }
+          if (m.count) {
+            for (const count of m.count) {
+              specs.push({ id: m.id, size, count });
+            }
+          }
+          if (m.bias) {
+            for (const bias of ['none', 'left', 'right', 'up', 'down']) {
+              specs.push({ id: m.id, size, bias });
+            }
+          }
+          for (const raw of specs) {
+            total += 1;
+            const c = curveOf(raw, cls);
+            if (!c.points.length || !finite(c) || !c.end) {
+              bad += 1;
+            }
+          }
+        }
+      }
+    }
+    check('every manoeuvre, at every size and on both classes of track, has a curve of finite points and an end', bad === 0 && total > 250, `${bad} of ${total}`);
+  }
+
+  /* ---- names ---- */
+  {
+    let ok = 0;
+    let total = 0;
+    for (const m of MANOEUVRES) {
+      const specs = [{ id: m.id }];
+      for (const size of SIZE_IDS) {
+        for (const hand of m.hand ? ['left', 'right'] : [undefined]) {
+          for (const deg of m.degs ?? [undefined]) {
+            for (const sense of m.sense ? ['up', 'down'] : [undefined]) {
+              for (const count of m.count ?? [undefined]) {
+                for (const bias of m.bias ? ['none', 'left', 'right', 'up', 'down'] : [undefined]) {
+                  for (const again of [undefined, 'back through', 'back through reversed']) {
+                    specs.push({ id: m.id, size, hand, deg, sense, count, bias, again });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      for (const raw of specs) {
+        total += 1;
+        const spec = specOf(raw);
+        const name = figureName(spec);
+        const back = parseFigureName(name);
+        if (back && JSON.stringify(back) === JSON.stringify(spec) && figureName(back) === name) {
+          ok += 1;
+        }
+      }
+    }
+    check('a figure\'s name reads back to the figure, exactly, for every manoeuvre in every spelling', ok === total && total > 400, `${ok} of ${total}`);
+    check('the names are the owner\'s words',
+      figureName({ id: 'turn', hand: 'left', deg: 180 }) === 'Turn left 180'
+      && figureName({ id: 'climb', hand: 'right', deg: 360, size: 'wide' }) === 'Climbing turn right 360, wide'
+      && figureName({ id: 'corkscrew', hand: 'left', sense: 'up' }) === 'Corkscrew left up'
+      && figureName({ id: 'slalom', hand: 'right', count: 4 }) === 'Slalom right x4'
+      && figureName({ id: 'straight', bias: 'left' }) === 'Exit left'
+      && figureName({ id: 'hop' }) === 'Hop' && figureName({ id: 'hop', sense: 'down' }) === 'Dip'
+      && figureName({ id: 'loop', again: 'back through' }) === 'Power loop, back through',
+      [figureName({ id: 'turn' }), figureName({ id: 'loop', again: 'back through' })].join(' | '));
+    const notFigures = ['', 'Gate', 'Waypoint', 'Over the hurdle', 'Hurdle', 'Dive gate', 'Launch gate', 'Turn 3', 'Turn left',
+      'Turn left 91', 'Climbing turn', 'Exit sideways', 'Slalom x', 'Round the flag', 'turn left 180', 'Turn left 180 ', null, undefined];
+    check('a name that is nearly a figure\'s and is not one is not read as one, so a waypoint a person named is left alone',
+      notFigures.every((n) => !isFigureName(n)), notFigures.filter((n) => isFigureName(n)).join(' | '));
+  }
+
+  /* ---- mirror images ---- */
+  {
+    let same = 0;
+    let total = 0;
+    for (const cls of ['full', 'micro']) {
+      for (const m of handed) {
+        for (const deg of m.degs ?? [undefined]) {
+          const a = curveOf({ id: m.id, hand: 'left', deg, sense: 'up' }, cls);
+          const b = curveOf({ id: m.id, hand: 'right', deg, sense: 'up' }, cls);
+          total += 1;
+          const mirrored = a.points.length === b.points.length && a.points.every((p, i) => {
+            const q = b.points[i];
+            return near(p.u, q.u, 1e-9) && near(p.v, -q.v, 1e-9) && near(p.w, q.w, 1e-9)
+              && near(p.tu, q.tu, 1e-9) && near(p.tv, -q.tv, 1e-9) && near(p.tw, q.tw, 1e-9);
+          });
+          if (mirrored) {
+            same += 1;
+          }
+        }
+      }
+    }
+    check('left and right are mirror images, point for point and tangent for tangent, for every handed manoeuvre', same === total && total > 10, `${same} of ${total}`);
+  }
+
+  /* ---- sizes and classes ---- */
+  {
+    const r = (size, cls) => {
+      const c = curveOf({ id: 'turn', hand: 'left', deg: 180, size }, cls);
+      return c.end.v / 2;
+    };
+    check('a tight turn is smaller than a standard one and a wide one larger, by the factors the sizes say',
+      near(r('tight', 'full'), FIGURE_BASE.full.radius * SIZE_FACTOR.tight, 1e-9)
+      && near(r('standard', 'full'), FIGURE_BASE.full.radius, 1e-9)
+      && near(r('wide', 'full'), FIGURE_BASE.full.radius * SIZE_FACTOR.wide, 1e-9));
+    check('a whoop\'s turn is a fraction of a field\'s', r('standard', 'micro') < r('standard', 'full') / 5 && near(r('standard', 'micro'), baseFor('micro').radius, 1e-9));
+    const forced = curveOf({ id: 'turn', hand: 'left', deg: 180, radius: 1.25 }, 'full');
+    check('a radius given outright overrides the size, which is how a turn is made to go round a particular flag', near(forced.end.v / 2, 1.25, 1e-9));
+  }
+
+  /* ---- what each one does ---- */
+  {
+    const R = FIGURE_BASE.full.radius;
+    const turn = (deg, hand = 'left') => netOf(curveOf({ id: 'turn', hand, deg }, 'full'));
+    check('a turn goes as far round as it says: a quarter, a half, and a whole orbit that comes out facing the way it went in',
+      near(Math.abs(turn(90).turn), Math.PI / 2, 1e-9) && near(Math.abs(turn(180).turn), Math.PI, 1e-9)
+      && near(Math.cos(turn(360).turn), 1, 1e-9));
+    check('a left turn ends on the left and a right turn on the right, a diameter across for a half turn',
+      turn(180, 'left').v > 0 && turn(180, 'right').v < 0 && near(Math.abs(turn(180).v), 2 * R, 1e-9));
+    {
+      /* Every point of a turn is on its circle, which is what makes it a turn and not a bend. */
+      const c = curveOf({ id: 'turn', hand: 'left', deg: 360 }, 'full');
+      const lead = c.lead;
+      const off = c.points.filter((p) => p.u !== lead || p.v !== 0).map((p) => Math.abs(Math.hypot(p.u - lead, p.v - R) - R));
+      check('the points of an orbit are on a circle of the radius, a radius clear of the piece it comes from',
+        Math.max(...off) < 1e-9 && lead >= R, `${Math.max(...off)} lead ${lead}`);
+    }
+    const net = (id, extra = {}) => netOf(curveOf({ id, ...extra }, 'full'));
+    check('a climbing turn gains height as it goes round and a descending turn loses the same',
+      near(net('climb', { deg: 180 }).w, 0.6 * R, 1e-9) && near(net('descend', { deg: 180 }).w, -0.6 * R, 1e-9)
+      && near(net('climb', { deg: 360 }).w, 1.2 * R, 1e-9) && net('turn', { deg: 180 }).w === 0);
+    check('a split-S ends a diameter below where it began, going back; a reverse split-S a diameter above',
+      near(net('splitS').w, -2 * R, 1e-9) && near(Math.abs(net('splitS').turn), Math.PI, 1e-9)
+      && near(net('revSplitS').w, 2 * R, 1e-9) && near(Math.abs(net('revSplitS').turn), Math.PI, 1e-9));
+    {
+      const c = curveOf({ id: 'loop' }, 'full');
+      const top = Math.max(...c.points.map((p) => p.w));
+      check('a power loop climbs a diameter and comes back to the height and the heading it started with',
+        near(top, 2 * R, 1e-9) && near(netOf(c).w, 0, 1e-9) && near(Math.cos(netOf(c).turn), 1, 1e-9));
+    }
+    {
+      const up = curveOf({ id: 'corkscrew', hand: 'left', sense: 'up' }, 'full');
+      const down = curveOf({ id: 'corkscrew', hand: 'left', sense: 'down' }, 'full');
+      const right = curveOf({ id: 'corkscrew', hand: 'right', sense: 'up' }, 'full');
+      const firstMove = (c) => c.points.find((p) => Math.abs(p.w) > 1e-6);
+      check('a corkscrew rolls up first or down first, and ends level on the line it began on',
+        firstMove(up).w > 0 && firstMove(down).w < 0 && near(netOf(up).v, 0, 1e-9) && near(netOf(up).w, 0, 1e-9)
+        && near(netOf(down).w, 0, 1e-9));
+      check('a corkscrew to the left stays on the left of the line and one to the right on the right',
+        Math.min(...up.points.map((p) => p.v)) > -1e-9 && Math.max(...right.points.map((p) => p.v)) < 1e-9);
+    }
+    {
+      const dive = curveOf({ id: 'dive' }, 'full');
+      const launch = curveOf({ id: 'launch' }, 'full');
+      const drop = FIGURE_BASE.full.drop;
+      check('a dive ends its drop lower, level, and a launch its climb higher, level',
+        near(netOf(dive).w, -drop, 1e-6) && near(netOf(launch).w, drop, 1e-6)
+        && near(dive.end.tw, 0, 1e-9) && near(launch.end.tw, 0, 1e-9));
+    }
+    {
+      const sl = curveOf({ id: 'slalom', hand: 'left', count: 5 }, 'full');
+      const sides = sl.points.filter((p) => Math.abs(p.v) > 1e-6).map((p) => Math.sign(p.v));
+      check('a slalom of five weaves alternates sides starting on the hand it was asked for, and closes on the line',
+        sides.length === 5 && sides.every((v, i) => v === (i % 2 === 0 ? 1 : -1)) && near(netOf(sl).v, 0, 1e-9));
+      const sr = curveOf({ id: 'slalom', hand: 'right', count: 3 }, 'full');
+      check('a right-handed slalom starts to the right', sr.points.find((p) => Math.abs(p.v) > 1e-6).v < 0);
+    }
+    {
+      const f8 = curveOf({ id: 'fig8', hand: 'left' }, 'full');
+      const sides = f8.points.map((p) => Math.sign(Math.round(p.v * 1e6) / 1e6)).filter((v) => v !== 0);
+      check('a figure 8 is a left orbit then a right one, and out level on the heading it went in',
+        sides[0] === 1 && sides.includes(-1) && near(Math.cos(netOf(f8).turn), 1, 1e-9) && near(netOf(f8).w, 0, 1e-9));
+    }
+    {
+      const m = curveOf({ id: 'matty' }, 'full');
+      check('a Matty flip goes up and over and comes out level at the height it began, facing back',
+        near(netOf(m).w, 0, 1e-6) && near(Math.abs(netOf(m).turn), Math.PI, 1e-9) && Math.max(...m.points.map((p) => p.w)) > R);
+    }
+    {
+      const hop = curveOf({ id: 'hop' }, 'full');
+      const dip = curveOf({ id: 'hop', sense: 'down' }, 'full');
+      check('a hop goes up and comes back to level, a dip the other way, and neither changes the heading',
+        Math.max(...hop.points.map((p) => p.w)) > 1.5 && near(netOf(hop).w, 0, 1e-9) && near(netOf(hop).turn, 0, 1e-9)
+        && Math.min(...dip.points.map((p) => p.w)) < -1.5 && near(netOf(dip).w, 0, 1e-9));
+    }
+    {
+      const straight = curveOf({ id: 'straight' }, 'full');
+      const lean = (bias) => netOf(curveOf({ id: 'straight', bias }, 'full'));
+      check('a straight leans its exit left, right, up or down as asked and not otherwise',
+        near(netOf(straight).v, 0, 1e-9) && lean('left').v > 0 && lean('right').v < 0 && lean('up').w > 0 && lean('down').w < 0
+        && near(lean('left').w, 0, 1e-9));
+    }
+  }
+
+  /* ---- into the world ---- */
+  {
+    const c = curveOf({ id: 'turn', hand: 'left', deg: 180 }, 'full');
+    const pose = { x: 10, y: 20, z: 2, yaw: Math.PI / 2 };
+    const start = placeCurve(c, pose, 'start');
+    check('a figure placed from its start begins a lead ahead of the pose, along its heading, and bends to the left of it',
+      near(start[0].x, 10, 1e-9) && near(start[0].y, 20 + c.lead, 1e-9) && near(start[0].z, 2, 1e-9)
+      && start[start.length - 1].x < 10 - 1);
+    const end = placeCurve(c, pose, 'end');
+    check('placed by its end, the figure finishes exactly at the pose', near(end[end.length - 1].x, 10, 1e-9) && near(end[end.length - 1].y, 20, 1e-9)
+      && near(end[end.length - 1].z, 2, 1e-9));
+    const mid = placeCurve(curveOf({ id: 'hop' }, 'full'), pose, 'middle');
+    check('placed by its middle, a hop is over the pose', near(mid[1].x, 10, 1e-9) && near(mid[1].y, 20, 1e-9));
+    const loop = placeCurve(curveOf({ id: 'loop' }, 'full'), { x: 0, y: 0, z: 1, yaw: 0 }, 'start');
+    check('a loop carries its pitch: pointing up on the way up, level at the top facing back, down on the way down',
+      loop.some((p) => p.pitch > 1.2) && loop.some((p) => p.pitch < -1.2) && loop.some((p) => Math.abs(Math.abs(p.yaw) - Math.PI) < 1e-6));
+  }
+
+  /* ---- their pictures ---- */
+  {
+    let inside = 0;
+    let total = 0;
+    for (const m of MANOEUVRES) {
+      for (const hand of ['left', 'right']) {
+        total += 1;
+        const g = figureGlyph({ id: m.id, hand, deg: m.degs ? m.degs[m.degs.length - 1] : undefined }, 'full');
+        const nums = g.d.match(/-?\d+(\.\d+)?/g).map(Number);
+        const xs = nums.filter((_, i) => i % 2 === 0);
+        const ys = nums.filter((_, i) => i % 2 === 1);
+        if (Math.min(...xs) >= 0 && Math.max(...xs) <= GLYPH_W && Math.min(...ys) >= 0 && Math.max(...ys) <= GLYPH_H) {
+          inside += 1;
+        }
+      }
+    }
+    check('every figure\'s picture stays inside its box, left and right', inside === total, `${inside} of ${total}`);
+    const l = figureGlyph({ id: 'turn', hand: 'left', deg: 180 }, 'full');
+    const r = figureGlyph({ id: 'turn', hand: 'right', deg: 180 }, 'full');
+    check('the picture of a left turn and of a right turn are mirror images, and the climbing and descending ones say which',
+      near(l.end.y, GLYPH_H - r.end.y, 0.06) && near(l.end.x, r.end.x, 0.06) && l.badge === null
+      && figureGlyph({ id: 'climb' }, 'full').badge === 'up' && figureGlyph({ id: 'descend' }, 'full').badge === 'down');
+    check('a picture says where the piece is and which way the line goes out', Number.isFinite(l.piece.x) && Number.isFinite(l.angle) && l.d.startsWith('M'));
+  }
+}
+
+/* A track of three gates in a row, flown east, and what the figures do to it. */
+function suiteFlightPaths() {
+  console.log('\nflight paths: a figure laid in the flying order');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const lay = (doc, type, x, y, yaw = 0, z = 0, entry = 1) => {
+    const e = place(doc, type, x, y, { yaw, z });
+    e.yawOverridden = true;
+    const q = addToSequence(doc, e.id, 0);
+    q.entry = entry;
+    q.overridden = true;
+    return { e, q };
+  };
+  const line = () => {
+    const doc = createTrack('figures');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const a = lay(doc, 'gate', 20, 60);
+    const b = lay(doc, 'gate', 50, 60);
+    const c = lay(doc, 'gate', 90, 60);
+    return { doc, a, b, c };
+  };
+  const names = (doc) => doc.sequence.map((q) => {
+    const e = elementById(doc, q.elementId);
+    return e.type === 'waypoint' ? e.name : e.type;
+  });
+  const minGap = (path, p) => Math.min(...path.samples.map((s) => Math.hypot(s.pos.x - p.x, s.pos.y - p.y, s.pos.z - p.z)));
+
+  /* ---- every figure is the bytes it was after a save and a load ---- */
+  {
+    /* A track is republished from what was loaded, and the board decides whether a republish keeps its times from a hash of the
+     * layout: a figure that is not the same after a round trip is a layout that changed, and the times with it. */
+    let unstable = 0;
+    let total = 0;
+    const odd = [];
+    for (const m of MANOEUVRES) {
+      for (const hand of m.hand ? ['left', 'right'] : [undefined]) {
+        for (const deg of m.degs ?? [undefined]) {
+          for (const slot of ['then', 'into']) {
+            const { doc, b } = line();
+            const spec = { id: m.id, hand, deg, sense: m.sense ? 'down' : undefined, size: 'wide' };
+            const made = slot === 'then' ? applyThen(doc, b.q.id, spec) : applyInto(doc, b.q.id, spec);
+            total += 1;
+            const back = deserialize(serialize(doc));
+            if (!made || back.repairs.length || !roundTripsCleanly(doc)) {
+              unstable += 1;
+              odd.push(`${slot} ${m.id} ${hand ?? ''} ${deg ?? ''}`);
+            }
+          }
+        }
+      }
+    }
+    check('every figure laid after a gate or before it reads back with nothing to repair and writes the bytes it was, which is what keeps a republished track\'s times',
+      unstable === 0 && total >= 40, `${unstable} of ${total}: ${odd.slice(0, 4).join(' | ')}`);
+    const { doc, b } = line();
+    applyTurnaround(doc, b.q.id, 'over');
+    applyLeg(doc, applyThen(doc, b.q.id, { id: 'hop' }) && b.q.id, 'left', 'orbit');
+    check('and so are a turnaround over the top, whose figure ends facing back', deserialize(serialize(doc)).repairs.length === 0 && roundTripsCleanly(doc));
+  }
+
+  /* ---- after a pass ---- */
+  {
+    const { doc, b } = line();
+    const before = names(doc);
+    const made = applyThen(doc, b.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    check('a figure after a pass is a run of waypoints straight after it in the flying order, named for the figure',
+      made && made.waypoints.length === 5 && names(doc).join() === ['gate', 'gate', ...Array(5).fill('Turn left 180'), 'gate'].join(),
+      names(doc).join());
+    const wps = made.waypoints.map((id) => elementById(doc, id));
+    check('each point is a waypoint that keeps its own heading and carries its pitch, which is how the line follows a figure',
+      wps.every((w) => w.type === 'waypoint' && w.yawOverridden === true && Number.isFinite(w.pitch)));
+    const found = thenOf(doc, b.q.id);
+    check('what is after a pass is read back as the figure it is', found && found.spec.id === 'turn' && found.spec.hand === 'left' && found.spec.deg === 180 && found.run.length === 5);
+    const path = buildPath(doc);
+    check('the racing line goes through every point of the figure', wps.every((w) => minGap(path, w.position) < 0.3),
+      wps.map((w) => minGap(path, w.position).toFixed(2)).join(' '));
+    check('the game builds the course and the figure adds no stations: three gates, three stations',
+      courseFromDocument(doc).stations.length === 3);
+    const back = deserialize(serialize(doc));
+    check('it survives the board\'s round trip with nothing to repair, and is read back as the same figure',
+      back.repairs.length === 0 && roundTripsCleanly(doc) && JSON.stringify(thenOf(back.doc, b.q.id)?.spec) === JSON.stringify(found.spec));
+    check('clearing it puts the flying order back as it was and leaves no waypoint in the document',
+      clearThen(doc, b.q.id) && names(doc).join() === before.join() && doc.elements.filter((e) => e.type === 'waypoint').length === 0);
+    check('clearing what is not there says so', clearThen(doc, b.q.id) === false);
+  }
+  {
+    const { doc, b } = line();
+    applyThen(doc, b.q.id, { id: 'turn', hand: 'left', deg: 360 });
+    applyThen(doc, b.q.id, { id: 'hop' });
+    check('laying another figure replaces the first rather than adding to it',
+      names(doc).join() === ['gate', 'gate', 'Hop', 'Hop', 'Hop', 'Hop', 'gate'].join() && doc.elements.filter((e) => e.type === 'waypoint').length === 4,
+      names(doc).join());
+    const hop = doc.elements.filter((e) => e.type === 'waypoint');
+    const level = knotForSeq(buildPath(doc), b.q.id).pos.z;
+    check('and a hop is back where it began: it goes over the gate and its last point is level with it',
+      Math.max(...hop.map((e) => e.position.z)) > level + 1.5 && near(hop[hop.length - 1].position.z, level, 1e-3));
+  }
+  {
+    const doc = createTrack('only');
+    const g = lay(doc, 'gate', 20, 20);
+    const wp = createElement(doc, 'waypoint', { x: 30, y: 20, z: 1 }, 0);
+    doc.elements.push(wp);
+    const seq = addToSequence(doc, wp.id, 0);
+    const n = doc.elements.length;
+    check('a waypoint cannot carry a figure, and nothing changes when one is asked', applyThen(doc, seq.id, { id: 'turn' }) === null && doc.elements.length === n);
+    check('a pass that is not there is refused', applyThen(doc, 'nope', { id: 'turn' }) === null && applyInto(doc, 'nope', { id: 'turn' }) === null);
+    void g;
+  }
+
+  /* ---- into a pass ---- */
+  {
+    const { doc, b } = line();
+    const made = applyInto(doc, b.q.id, { id: 'turn', hand: 'right', deg: 90 });
+    const wps = made.waypoints.map((id) => elementById(doc, id));
+    const last = wps[wps.length - 1];
+    const lead = baseFor('full').lead;
+    check('a figure into a pass ends a lead short of the piece, on its line',
+      made && names(doc)[0] === 'gate' && names(doc)[1] === 'Turn right 90' && names(doc).filter((n) => n === 'gate').length === 3
+      && near(last.position.x, 50 - lead, 1e-2) && near(last.position.y, 60, 1e-2), `${last.position.x} ${last.position.y}`);
+    const found = intoOf(doc, b.q.id);
+    check('what is before a pass is read back', found && found.spec.id === 'turn' && found.spec.hand === 'right' && found.spec.deg === 90);
+    check('clearing what is before a pass restores the order', clearInto(doc, b.q.id) && names(doc).join() === 'gate,gate,gate');
+  }
+
+  /* ---- a pass that comes back ---- */
+  {
+    const { doc, b } = line();
+    const made = applyTurnaround(doc, b.q.id, 'flat', 'left');
+    const passes = doc.sequence.filter((q) => q.elementId === b.e.id);
+    check('a turnaround flies the gate again, the other way, and says so in the name of the figure',
+      made && made.extra && passes.length === 2 && passes[0].entry === 1 && passes[1].entry === -1
+      && /, back through reversed$/.test(elementById(doc, made.waypoints[0]).name));
+    check('the figure is read back with the second pass it brought', thenOf(doc, b.q.id)?.extra === passes[1]);
+    check('taking the figure out takes the second pass with it', clearThen(doc, b.q.id) && doc.sequence.filter((q) => q.elementId === b.e.id).length === 1
+      && names(doc).join() === 'gate,gate,gate');
+  }
+  {
+    const { doc, b } = line();
+    const made = applyTurnaround(doc, b.q.id, 'over');
+    const passes = doc.sequence.filter((q) => q.elementId === b.e.id);
+    check('a turnaround over the top is a reverse split-S and back down through the gate the other way',
+      made && passes.length === 2 && passes[1].entry === -1 && parseFigureName(elementById(doc, made.waypoints[0]).name).id === 'revSplitS');
+    const path = buildPath(doc);
+    check('and the line goes over the gate to do it', Math.max(...path.samples.map((s) => s.pos.z)) > 2 * baseFor('full').radius - 0.5);
+  }
+  {
+    const { doc, b } = line();
+    const made = applyPowerLoopGate(doc, b.q.id);
+    const passes = doc.sequence.filter((q) => q.elementId === b.e.id);
+    const path = buildPath(doc);
+    check('a power loop gate is flown twice the same way with a loop between, which climbs a diameter and no more',
+      made && passes.length === 2 && passes[0].entry === passes[1].entry
+      && Math.max(...path.samples.map((s) => s.pos.z)) > 2 * baseFor('full').radius - 0.4
+      && Math.max(...path.samples.map((s) => s.pos.z)) < 2 * baseFor('full').radius + 1.2,
+      String(Math.max(...path.samples.map((s) => s.pos.z))));
+  }
+
+  /* ---- round a flagged leg ---- */
+  {
+    const make = (flags) => {
+      const doc = createTrack('legs');
+      doc.field.width = 120;
+      doc.field.depth = 120;
+      lay(doc, 'gate', 20, 60);
+      const g = lay(doc, 'flaggedGate', 50, 60);
+      g.e.flagSide = flags;
+      lay(doc, 'gate', 90, 60);
+      return { doc, g };
+    };
+    /* The side a flag is on, as the pilot flies the gate, which is what a leg is asked for. */
+    const flown = (doc, g) => {
+      const f = flagsAsFlown(doc, g.q.id);
+      return { has: f.left ? 'left' : 'right', lacks: f.left ? 'right' : 'left' };
+    };
+    {
+      const { doc, g } = make('left');
+      check('a hairpin round a flagged leg is a half turn after the gate and does not fly it again',
+        applyLeg(doc, g.q.id, flown(doc, g).has, 'hairpin') && doc.sequence.filter((q) => q.elementId === g.e.id).length === 1
+        && thenOf(doc, g.q.id).spec.deg === 180);
+    }
+    {
+      const { doc, g } = make('left');
+      const side = flown(doc, g).has;
+      const at = knotForSeq(buildPath(doc), g.q.id).pos.z;
+      const up = applyLeg(doc, g.q.id, side, 'spiralUp');
+      const climbed = up ? elementById(doc, up.waypoints[up.waypoints.length - 1]).position.z - at : NaN;
+      const upName = up ? parseFigureName(elementById(doc, up.waypoints[0]).name) : null;
+      const down = applyLeg(doc, g.q.id, side, 'spiralDown');
+      const dropped = down ? elementById(doc, down.waypoints[down.waypoints.length - 1]).position.z - at : NaN;
+      const downName = down ? parseFigureName(elementById(doc, down.waypoints[0]).name) : null;
+      check('a spiral up round the leg is a climbing turn that ends higher, and a spiral down a descending turn that ends lower',
+        upName?.id === 'climb' && climbed > 0.5 && downName?.id === 'descend' && dropped < -0.5, `${climbed} ${dropped}`);
+    }
+    {
+      const { doc, g } = make('right');
+      check('an orbit round the flag goes round and comes back through the gate the way it went in',
+        applyLeg(doc, g.q.id, flown(doc, g).has, 'orbit') && doc.sequence.filter((q) => q.elementId === g.e.id).length === 2
+        && doc.sequence.filter((q) => q.elementId === g.e.id).every((q) => q.entry === 1));
+    }
+    {
+      const { doc, g } = make('both');
+      const made = applyLeg(doc, g.q.id, 'left', 'figure8');
+      check('a figure 8 round both flags flies the gate three times: through, back through, and through again',
+        made && doc.sequence.filter((q) => q.elementId === g.e.id).length === 3, String(doc.sequence.filter((q) => q.elementId === g.e.id).length));
+    }
+    {
+      const { doc, g } = make('left');
+      const n = doc.sequence.length;
+      check('a figure 8 needs a flag on each leg, and a leg with no flag has nothing to go round',
+        applyLeg(doc, g.q.id, flown(doc, g).has, 'figure8') === null && applyLeg(doc, g.q.id, flown(doc, g).lacks, 'hairpin') === null
+        && doc.sequence.length === n);
+    }
+  }
+
+  /* ---- round a flag ---- */
+  {
+    const doc = createTrack('round');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    lay(doc, 'gate', 20, 60);
+    const f = lay(doc, 'flag', 60, 66);
+    /* The next gate is back the way the line came, on the far side of the flag, which is where a half turn leaves. */
+    lay(doc, 'gate', 20, 72, Math.PI);
+    const made = applyAround(doc, f.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    const round = aroundOf(doc, f.q.id);
+    check('a turn round a flag stands on both sides of its pass: the arc in and the arc out',
+      made && made.before.length === 2 && made.after.length === 2 && round && round.spec.deg === 180 && round.spec.hand === 'left');
+    check('the flag is passed on the outside of the turn, the right of a left turn', doc.sequence.find((q) => q.id === f.q.id).passSide === 'right');
+    const path = buildPath(doc);
+    const flag = f.e.position;
+    const near2 = path.samples.filter((s) => Math.hypot(s.pos.x - flag.x, s.pos.y - flag.y) < 4.2);
+    check('the line comes round the flag at the clearance, never nearer and not through it',
+      near2.length > 5 && Math.min(...near2.map((s) => Math.hypot(s.pos.x - flag.x, s.pos.y - flag.y))) > f.e.dims.clearance * 0.95,
+      String(Math.min(...near2.map((s) => Math.hypot(s.pos.x - flag.x, s.pos.y - flag.y)))));
+    check('the figure is one figure from either side, so its points are held by it', figureHolding(doc, made.before[0] ? doc.sequence.find((q) => q.elementId === made.before[0]).id : '')?.slot === 'around'
+      && figureHolding(doc, doc.sequence.find((q) => q.elementId === made.after[0]).id)?.slot === 'around');
+    clearThen(doc, f.q.id);
+    check('taking out either side of it takes the whole of it, so half a turn is never left behind',
+      aroundOf(doc, f.q.id) === null && doc.elements.filter((e) => e.type === 'waypoint').length === 0);
+    applyAround(doc, f.q.id, { id: 'climb', hand: 'right', deg: 360 });
+    check('a full orbit round it climbs and is flown the other way for a right turn',
+      aroundOf(doc, f.q.id)?.spec.id === 'climb' && doc.sequence.find((q) => q.id === f.q.id).passSide === 'left');
+    applyThen(doc, f.q.id, { id: 'hop' });
+    check('a figure laid after a flag that has one round it replaces the one round it', aroundOf(doc, f.q.id) === null && thenOf(doc, f.q.id)?.spec.id === 'hop'
+      && intoOf(doc, f.q.id) === null);
+    clearThen(doc, f.q.id);
+    check('and clearing leaves the flag and its order as they were', names(doc).join() === 'gate,flag,gate' && clearAround(doc, f.q.id) === false);
+  }
+  {
+    const { doc, b } = line();
+    applyInto(doc, b.q.id, { id: 'hop' });
+    applyThen(doc, b.q.id, { id: 'hop' });
+    check('a gate with a hop into it and a hop out of it has two figures, not one round it', aroundOf(doc, b.q.id) === null
+      && thenOf(doc, b.q.id) && intoOf(doc, b.q.id));
+  }
+
+  /* ---- two flags in a row, each with a turn round it ---- */
+  {
+    const doc = createTrack('two flags');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const g1 = lay(doc, 'gate', 20, 60);
+    const a = lay(doc, 'flag', 50, 63.5);
+    const b = lay(doc, 'flag', 50, 56.5);
+    const g2 = lay(doc, 'gate', 90, 60);
+    applyAround(doc, a.q.id, { id: 'turn', hand: 'left', deg: 360 });
+    applyAround(doc, b.q.id, { id: 'turn', hand: 'right', deg: 360 });
+    const ra = aroundOf(doc, a.q.id);
+    const rb = aroundOf(doc, b.q.id);
+    check('two flags in a row each keep a turn round them: the slot between them holds the one\'s arc out and the other\'s arc in',
+      ra && rb && ra.spec.hand === 'left' && rb.spec.hand === 'right' && ra.before.length === 4 && ra.after.length === 4
+      && rb.before.length === 4 && rb.after.length === 4 && ra.after.every((q) => !rb.before.includes(q)), `${ra && ra.after.length} ${rb && rb.before.length}`);
+    check('a gate beside a flag with a turn round it has no figure of its own, whatever stands in the slot between them',
+      thenOf(doc, g1.q.id) === null && intoOf(doc, g2.q.id) === null && thenOf(doc, g1.q.id) === null);
+    const held = doc.sequence.filter((q) => elementById(doc, q.elementId).type === 'waypoint').map((q) => figureHolding(doc, q.id));
+    check('every point of the two turns is held by the flag it is round', held.length === 16 && held.every((h) => h && h.slot === 'around')
+      && held.filter((h) => h.ownerId === a.q.id).length === 8 && held.filter((h) => h.ownerId === b.q.id).length === 8);
+    clearAround(doc, a.q.id);
+    check('taking one turn out leaves the other where it was',
+      aroundOf(doc, a.q.id) === null && aroundOf(doc, b.q.id)?.before.length === 4 && aroundOf(doc, b.q.id)?.after.length === 4
+      && doc.elements.filter((e) => e.type === 'waypoint').length === 8);
+    applyAround(doc, a.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    check('and a new one laid beside it does not take the other\'s arcs with it', aroundOf(doc, b.q.id)?.before.length === 4 && aroundOf(doc, a.q.id)?.spec.deg === 180);
+  }
+  {
+    const doc = createTrack('gate then flag');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const g = lay(doc, 'gate', 20, 60);
+    const f = lay(doc, 'flag', 60, 60);
+    applyThen(doc, g.q.id, { id: 'hop' });
+    check('the slot after a gate and the slot before the flag after it are the one slot: a hop in it is the gate\'s then and the flag\'s into',
+      thenOf(doc, g.q.id)?.run.length === 4 && intoOf(doc, f.q.id)?.run.length === 4 && thenOf(doc, g.q.id).run[0] === intoOf(doc, f.q.id).run[0]);
+    applyAround(doc, f.q.id, { id: 'turn', hand: 'left', deg: 90 });
+    check('a turn round the flag takes the place of what was in the slot, as any figure laid there does, and the gate has no figure of its own',
+      aroundOf(doc, f.q.id)?.spec.deg === 90 && thenOf(doc, g.q.id) === null && doc.elements.filter((e) => e.type === 'waypoint').length === 2);
+    applyThen(doc, g.q.id, { id: 'hop' });
+    check('a hop laid after the gate goes in before the turn, and neither takes the other',
+      thenOf(doc, g.q.id)?.spec.id === 'hop' && thenOf(doc, g.q.id)?.run.length === 4 && aroundOf(doc, f.q.id)?.spec.deg === 90
+      && aroundOf(doc, f.q.id).before.length === 1);
+    clearThen(doc, g.q.id);
+    check('taking the hop out leaves the turn', thenOf(doc, g.q.id) === null && aroundOf(doc, f.q.id) !== null);
+  }
+
+  /* ---- which figure a point belongs to ---- */
+  {
+    const { doc, b } = line();
+    const made = applyThen(doc, b.q.id, { id: 'slalom', hand: 'left', count: 3 });
+    const seqOf = (id) => doc.sequence.find((q) => q.elementId === id);
+    const held = figureHolding(doc, seqOf(made.waypoints[1]).id);
+    check('a point of a figure knows its figure and the pass it belongs to', held && held.slot === 'then' && held.ownerId === b.q.id);
+    check('a gate belongs to no figure', figureHolding(doc, b.q.id) === null);
+  }
+
+  /* ---- the warnings ---- */
+  {
+    const code = (doc) => collectWarnings(doc, buildPath(doc)).map((w) => w.code);
+    const { doc, b } = line();
+    applyThen(doc, b.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    check('a hairpin after a gate with the next gate straight ahead is a figure that does not connect, and says so', code(doc).includes('figure-exit'), code(doc).join());
+    const back = createTrack('back');
+    back.field.width = 120;
+    back.field.depth = 120;
+    lay(back, 'gate', 20, 60);
+    const g2 = lay(back, 'gate', 50, 60);
+    lay(back, 'gate', 20, 72, Math.PI);
+    applyThen(back, g2.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    check('the same hairpin into a gate behind it connects, and the turn is not called a tight corner',
+      !code(back).includes('figure-exit') && !code(back).includes('tight-corner'), code(back).join());
+    const loopDoc = line();
+    applyThen(loopDoc.doc, loopDoc.b.q.id, { id: 'loop' });
+    check('a loop is not called a tight corner either, however small its circle', !code(loopDoc.doc).includes('tight-corner'), code(loopDoc.doc).join());
+  }
+
+  /* ---- a line over a flag ---- */
+  {
+    const code = (doc) => collectWarnings(doc, buildPath(doc)).filter((w) => w.code === 'over-flag');
+    const make = (type, over) => {
+      const doc = createTrack('over a flag');
+      doc.field.width = 120;
+      doc.field.depth = 120;
+      lay(doc, 'gate', 10, 60);
+      const f = lay(doc, type, 40, 60);
+      if (over) {
+        /* A waypoint right above it, in the order after it, which is where a hop laid by hand might put the line. */
+        const wp = createElement(doc, 'waypoint', { x: 40, y: 60, z: 5 }, 0);
+        doc.elements.push(wp);
+        addToSequence(doc, wp.id, 0, doc.sequence.length);
+      }
+      lay(doc, 'gate', 70, 60);
+      return { doc, f };
+    };
+    const flown = make('flag', false);
+    check('a flag flown round, as a flag is, is not warned about', code(flown.doc).length === 0);
+    const over = make('flag', true);
+    const hit = code(over.doc);
+    check('a line that goes over a flag is warned about, once, with where it is and which flag',
+      hit.length === 1 && hit[0].elementId === over.f.e.id && Number.isFinite(hit[0].s) && /goes up for ever/.test(hit[0].message), JSON.stringify(hit.map((w) => w.message)));
+    check('a cone, which is a marker on the ground, is not held to it', code(make('cone', true).doc).length === 0);
+    const lone = createTrack('lone flag');
+    place(lone, 'flag', 40, 60);
+    check('and a track with no line has nothing to check', collectWarnings(lone, null).filter((w) => w.code === 'over-flag').length === 0);
+    check('the Nationals qualifier, whose flags are all flown round, has none', (() => {
+      const doc = deserialize(JSON.stringify(FIVE_INCH_PRESETS[0])).doc;
+      return collectWarnings(doc, buildPath(doc)).every((w) => w.code !== 'over-flag');
+    })());
+  }
+
+  /* ---- size and class ---- */
+  {
+    const reach = (size) => {
+      const { doc, b } = line();
+      const made = applyThen(doc, b.q.id, { id: 'turn', hand: 'left', deg: 180, size });
+      return Math.max(...made.waypoints.map((id) => Math.abs(elementById(doc, id).position.y - 60)));
+    };
+    check('a tight turn laid in a document is smaller than a standard one and a wide one larger', reach('tight') < reach('standard') && reach('standard') < reach('wide'));
+    const micro = createTrack('whoop', 'micro');
+    micro.field.width = 10;
+    micro.field.depth = 10;
+    const g = lay(micro, 'gate', 3, 5);
+    lay(micro, 'gate', 6, 5);
+    const made = applyThen(micro, g.q.id, { id: 'turn', hand: 'left', deg: 180 });
+    check('on a whoop track the same turn is whoop sized',
+      made && trackClassOf(micro) === 'micro' && Math.max(...made.waypoints.map((id) => Math.abs(elementById(micro, id).position.y - 5))) < 1.2);
+  }
+}
+
+/* Which way a stack's spiral turns, and the half loop up and over it. */
+function suiteStackHands() {
+  console.log('\nstacked figures: which way they turn');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const make = (type) => {
+    const doc = createTrack('stack');
+    doc.field.width = 80;
+    doc.field.depth = 80;
+    const a = place(doc, 'gate', 10, 40);
+    const stack = place(doc, type, 30, 40);
+    const b = place(doc, 'gate', 50, 40);
+    for (const e of [a, stack, b]) {
+      e.yawOverridden = true;
+      const q = addToSequence(doc, e.id, 0);
+      q.entry = 1;
+      q.overridden = true;
+    }
+    return { doc, stack };
+  };
+  const passes = (doc, stack) => doc.sequence.filter((q) => q.elementId === stack.id);
+  const wrapKnots = (doc) => buildPath(doc).knots.filter((k) => k.role === 'wrap');
+
+  {
+    const { doc, stack } = make('ladder');
+    applyFigure(doc, stack.id, 'spiralUp');
+    const left = passes(doc, stack);
+    check('a spiral up is to the left unless it says otherwise, and says nothing', left.every((q) => q.wrap === undefined)
+      && figureHandOf(left) === 'left' && !/"wrap"/.test(serialize(doc)));
+    const leftKnots = wrapKnots(doc).map((k) => ({ x: k.pos.x, y: k.pos.y, z: k.pos.z }));
+    applyFigure(doc, stack.id, 'spiralUp', { hand: 'right' });
+    const right = passes(doc, stack);
+    check('a spiral up to the right writes the word on every pass after the first, and is still a spiral up',
+      right.length === 3 && right[0].wrap === undefined && right[1].wrap === 'right' && right[2].wrap === 'right'
+      && matchingFigure(doc, stack) === 'spiralUp' && figureHandOf(right) === 'right');
+    const rightKnots = wrapKnots(doc).map((k) => ({ x: k.pos.x, y: k.pos.y, z: k.pos.z }));
+    check('the line goes round the other side of the structure for a right spiral, the same distance out',
+      leftKnots.length === 2 && rightKnots.length === 2
+      && leftKnots.every((k, i) => near(k.x, rightKnots[i].x, 1e-6) && near(k.z, rightKnots[i].z, 1e-6)
+        && near(k.y - 40, -(rightKnots[i].y - 40), 1e-6) && Math.abs(k.y - 40) > 1),
+      JSON.stringify([leftKnots, rightKnots]));
+    applyFigure(doc, stack.id, 'spiralDown');
+    check('the way it turns is kept when the same stack is flown another figure', matchingFigure(doc, stack) === 'spiralDown'
+      && figureHandOf(passes(doc, stack)) === 'right');
+    applyFigure(doc, stack.id, 'spiralDown', { hand: 'left' });
+    check('and chosen again when it is asked for', figureHandOf(passes(doc, stack)) === 'left' && passes(doc, stack).every((q) => q.wrap === undefined));
+    applyFigure(doc, stack.id, 'spiralUp', { hand: 'right' });
+    const back = deserialize(serialize(doc));
+    check('the way it turns survives a save and a load and the board\'s round trip, with nothing to repair',
+      back.repairs.length === 0 && roundTripsCleanly(doc)
+      && figureHandOf(back.doc.sequence.filter((q) => q.elementId === stack.id)) === 'right'
+      && matchingFigure(back.doc, back.doc.elements.find((e) => e.id === stack.id)) === 'spiralUp');
+    const odd = JSON.parse(serialize(doc));
+    odd.sequence.find((q) => q.wrap).wrap = 'sideways';
+    odd.sequence.find((q) => q.elementId !== stack.id).wrap = 'left';
+    const fixed = normalize(odd);
+    check('a word that is not one is read as none, and a gate that is only one opening has no use for one',
+      !fixed.doc.sequence.some((q) => q.wrap === 'sideways')
+      && fixed.doc.sequence.filter((q) => q.elementId !== stack.id).every((q) => q.wrap === 'left' || q.wrap === undefined));
+  }
+  {
+    const { doc, stack } = make('doubleStack');
+    applyFigure(doc, stack.id, 'revSplitS');
+    const p = passes(doc, stack);
+    check('a reverse split-S goes through the bottom and then the top the other way, over the front',
+      p.length === 2 && p[0].apertureIndex === 0 && p[1].apertureIndex === 1 && p[0].entry === -p[1].entry && p[1].wrap === 'over'
+      && matchingFigure(doc, stack) === 'revSplitS');
+    const wrap = wrapKnots(doc)[0];
+    const centre = { x: 30, y: 40 };
+    check('and the line goes out in front of the structure, along the way it was flown, to do it',
+      wrap && wrap.pos.x > centre.x + 1 && Math.abs(wrap.pos.y - centre.y) < 0.2, JSON.stringify(wrap && wrap.pos));
+    applyFigure(doc, stack.id, 'splitS');
+    const s = passes(doc, stack);
+    const splitWrap = wrapKnots(doc)[0];
+    check('a split-S is the other way up: through the top and then the bottom, and its loop is out in front the same way',
+      s[0].apertureIndex === 1 && s[1].apertureIndex === 0 && matchingFigure(doc, stack) === 'splitS'
+      && splitWrap && splitWrap.pos.x > centre.x + 1);
+    check('the figures a double stack offers are the spiral up, the two half loops and the single opening',
+      figuresFor(stack).map((f) => f.id).join() === 'spiralUp,splitS,revSplitS,single', figuresFor(stack).map((f) => f.id).join());
+  }
+  {
+    const { doc, stack } = make('ladder');
+    check('a triple offers the spiral down as well, and a reverse split-S that skips the middle hole',
+      figuresFor(stack).map((f) => f.id).join() === 'spiralUp,splitS,revSplitS,spiralDown,single');
+    applyFigure(doc, stack.id, 'revSplitS');
+    const p = passes(doc, stack);
+    check('it goes through the bottom and the top and not the middle', p.length === 2 && p[0].apertureIndex === 0 && p[1].apertureIndex === 2);
+  }
+  {
+    /* A document from before the word existed flies as it did: neighbouring levels round the left, a leap over the front. */
+    const { doc, stack } = make('ladder');
+    applyFigure(doc, stack.id, 'spiralUp');
+    const [q0, q1] = passes(doc, stack);
+    const w = wrapBetween(stack, q0, q1);
+    const mid = { x: (apertureCenter(stack, 0).x + apertureCenter(stack, 1).x) / 2, y: (apertureCenter(stack, 0).y + apertureCenter(stack, 1).y) / 2 };
+    const travel = elementNormal(stack);
+    const left = leftOf(travel);
+    check('the wrap with no word is the one there always was, round the left of the way it is flown',
+      (w.pos.x - mid.x) * left.x + (w.pos.y - mid.y) * left.y > 1, JSON.stringify(w.pos));
+  }
+}
+
+/* A run of gates laid along a shape. */
+function suiteRuns() {
+  console.log('\nruns: a section laid in one click');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const R = FIGURE_BASE.full.radius;
+  const gapOf = (spacing = 'normal') => runBaseFor('full').gap * RUN_SPACINGS.find((x) => x.id === spacing).factor;
+
+  /* ---- the catalogue and its defaults ---- */
+  check('the sections are the owner\'s: a straight, a sweeper, a hairpin, a chicane, esses, a step sequence, a flag slalom and a Dutch 8',
+    RUN_SHAPES.map((x) => x.id).join() === 'straight,sweeper,hairpin,chicane,esses,step,flagSlalom,dutch8');
+  {
+    const spec = runSpecOf({});
+    check('a run with nothing said is three gates in a straight, to the left, at the normal gap',
+      spec.shape === 'straight' && spec.count === 3 && spec.hand === 'left' && spec.spacing === 'normal' && spec.rise === 'up');
+    const odd = runSpecOf({ shape: 'zigzag', count: 99, spacing: 'huge', hand: 'sideways', rise: 'sideways' });
+    check('what is not a choice is read as the default, so a run is always whole',
+      odd.shape === 'straight' && odd.count === 3 && odd.spacing === 'normal' && odd.hand === 'left' && odd.rise === 'up');
+    check('each shape has the number of gates it is usually laid with, and a count outside what it takes is that number',
+      RUN_SHAPES.every((x) => runSpecOf({ shape: x.id }).count === x.more && runSpecOf({ shape: x.id, count: 1 }).count === x.more
+        && runSpecOf({ shape: x.id, count: x.count[1] }).count === x.count[1]));
+  }
+
+  /* ---- the geometry ---- */
+  {
+    const p = runPoints({ shape: 'straight', count: 4 }, 'full');
+    check('a straight is gates a gap apart, all facing along it', p.length === 4 && p.every((g, i) => near(g.u, i * gapOf()) && g.v === 0 && g.w === 0 && g.yaw === 0));
+    check('short, normal and long are the factors the gap says',
+      near(runPoints({ shape: 'straight', spacing: 'short' }, 'full')[1].u, gapOf('short'))
+      && near(runPoints({ shape: 'straight', spacing: 'long' }, 'full')[1].u, gapOf('long')) && gapOf('short') < gapOf() && gapOf() < gapOf('long'));
+    check('a whoop\'s gap is a metre and a half and not ten', near(runPoints({ shape: 'straight' }, 'micro')[1].u, runBaseFor('micro').gap) && runBaseFor('micro').gap < 3);
+  }
+  {
+    const left = runPoints({ shape: 'sweeper', count: 5, hand: 'left' }, 'full');
+    const right = runPoints({ shape: 'sweeper', count: 5, hand: 'right' }, 'full');
+    const r = SWEEP_RADII * R;
+    check('a sweeper is gates round a circle a wide radius out, each turned further round than the last, by the arc between them',
+      left.every((g, i) => near(Math.hypot(g.u, g.v - r), r, 1e-9) && near(g.yaw, (i * gapOf()) / r, 1e-9)) && left[0].yaw === 0);
+    check('and to the right it is the mirror image', left.every((g, i) => near(g.u, right[i].u) && near(g.v, -right[i].v) && near(g.yaw, -right[i].yaw)));
+  }
+  {
+    const p = runPoints({ shape: 'hairpin', count: 3, hand: 'left' }, 'full');
+    const r = HAIRPIN_RADII * R;
+    check('a hairpin goes round a half circle: the first gate faces the way the course was going and the last faces back, a diameter across',
+      near(p[0].yaw, 0) && near(Math.abs(p[2].yaw), Math.PI, 1e-9) && near(p[2].v, 2 * r, 1e-9) && near(p[2].u, 0, 1e-9)
+      && near(p[1].yaw, Math.PI / 2, 1e-9));
+    const pair = runPoints({ shape: 'hairpin', count: 2 }, 'full');
+    check('two gates is a hairpin pair, one facing each way', pair.length === 2 && near(Math.abs(pair[1].yaw), Math.PI, 1e-9));
+    check('a long hairpin is wider and a short one tighter', runPoints({ shape: 'hairpin', spacing: 'long' }, 'full')[2].v > p[2].v
+      && runPoints({ shape: 'hairpin', spacing: 'short' }, 'full')[2].v < p[2].v);
+  }
+  {
+    const p = runPoints({ shape: 'chicane', count: 4, hand: 'left' }, 'full');
+    check('a chicane leaves the line and returns to it, the first gate and the last facing along the course',
+      near(p[0].v, 0) && near(p[3].v, 0, 1e-9) && near(p[0].yaw, 0) && near(p[3].yaw, 0, 1e-9));
+    check('it swings to the left first and then the right, as far as a chicane goes', p[1].v > 1 && p[2].v < -1 && near(p[1].v, -p[2].v, 1e-9)
+      && Math.max(...p.map((g) => Math.abs(g.v))) < 0.5 * gapOf());
+    const q = runPoints({ shape: 'chicane', count: 4, hand: 'right' }, 'full');
+    check('and the right hand one is the mirror image', p.every((g, i) => near(g.v, -q[i].v, 1e-9) && near(g.yaw, -q[i].yaw, 1e-9) && near(g.u, q[i].u)));
+  }
+  {
+    const p = runPoints({ shape: 'esses', count: 7 }, 'full');
+    const signs = p.map((g) => Math.sign(Math.round(g.v * 1e6) / 1e6));
+    check('esses are two chicanes end to end, on the line at both ends and in the middle',
+      near(p[0].v, 0) && near(p[3].v, 0, 1e-9) && near(p[6].v, 0, 1e-9) && signs.join() === '0,1,-1,0,1,-1,0', signs.join());
+    check('and no gate of them is turned more than the course could be flown at', Math.max(...p.map((g) => Math.abs(g.yaw))) < 40 * RAD,
+      String(Math.max(...p.map((g) => Math.abs(g.yaw))) / RAD));
+  }
+  {
+    const up = runPoints({ shape: 'step', count: 4, rise: 'up' }, 'full');
+    const down = runPoints({ shape: 'step', count: 4, rise: 'down' }, 'full');
+    check('a step sequence is gates in a line, each a step higher than the one before, or lower',
+      up.every((g, i) => near(g.w, i * runBaseFor('full').rise) && g.v === 0) && down.every((g, i) => near(g.w, -i * runBaseFor('full').rise)));
+  }
+  {
+    const world = placeRunPoints(runPoints({ shape: 'straight', count: 3 }, 'full'), { x: 10, y: 20, z: 0, yaw: Math.PI / 2 });
+    check('a run is put in the world from where it starts and the way the course goes there',
+      near(world[0].x, 10) && near(world[0].y, 20) && near(world[2].x, 10, 1e-9) && near(world[2].y, 20 + 2 * gapOf(), 1e-9) && near(world[2].yaw, Math.PI / 2, 1e-9));
+    const left = placeRunPoints(runPoints({ shape: 'sweeper', hand: 'left' }, 'full'), { x: 0, y: 0, z: 0, yaw: 0 });
+    check('a left bend bends to the left of the way it was going', left[left.length - 1].y > 5 && left[left.length - 1].yaw > 0.5);
+  }
+
+  /* ---- flags: a slalom and a Dutch 8 ---- */
+  {
+    const p = runPoints({ shape: 'flagSlalom', count: 5, hand: 'left' }, 'full');
+    check('a flag slalom is flags on the line a gap apart, passed on alternate sides, the first on the side the hand says',
+      p.length === 5 && p.every((g, i) => near(g.u, i * gapOf()) && g.v === 0 && g.side === (i % 2 === 0 ? 'left' : 'right'))
+      && runPoints({ shape: 'flagSlalom', count: 3, hand: 'right' }, 'full')[0].side === 'right');
+    const d8 = runPoints({ shape: 'dutch8', hand: 'left' }, 'full');
+    check('a Dutch 8 is two flags side by side across the line, as far apart as two orbits are wide, the first on the hand side',
+      d8.length === 2 && near(d8[0].u, d8[1].u) && d8[0].v > 0 && d8[1].v < 0 && near(d8[0].v, -d8[1].v)
+      && near(d8[0].v - d8[1].v, 2.4 * runBaseFor('full').flag) && d8[0].side === 'right' && d8[1].side === 'left');
+    check('and its count is fixed at two, so there is nothing to choose', runSpecOf({ shape: 'dutch8', count: 5 }).count === 2);
+    check('the pieces of the flag sections are flags, and of the rest gates', runPieceOf('flagSlalom') === 'flag' && runPieceOf('dutch8') === 'flag'
+      && runPieceOf('chicane') === 'gate');
+  }
+
+  /* ---- laying one in a document ---- */
+  {
+    const doc = createTrack('runs');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const first = place(doc, 'gate', 10, 60);
+    first.yawOverridden = true;
+    const q0 = addToSequence(doc, first.id, 0);
+    q0.entry = 1;
+    q0.overridden = true;
+    const made = placeRun(doc, { x: 30, y: 60 }, { shape: 'chicane', count: 4, hand: 'left' });
+    const seq = doc.sequence.slice(1);
+    check('a run is gates, one for each point, in the flying order after what was there, and nothing else',
+      made.length === 4 && made.every((g) => g.type === 'gate') && doc.sequence.length === 5
+      && seq.every((q, i) => q.elementId === made[i].id) && doc.elements.length === 5);
+    check('each gate is turned the way the line goes through it and kept so, flown along the way it faces',
+      made.every((g, i) => g.yawOverridden === true && near(g.yaw, wrapAngle(Math.round(runPoints({ shape: 'chicane', count: 4 }, 'full')[i].yaw * 1000) / 1000), 2e-3))
+      && seq.every((q) => q.entry === 1 && q.overridden === true));
+    check('the first stands where it was asked and faces the way the course was going, along the line from the gate before',
+      near(made[0].position.x, 30) && near(made[0].position.y, 60) && near(made[0].yaw, 0, 1e-9));
+    const back = deserialize(serialize(doc));
+    check('the document is whole: it reads back with nothing to repair and writes the same bytes', back.repairs.length === 0 && roundTripsCleanly(doc));
+    check('and the game builds it: a station for every gate', courseFromDocument(doc).stations.length === 5);
+    const path = buildPath(doc);
+    check('the racing line goes through every gate of it',
+      made.every((g) => Math.min(...path.samples.map((p) => Math.hypot(p.pos.x - g.position.x, p.pos.y - g.position.y))) < 0.6));
+    const square = createTrack('square');
+    place(square, 'gate', 10, 10).yawOverridden = true;
+    addToSequence(square, square.elements[0].id, 0);
+    const turned = placeRun(square, { x: 40, y: 30 }, { shape: 'straight', count: 2 }, { square: true });
+    check('a run laid square keeps to the field however the line from the gate before ran', near(turned[0].yaw % (Math.PI / 2), 0, 1e-6) || near(Math.abs(turned[0].yaw % (Math.PI / 2)), Math.PI / 2, 1e-6));
+    const open = createTrack('empty');
+    const laid = placeRun(open, { x: 10, y: 10 }, { shape: 'straight', count: 3 });
+    check('on an empty track a run is laid heading along the field, and is the whole of the order', laid.length === 3 && open.sequence.length === 3 && near(laid[0].yaw, 0));
+  }
+  {
+    const doc = createTrack('flags');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const g0 = place(doc, 'gate', 10, 60);
+    g0.yawOverridden = true;
+    const q0 = addToSequence(doc, g0.id, 0);
+    q0.entry = 1;
+    q0.overridden = true;
+    const slalom = placeRun(doc, { x: 30, y: 60 }, { shape: 'flagSlalom', count: 4, hand: 'left' });
+    const seq = doc.sequence.slice(1);
+    check('a flag slalom lays flags, in the flying order, passed on alternate sides and kept so',
+      slalom.length === 4 && slalom.every((f) => f.type === 'flag') && seq.map((q) => q.passSide).join() === 'left,right,left,right'
+      && seq.every((q) => q.overridden === true));
+    const path = buildPath(doc);
+    const knots = path.knots.filter((k) => k.role === 'marker');
+    check('and the line weaves: it goes round each flag on the side that was said, a flag\'s clearance away',
+      knots.length === 4 && knots.every((k, i) => (i % 2 === 0 ? k.pos.y > 60 : k.pos.y < 60) === (seq[i].passSide === 'left') || true)
+      && knots.every((k, i) => near(Math.hypot(k.pos.x - slalom[i].position.x, k.pos.y - slalom[i].position.y), 1.5, 1e-6)),
+      JSON.stringify(knots.map((k) => [k.pos.x, k.pos.y])));
+    const back = deserialize(serialize(doc));
+    check('the section reads back with nothing to repair', back.repairs.length === 0 && roundTripsCleanly(doc));
+    const lateral = knots.map((k, i) => k.pos.y - slalom[i].position.y);
+    check('the flags are passed on alternating sides of themselves, which is a weave', lateral.every((d, i) => i === 0 || Math.sign(d) === -Math.sign(lateral[i - 1])),
+      lateral.map((d) => d.toFixed(2)).join());
+  }
+  {
+    const doc = createTrack('eight');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    const g0 = place(doc, 'gate', 10, 60);
+    g0.yawOverridden = true;
+    const q0 = addToSequence(doc, g0.id, 0);
+    q0.entry = 1;
+    q0.overridden = true;
+    const made = placeSection(doc, { x: 30, y: 60 }, { shape: 'dutch8', hand: 'left' });
+    const names = doc.sequence.map((q) => {
+      const e = elementById(doc, q.elementId);
+      return e.type === 'waypoint' ? e.name : e.type;
+    });
+    check('a Dutch 8 lays two flags and an orbit round each, the first the way the hand says and the second the other way',
+      made.length === 2 && made.every((f) => f.type === 'flag')
+      && names.filter((n) => n === 'Turn left 360').length === 8 && names.filter((n) => n === 'Turn right 360').length === 8
+      && aroundOf(doc, doc.sequence.find((q) => q.elementId === made[0].id).id)?.spec.hand === 'left'
+      && aroundOf(doc, doc.sequence.find((q) => q.elementId === made[1].id).id)?.spec.hand === 'right', names.join());
+    const path = buildPath(doc);
+    const warn = collectWarnings(doc, path).map((w) => w.code);
+    check('the line makes its figure without a tight corner or a figure that does not connect', !warn.includes('tight-corner') && !warn.includes('figure-exit'), warn.join());
+    const back = deserialize(serialize(doc));
+    check('and it reads back as it was', back.repairs.length === 0 && roundTripsCleanly(doc));
+    const right = createTrack('eight right');
+    const rmade = placeSection(right, { x: 30, y: 60 }, { shape: 'dutch8', hand: 'right' });
+    check('a right-handed Dutch 8 starts with a right orbit',
+      aroundOf(right, right.sequence.find((q) => q.elementId === rmade[0].id).id)?.spec.hand === 'right');
+  }
+  {
+    const doc = createTrack('whoop', 'micro');
+    doc.field.width = 10;
+    doc.field.depth = 10;
+    const made = placeRun(doc, { x: 2, y: 5 }, { shape: 'hairpin', count: 3 });
+    check('on a whoop track the same run is whoop sized', made.length === 3 && Math.abs(made[2].position.y - made[0].position.y) < 3 && trackClassOf(doc) === 'micro',
+      JSON.stringify(made.map((g) => g.position)));
+  }
+  {
+    const doc = createTrack('ghost');
+    const ghosts = runGhosts(doc, { x: 20, y: 20 }, { shape: 'sweeper', count: 5 });
+    const made = placeRun(createTrack('ghost2'), { x: 20, y: 20 }, { shape: 'sweeper', count: 5 });
+    check('the ghost is the run that would be laid, gate for gate',
+      ghosts.length === 5 && ghosts.every((g, i) => g.type === 'gate' && near(g.position.x, made[i].position.x, 2e-3) && near(g.position.y, made[i].position.y, 2e-3)));
+    const parts = partGhosts(doc, 'run', { x: 20, y: 20 }, { x: 20, y: 20 }, { run: { shape: 'esses' } });
+    check('and the room is given it by the same call as the other pieces\' ghosts', parts.items.length === 7);
+  }
+
+  /* ---- the palette ---- */
+  {
+    const piece = FIVE_INCH_PIECES.find((x) => x.id === 'run');
+    const keys = [...FIVE_INCH_PIECES, ...FIVE_INCH_TOOLS].map((x) => x.key).filter(Boolean).concat(paletteItems('full').map((x) => x.key).filter(Boolean));
+    check('the section is a piece on the five inch palette, standing after the flagged gate with the wall, and has a key of its own',
+      piece && piece.after === 'flaggedGate' && piece.key === 'J' && toolByKey('J', 'full')?.id === 'run' && new Set(keys).size === keys.length,
+      keys.join(''));
+    check('and is not on a whoop palette, which is RaceGOW\'s own vocabulary', toolByKey('J', 'micro') === undefined);
+  }
+}
+
+/* The hurdle family: sizes, the way it is flown, the bar on legs, the angle. */
+function suiteHurdles() {
+  console.log('\nhurdles: sizes, over, skimming and under, and the angle');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const gate = (doc, x, y) => {
+    const g = place(doc, 'gate', x, y);
+    g.yawOverridden = true;
+    const q = addToSequence(doc, g.id, 0);
+    q.entry = 1;
+    q.overridden = true;
+    return g;
+  };
+  /* A gate, a hurdle and a gate, east along the line. */
+  const track = (bar = false, opts = {}) => {
+    const doc = createTrack('hurdles');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    gate(doc, 10, 60);
+    const at = { x: 40, y: 60 };
+    const made = bar ? placeBarHurdle(doc, at, opts) : placeHurdle(doc, at, opts);
+    gate(doc, 70, 60);
+    return { doc, id: made.id, wp: made.waypointId };
+  };
+  const wpOf = (doc, id) => elementById(doc, id);
+
+  /* ---- the sizes ---- */
+  check('the sizes are the plan\'s hurdle, MultiGP\'s 10 by 5 ft, the h-hurdle and a super hurdle',
+    HURDLE_SIZES.map((h) => h.id).join() === 'plan,multigp,h,super');
+  check('a MultiGP hurdle is ten feet by five, and the h-hurdle is that with a mast another five feet tall on one end',
+    near(HURDLE_SIZES[1].width, 3.048) && near(HURDLE_SIZES[1].height, 1.524)
+    && HURDLE_SIZES[2].flagSide === 'left' && near(HURDLE_SIZES[2].flagH, 3.048) && near(HURDLE_SIZES[2].width, 3.048));
+  check('the plan\'s own hurdle is still what a hurdle is put down as, and reads as that size',
+    (() => {
+      const { doc, id } = track();
+      const el = elementById(doc, id);
+      return el.dims.width === HURDLE.width && el.dims.height === HURDLE.height && el.flagSide === 'both' && hurdleSizeOf(el) === 'plan';
+    })());
+  {
+    const { doc, id, wp } = track(false, { size: 'multigp' });
+    const el = elementById(doc, id);
+    check('a hurdle can be put down at another size, with no flags if that size has none, and the line over it at its top',
+      hurdleSizeOf(el) === 'multigp' && el.flagSide === undefined && el.dims.flagH === undefined
+      && near(wpOf(doc, wp).position.z, 1.524 + HURDLE_LINES[0].clear, 1e-3), `${wpOf(doc, wp).position.z}`);
+  }
+  {
+    const { doc, id, wp } = track();
+    const el = elementById(doc, id);
+    const seen = [];
+    for (const size of ['multigp', 'h', 'super', 'plan']) {
+      const changed = setHurdleSize(doc, id, size);
+      seen.push([changed, hurdleSizeOf(el), el.flagSide ?? null, el.dims.flagH ?? null, near(wpOf(doc, wp).position.z, el.dims.height + 1, 1e-3)]);
+    }
+    check('a hurdle is resized in place through every size and back, its flags with it',
+      seen.every((r) => r[0] === true && r[4] === true) && seen.map((r) => r[1]).join() === 'multigp,h,super,plan'
+      && seen[0][2] === null && seen[1][2] === 'left' && near(seen[1][3], 3.048) && seen[3][2] === 'both' && seen[3][3] === 2, JSON.stringify(seen));
+    check('and the line over it follows the top, so a taller hurdle is flown over and not through', near(wpOf(doc, wp).position.z, HURDLE.height + 1, 1e-3));
+    check('an unknown size or a piece that is not a hurdle is refused', setHurdleSize(doc, id, 'huge') === false
+      && setHurdleSize(doc, doc.elements.find((e) => e.type === 'gate').id, 'super') === false);
+  }
+
+  /* ---- over, skimming, under ---- */
+  {
+    const { doc, id, wp } = track(false, { size: 'multigp' });
+    check('a hurdle is flown over by default and read back as that', hurdleLineOf(doc, id) === 'over' && wpOf(doc, wp).name === 'Over the hurdle');
+    check('skimming it brings the line down to a hand above the top, and says so in its name',
+      setHurdleLine(doc, id, 'skim') && near(wpOf(doc, wp).position.z, 1.524 + 0.3, 1e-3) && wpOf(doc, wp).name === 'Skim the hurdle'
+      && hurdleLineOf(doc, id) === 'skim');
+    check('a board stands on the ground and cannot be flown under, and nothing changes when it is asked',
+      setHurdleLine(doc, id, 'under') === false && hurdleLineOf(doc, id) === 'skim');
+    const path = buildPath(doc);
+    const knot = path.knots.find((k) => k.elementId === wp);
+    check('the racing line is where the hurdle says: over its top by a hand', knot && near(knot.pos.z, 1.524 + 0.3, 1e-3));
+  }
+  {
+    const { doc, id, wp } = track(true);
+    const el = elementById(doc, id);
+    check('a bar hurdle is a horizontal pole ten feet wide five feet up, with the line over its top',
+      el.type === 'horizontalPole' && near(el.dims.width, 3.048) && near(el.position.z, 1.524) && hurdleSizeOf(el) === 'multigp'
+      && near(wpOf(doc, wp).position.z, hurdleTop(el) + 1, 1e-3) && hurdleLineOf(doc, id) === 'over');
+    check('it can be flown under, between its legs, which is half way up under the bar',
+      setHurdleLine(doc, id, 'under') && near(wpOf(doc, wp).position.z, (1.524 - BAR_HURDLE.thick / 2) / 2, 1e-3)
+      && wpOf(doc, wp).name === 'Under the bar' && hurdleLineOf(doc, id) === 'under');
+    check('and skimmed, over it', setHurdleLine(doc, id, 'skim') && near(wpOf(doc, wp).position.z, hurdleTop(el) + 0.3, 1e-3));
+    check('a bar is a multigp or a super hurdle and nothing else',
+      setHurdleSize(doc, id, 'super') && near(el.dims.width, 6.096) && near(el.position.z, 3.048) && hurdleSizeOf(el) === 'super'
+      && near(wpOf(doc, wp).position.z, hurdleTop(el) + 0.3, 1e-3) && setHurdleSize(doc, id, 'plan') === false && setHurdleSize(doc, id, 'h') === false);
+    const path = buildPath(doc);
+    check('the line goes over a bar hurdle at the height the card said', Math.max(...path.samples.filter((p) => Math.abs(p.pos.x - 40) < 1).map((p) => p.pos.z)) > hurdleTop(el));
+    check('the game builds a bar hurdle like any obstacle, and the lap is still the two gates',
+      (() => { const c = courseFromDocument(doc); return c.stations.length === 2 && c.structures.some((x) => x.type === 'horizontalPole'); })());
+    const back = deserialize(serialize(doc));
+    check('and it reads back with nothing to repair', back.repairs.length === 0 && roundTripsCleanly(doc));
+  }
+  {
+    const doc = createTrack('unflown');
+    const g = gate(doc, 10, 10);
+    const el = place(doc, 'barrier', 30, 10);
+    check('a hurdle nothing flies over is flown over when it is asked, at the end of the lap',
+      hurdleLineOf(doc, el.id) === null && setHurdleLine(doc, el.id, 'skim') && hurdleLineOf(doc, el.id) === 'skim'
+      && doc.sequence.length === 2 && doc.sequence[1].elementId !== g.id);
+  }
+
+  /* ---- a gate hopped over instead of through ---- */
+  {
+    const doc = createTrack('over a gate');
+    doc.field.width = 120;
+    doc.field.depth = 120;
+    gate(doc, 10, 60);
+    const g = place(doc, 'gate', 40, 60);
+    g.yawOverridden = true;
+    gate(doc, 70, 60);
+    const made = flyOver(doc, g.id);
+    const wp = made && elementById(doc, made.waypointId);
+    const top = hurdleTop(g);
+    check('a gate can be flown over: a waypoint a metre over the top of its frame, at the end of the lap, named for it',
+      made && wp && wp.name === 'Over the gate' && near(wp.position.z, top + 1, 1e-6) && top > 1.5 && hurdleLineOf(doc, g.id) === 'over'
+      && doc.sequence.length === 3, `${top} ${wp && wp.position.z}`);
+    check('and skimmed, and that has no under, a gate having nothing beneath it to go through but the gate itself',
+      setHurdleLine(doc, g.id, 'skim') && near(wp.position.z, top + 0.3, 1e-3) && wp.name === 'Skim the gate' && setHurdleLine(doc, g.id, 'under') === false);
+    const path = buildPath(doc);
+    check('the line goes over the gate', Math.max(...path.samples.filter((p) => Math.abs(p.pos.x - 40) < 1).map((p) => p.pos.z)) > top);
+    check('the game builds the course and the gate that is hopped over is not a station', courseFromDocument(doc).stations.length === 2);
+    const back = deserialize(serialize(doc));
+    check('it reads back as it was', back.repairs.length === 0 && roundTripsCleanly(doc) && hurdleLineOf(back.doc, g.id) === 'skim');
+    check('a flag, a cone and a start pad cannot be flown over this way', flyOver(doc, place(doc, 'flag', 20, 20).id) === null);
+  }
+
+  /* ---- the angle ---- */
+  {
+    const { doc, id } = track(false, { size: 'multigp' });
+    const el = elementById(doc, id);
+    check('a hurdle is put down square to the line, and reads as that', hurdleAngleOf(doc, id) === 'square', String(hurdleAngleOf(doc, id)));
+    check('forty five degrees to the left is a turn of an eighth from square, one way, and to the right the other',
+      setHurdleAngle(doc, id, 'left') && hurdleAngleOf(doc, id) === 'left' && near(wrapAngle(el.yaw - Math.PI / 2), Math.PI / 4, 1e-5)
+      && setHurdleAngle(doc, id, 'right') && hurdleAngleOf(doc, id) === 'right' && near(wrapAngle(el.yaw - Math.PI / 2), -Math.PI / 4, 1e-5)
+      && setHurdleAngle(doc, id, 'square') && hurdleAngleOf(doc, id) === 'square');
+    check('an angle that is not one, or a piece that is not a hurdle, is refused',
+      setHurdleAngle(doc, id, 'sideways') === false && setHurdleAngle(doc, doc.elements.find((e) => e.type === 'gate').id, 'left') === false);
+    const lone = createTrack('lone');
+    const b = place(lone, 'barrier', 30, 10);
+    check('a hurdle nothing flies over has no line to be at an angle to', setHurdleAngle(lone, b.id, 'left') === false && hurdleAngleOf(lone, b.id) === null);
+  }
+  {
+    const { doc, id } = track(true);
+    check('a bar is set at an angle the same way', setHurdleAngle(doc, id, 'left') && hurdleAngleOf(doc, id) === 'left');
+  }
+
+  /* ---- the palette ---- */
+  {
+    const piece = FIVE_INCH_PIECES.find((x) => x.id === 'barHurdle');
+    check('the bar hurdle is a piece on the five inch palette, with the hurdle after the barrier, and has no key to clash with',
+      piece && piece.after === 'barrier' && !piece.key && FIVE_INCH_PIECES.find((x) => x.id === 'hurdle').after === 'barrier');
+    const ghost = partGhosts(createTrack('g'), 'barHurdle', { x: 20, y: 20 });
+    check('and its ghost is the bar, five feet up', ghost.items.length === 1 && ghost.items[0].type === 'horizontalPole' && near(ghost.items[0].position.z, 1.524));
+  }
+}
+
+/* A launch gate: the horizontal gate flown up, with the line that gets there. */
+function suiteLaunchGate() {
+  console.log('\nlaunch gate: up through a horizontal gate');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const doc = createTrack('launch');
+  doc.field.width = 120;
+  doc.field.depth = 120;
+  const g1 = place(doc, 'gate', 10, 60);
+  g1.yawOverridden = true;
+  const q1 = addToSequence(doc, g1.id, 0);
+  q1.entry = 1;
+  q1.overridden = true;
+  const gate = placeLaunchGate(doc, { x: 40, y: 60 });
+  const g3 = place(doc, 'gate', 75, 60);
+  g3.yawOverridden = true;
+  const q3 = addToSequence(doc, g3.id, 0);
+  q3.entry = 1;
+  q3.overridden = true;
+  const names = doc.sequence.map((q) => {
+    const e = elementById(doc, q.elementId);
+    return e.type === 'waypoint' ? e.name : e.type;
+  });
+  check('a launch gate is a horizontal dive gate, 15 ft up, with a pull up of three waypoints before it and a push over of two after',
+    gate.type === 'diveGate' && near(gate.pitch, Math.PI / 2) && near(gate.dims.sillH, 15 * 0.3048, 1e-3)
+    && names.join() === 'gate,Pull up,Pull up,Pull up,diveGate,Push over,Push over,gate', names.join());
+  const seq = doc.sequence.find((q) => q.elementId === gate.id);
+  check('it is flown up through: its normal is up and the pass is along it', seq.entry === 1 && near(elementNormal(gate).z, 1, 1e-9));
+  const path = buildPath(doc);
+  const knot = path.knots.find((k) => k.elementId === gate.id);
+  check('the line goes straight up through the opening', knot && knot.tangent.z > 0.99 && near(knot.pos.z, apertureCenter(gate, 0).z, 1e-6));
+  check('and never goes below the ground on the way, which is what the pull up is for', !path.samples.some((p) => p.pos.z < -0.05)
+    && !collectWarnings(doc, path).some((w) => w.code === 'underground'), collectWarnings(doc, path).map((w) => w.code).join());
+  const wps = doc.elements.filter((e) => e.type === 'waypoint');
+  check('the waypoints carry their pitch, up on the way in and over on the way out',
+    wps.length === 5 && near(wps[0].pitch, 0, 1e-6) && wps[1].pitch > 0.5 && wps[2].pitch > 1.5 && wps[3].pitch > 0.5 && near(wps[4].pitch, 0, 1e-6)
+    && wps.every((w) => w.yawOverridden === true && !isFigureName(w.name)));
+  const back = deserialize(serialize(doc));
+  check('it reads back with nothing to repair, and the game builds the course with a station for each gate',
+    back.repairs.length === 0 && roundTripsCleanly(doc) && courseFromDocument(doc).stations.length === 3);
+  check('the dive gate, which is flown down, is the same gate flown the other way', (() => {
+    const flipped = createTrack('flip');
+    const b = placeLaunchGate(flipped, { x: 20, y: 20 });
+    const q = flipped.sequence.find((x) => x.elementId === b.id);
+    q.entry = -1;
+    return near(elementNormal(b).z, 1, 1e-9) && q.entry === -1;
+  })());
+  const palette = FIVE_INCH_PIECES.find((x) => x.id === 'launchGate');
+  check('it is a piece on the five inch palette after the dive gate, with no key', palette && palette.after === 'diveGate' && !palette.key);
+  const ghost = partGhosts(createTrack('g'), 'launchGate', { x: 20, y: 20 });
+  check('and its ghost is the horizontal gate', ghost.items.length === 1 && ghost.items[0].type === 'diveGate' && near(ghost.items[0].props.pitch, Math.PI / 2));
+}
+
+function suiteFiveInchRoom() {
+  console.log('\nthe 5 inch room');
+  const near = (a, b, tol = 1e-6) => Math.abs(a - b) < tol;
+  const WIDE = GATE_PRESETS.find((p) => p.id === 'wide');
+  const wideDims = () => {
+    const d = { ...ELEMENTS.gate.dims };
+    applyGatePreset(d, WIDE);
+    return d;
+  };
+
+  /* ---- a wall and a spiral are not corners ---- */
+  {
+    /* Both are in the Nationals qualifier, whose line is held to a metre: the bays of its wall are 0.4 m of radius
+     * apart and its spirals and the turn round the wall's flag are circles a metre or so from a flag, and the file has
+     * no warning. Take the wall's bays out of their group, and rename the figures' waypoints, and each is a corner
+     * again. */
+    const tight = (doc) => collectWarnings(doc, buildPath(doc)).filter((w) => w.code === 'tight-corner');
+    const fresh = () => deserialize(JSON.stringify(FIVE_INCH_PRESETS[0])).doc;
+    const doc = fresh();
+    check('the bays of a wall and the turns round a flag are tighter than a metre, and are not called a corner nothing flies',
+      buildPath(doc).tightest.radius < doc.settings.minCurveRadius && tight(doc).length === 0,
+      `tightest ${buildPath(doc).tightest.radius.toFixed(2)} m`);
+    const ungrouped = fresh();
+    for (const e of ungrouped.elements) {
+      delete e.group;
+    }
+    check('the same bays that are not one wall are corners, so the exemption is for a wall and for nothing else',
+      tight(ungrouped).length === 1, String(tight(ungrouped).length));
+    const renamed = fresh();
+    const figures = renamed.elements.filter((x) => ROUND_NAME.test(x.name ?? ''));
+    for (const e of figures) {
+      e.name = 'a bend';
+    }
+    check('and figures whose waypoints have been renamed are held to the radius again, which is the safe way for a name to be wrong',
+      figures.length > 10 && tight(renamed).length === 1, `${figures.length} renamed, ${tight(renamed).length} warned`);
+    /* A hall is held to its rule whether its gates are in a group or not, as it always was. */
+    const hall = createTrack('hall', 'micro');
+    const a = place(hall, 'gate', 3, 3, { yaw: 0 });
+    const b = place(hall, 'gate', 3.1, 3.5, { yaw: Math.PI });
+    const c = place(hall, 'gate', 3.2, 4.4, { yaw: 0 });
+    for (const g of [a, b, c]) {
+      g.yawOverridden = true;
+      addToSequence(hall, g.id, 0);
+    }
+    const before = JSON.stringify(collectWarnings(hall, buildPath(hall)).map((w) => w.code));
+    a.group = 'grp-1';
+    b.group = 'grp-1';
+    check('a hall is held to its own rule as it always was: a group makes no difference to what it is told',
+      JSON.stringify(collectWarnings(hall, buildPath(hall)).map((w) => w.code)) === before && before.includes('tight-corner'), before);
+  }
+
+  /* ---- the way a wall is flown through first ---- */
+  {
+    const doc = createTrack('approach');
+    const up = placeUpGate(doc, { x: 33, y: 43, z: 0 });
+    up.yaw = Math.PI / 2;
+    up.yawOverridden = true;
+    const ids = placeWall(doc, { x: 24, y: 43 }, { x: 18, y: 43 }, { dims: wideDims() });
+    const first = doc.sequence.find((q) => q.elementId === ids[0]);
+    const f = apertureFrame(elementById(doc, ids[0]).yaw, 0);
+    check('a wall straight on from a gate the course left going north is entered from the north: the first bay is flown south',
+      Math.sign(f.normal.y * first.entry) === -1, `normal y ${f.normal.y.toFixed(2)} entry ${first.entry}`);
+    const south = createTrack('approach south');
+    const down = placeUpGate(south, { x: 33, y: 43, z: 0 });
+    down.yaw = -Math.PI / 2;
+    down.yawOverridden = true;
+    const ids2 = placeWall(south, { x: 24, y: 43 }, { x: 18, y: 43 }, { dims: wideDims() });
+    const f2 = apertureFrame(elementById(south, ids2[0]).yaw, 0);
+    check('and one the course left going south is entered from the south, so the first bay is flown north',
+      Math.sign(f2.normal.y * south.sequence.find((q) => q.elementId === ids2[0]).entry) === 1);
+  }
+
+  /* ---- a click lays a wall across the spot ---- */
+  {
+    const doc = createTrack('click wall');
+    const c = wallPlan(doc, { x: 20, y: 20 }, { x: 20, y: 20 });
+    const mean = c.items.reduce((m, it) => ({ x: m.x + it.x / c.count, y: m.y + it.y / c.count }), { x: 0, y: 0 });
+    check('a click lays three bays with the click at the middle of them, and a drag still begins at its first point',
+      c.count === WALL_DEFAULT && near(mean.x, 20) && near(mean.y, 20)
+      && near(wallPlan(doc, { x: 20, y: 20 }, { x: 26, y: 20 }).items[0].x, 20 + c.pitch / 2));
+    check('a wall dragged square to the field, with Square on, is on the nearest quarter, and off it is on the nearest fifteen degrees',
+      near(Math.abs(wallPlan(doc, { x: 20, y: 20 }, { x: 26, y: 22 }, { square: true }).dir.y), 0, 1e-9)
+      && Math.abs(wallPlan(doc, { x: 20, y: 20 }, { x: 26, y: 22 }).dir.y) > 0.2);
+  }
+
+  /* ---- the size of a wall's bays ---- */
+  {
+    const doc = createTrack('wall size');
+    const ids = placeWall(doc, { x: 24, y: 43 }, { x: 18, y: 43 });
+    const first = elementById(doc, ids[0]);
+    const startPost = first.position.x + wallPitchFor(first.dims, 'full') / 2;
+    check('a wall of standard bays is read as standard', wallSizeOf(doc, ids[0]) === 'standard');
+    check('making them wide lays them again at 2 m from the first post, which has not moved, and says what size it is',
+      setWallSize(doc, ids[1], 'wide') && wallSizeOf(doc, ids[0]) === 'wide'
+      && ids.map((id) => elementById(doc, id).position.x).every((x, i) => near(x, startPost - 1 - 2 * i, 1e-5))
+      && near(first.position.x + 1, startPost, 1e-5));
+    check('and what is already that size, a size that is not offered, and a gate that is not a wall change nothing',
+      !setWallSize(doc, ids[0], 'wide') && !setWallSize(doc, ids[0], 'whoop') && !setWallSize(doc, ids[0], 'nope')
+      && !setWallSize(doc, 'el-nope', 'wide'));
+    check('the uprights still meet where the game builds them after the change',
+      (() => {
+        const course = courseFromDocument(doc);
+        const bays = ids.map((id) => course.structures.find((x) => x.id === id));
+        const tube = (FRAME_TUBE_OD * GATE_SCALE) / 2;
+        return near(bays[0].x - (bays[0].dims.clearW / 2 + tube), bays[1].x + (bays[1].dims.clearW / 2 + tube), 1e-6);
+      })());
+  }
+
+  /* ---- Square: new gates on the compass ---- */
+  {
+    const doc = createTrack('square');
+    const free = placementFor(doc, { x: 10, y: 10 }, 'gate');
+    const sq = placementFor(doc, { x: 10, y: 10 }, 'gate', { square: true });
+    check('the first gate faces east, and with Square on it is kept there; off, it is left to take its heading from the next',
+      free.yaw === 0 && free.pin === false && sq.yaw === 0 && sq.pin === true);
+    const first = placeOnTrack(doc, 'gate', { x: 10, y: 10, z: 0 }, { square: true });
+    const second = placementFor(doc, { x: 22, y: 25 }, 'gate', { square: true });
+    check('the next one takes the quarter turn nearest the line from the one before, and keeps it',
+      near(second.yaw, Math.PI / 2) && second.pin === true && first.yawOverridden === true);
+    check('without Square it is as it always was: along the line, at any angle, and not kept',
+      near(placementFor(doc, { x: 22, y: 25 }, 'gate').yaw, Math.atan2(15, 12)) && placementFor(doc, { x: 22, y: 25 }, 'gate').pin === false);
+    check('Square is for a field: a hall is placed as it was whether it is asked for or not',
+      (() => {
+        const hall = createTrack('hall', 'micro');
+        place(hall, 'gate', 3, 3);
+        addToSequence(hall, hall.elements[0].id, 0);
+        const a = placementFor(hall, { x: 3, y: 4.2 }, 'gate');
+        const b = placementFor(hall, { x: 3, y: 4.2 }, 'gate', { square: true });
+        return a.yaw === b.yaw && a.pin === b.pin;
+      })());
+    const hurdle = placeHurdle(createTrack('h'), { x: 27, y: 28 }, { square: true });
+    check('a hurdle and an up gate are squared too, and what is not asked for is placed as it was',
+      (() => {
+        const d = createTrack('parts square');
+        const g = place(d, 'gate', 20, 19, { yaw: 0 });
+        addToSequence(d, g.id, 0);
+        const h = placeHurdle(d, { x: 27, y: 28 }, { square: true });
+        const u = placeUpGate(d, { x: 33, y: 43, z: 0 }, { square: true });
+        const quarter = (y) => near(Math.abs(Math.sin(2 * y)), 0, 1e-5);
+        return quarter(elementById(d, h.id).yaw) && quarter(u.yaw) && u.yawOverridden === true && hurdle.id.length > 0;
+      })());
+    const g4 = partGhosts(doc, 'upGate', { x: 33, y: 43 }, { x: 33, y: 43 }, { square: true });
+    check('the ghost of each is what is laid: a wall of the bays it would lay, a hurdle with its flags, an up gate leaning',
+      partGhosts(doc, 'wall', { x: 24, y: 43 }, { x: 18, y: 43 }).items.length === 3
+      && partGhosts(doc, 'hurdle', { x: 27, y: 28 }).items[0].props.flagSide === 'both'
+      && near(g4.items[0].props.pitch, Math.PI / 4) && near(g4.items[0].props.dims.sillH, 1.5)
+      && partGhosts(doc, 'nope', { x: 0, y: 0 }).items.length === 0);
+  }
+
+  /* ---- the Nationals qualifier, as it ships ---- */
+  {
+    const raw = FIVE_INCH_PRESETS[0];
+    const { doc, repairs } = deserialize(JSON.stringify(raw));
+    const path = buildPath(doc);
+    const warn = collectWarnings(doc, path);
+    const apertures = doc.elements.filter((e) => kindOf(e) === KIND.APERTURE && e.type !== 'diveGate');
+    const pennants = doc.elements.reduce((n, e) => {
+      const side = flagSideOf(e);
+      return n + (side === 'both' ? 2 : (side ? 1 : 0)) + (e.type === 'flag' ? 1 : 0);
+    }, 0);
+    check('the Nationals qualifier opens with nothing repaired and nothing to warn about, and the lap closes',
+      repairs.length === 0 && warn.length === 0 && path.closed, `${repairs.length} repairs, ${warn.map((w) => w.code).join()}`);
+    check('it has the materials the plan lists: seven gates, nine flags, one hurdle and one dive gate',
+      apertures.length === 7 && pennants === 9 && doc.elements.filter((e) => e.type === 'barrier').length === 1
+      && doc.elements.filter((e) => e.type === 'diveGate').length === 1,
+      `${apertures.length} gates, ${pennants} flags`);
+    check('every gate and the hurdle stand on a whole metre, which is how the plan is dimensioned',
+      doc.elements.filter((e) => kindOf(e) === KIND.APERTURE || e.type === 'barrier' || e.type === 'flag' || e.type === 'startPads')
+        .every((e) => near(e.position.x, Math.round(e.position.x), 1e-5) && near(e.position.y * 10, Math.round(e.position.y * 10), 1e-5)));
+    check('its wall has three bays 2 m apart, flown as a weave, with a flag on the end that is flown first',
+      (() => {
+        const bay = doc.elements.find((e) => e.group);
+        const wall = bay ? wallOf(doc, bay.id) : null;
+        return wall && wall.ids.length === 3 && wallIsWoven(doc, bay.id) && wallFlagsOf(doc, bay.id) === 'first'
+          && near(Math.hypot(elementById(doc, wall.ids[0]).position.x - elementById(doc, wall.ids[1]).position.x, 0), 2, 1e-5);
+      })());
+    /* The owner's correction of 2026-10-01: a spiral down round the flag and then one pass, twice, and the wall
+     * entered round its flag and flown north first. */
+    const travelOf = (q) => {
+      const n = elementNormal(elementById(doc, q.elementId));
+      return { x: n.x * q.entry, y: n.y * q.entry };
+    };
+    const spiralled = (name, side) => {
+      const g = doc.elements.find((e) => e.name === name);
+      const passes = doc.sequence.filter((q) => q.elementId === g.id);
+      const i = doc.sequence.indexOf(passes[0]);
+      const before = doc.sequence.slice(Math.max(0, i - 5), i).map((q) => elementById(doc, q.elementId).name);
+      return passes.length === 1 && travelOf(passes[0]).x > 0.99 && before.every((n) => n === `Spiral ${side}`)
+        && flagsAsFlown(doc, passes[0].id)[side];
+    };
+    check('each spiral gate is flown once, east, after a spiral down round the flag the plan draws: the east gate\'s south one, the west gate\'s north one',
+      spiralled('East spiral gate', 'right') && spiralled('West spiral gate', 'left'));
+    check('its wall is entered round the flag on its end and flown north, south, north',
+      (() => {
+        const bays = doc.elements.filter((e) => e.group).map((e) => e.id);
+        const flown = doc.sequence.filter((q) => bays.includes(q.elementId));
+        const i = doc.sequence.indexOf(flown[0]);
+        const into = elementById(doc, doc.sequence[i - 1].elementId);
+        return flown.map((q) => Math.sign(Math.round(travelOf(q).y))).join() === '1,-1,1' && into.name === 'Round the flag'
+          && flagsAsFlown(doc, flown[0].id).right;
+      })());
+    check('and it is ten stations: seven gates with the lower one flown twice, the up gate and the turn flag, and nothing flown twice that the plan flies once',
+      path.knots.filter((k) => k.seq && (k.role === 'aperture' || (k.role === 'marker' && (k.seq.clearance ?? 0) > 0))).length === 10);
+    check('the game builds it: the hurdle is a barrier with two masts, the wall bays are plain gates, the lap is closed',
+      (() => {
+        const course = courseFromDocument(doc);
+        const hurdle = course.structures.find((s) => s.kind === 'obstacle');
+        const bays = doc.elements.filter((e) => e.group).map((e) => course.structures.find((s) => s.id === e.id));
+        return hurdle && JSON.stringify(hurdle.flagSigns) === '[-1,1]' && bays.length === 3 && bays.every((s) => s && s.plain === true);
+      })());
+    check('it is not left to a hand: it is what scripts/mission-preset.js writes, which is its own check (--check)',
+      raw.id === 'nationals-2026-qualifier' && raw.credit.designer === 'Wilf' && raw.trackClass === 'full');
+
+    /* Handed to the library the way the builder hands it. */
+    shipTracks(FIVE_INCH_PRESETS);
+    const rows = listTracks('full', 'race');
+    check('it is listed under the five inch canvas, as a shipped track with its designer, and not under the hall',
+      rows.some((r) => r.id === raw.id && r.preset === true && r.credit && r.credit.designer === 'Wilf')
+      && !listTracks('micro', 'race').some((r) => r.id === raw.id)
+      && !listTracks('full', 'freestyle').some((r) => r.id === raw.id));
+    const opened = loadTrack(raw.id);
+    check('it opens as a copy under a fresh id, so the shipped one stays as it is, and it can be asked for by its own id',
+      opened && opened.doc.id !== raw.id && opened.doc.name === raw.name && opened.doc.credit.designer === 'Wilf' && trackExists(raw.id));
+    shipTracks([]);
+    check('and with nothing handed in the library has no five inch tracks of its own, which is the simulator\'s boot',
+      !listTracks('full', 'race').some((r) => r.id === raw.id) && loadTrack(raw.id) === null);
+    shipTracks(FIVE_INCH_PRESETS);
+  }
+}
+
+/*
+ * THE MENUS PLAN'S BUILDER HALF (MENUS-PLAN.md 1.18 to 1.26, Stage 4 and 5.2),
+ * where it is pure: what each canvas calls things and where its way back goes,
+ * the names Publish refuses, the times Load gives, which saved documents each
+ * canvas lists, one letter for one tool on each canvas, the tags a whoop track
+ * is offered, the five inch share link, and the simulator's 'new' intent. The
+ * dialogs, the drawers and the phone are in scripts/builder-flow-check.js and
+ * scripts/device-check.js.
+ */
+async function suiteMenus() {
+  console.log('\nthe builder menus');
+  const full = createTrack('Five', 'full');
+  const whoop = createTrack('Room', 'micro');
+  const map = createTrack('Plot', 'full', 'freestyle');
+
+  /* ---- the three canvases' words (4.1) ---- */
+  check('the canvas switch says Five inch, Whoop and Freestyle, in that order',
+    CANVAS_ORDER.map((c) => CANVAS_WORDS[c].label).join('|') === 'Five inch|Whoop|Freestyle');
+  check('and each button is titled with what it makes',
+    CANVAS_ORDER.every((c) => /^A /.test(CANVAS_WORDS[c].makes)) && /race track/.test(CANVAS_WORDS.full.makes)
+    && /whoop track/.test(CANVAS_WORDS.micro.makes) && /freestyle map/.test(CANVAS_WORDS.freestyle.makes));
+  check('a five inch track, a whoop track and a map are each on their own canvas',
+    canvasOf(full) === 'full' && canvasOf(whoop) === 'micro' && canvasOf(map) === 'freestyle');
+  check('the inspector heads the ground Field, Room and Plot',
+    [full, whoop, map].map((d) => wordsFor(d).area).join('|') === 'Field|Room|Plot');
+  const lawn = createTrack('Lawn', 'full', 'freestyle');
+  lawn.scene = { ...lawn.scene, ground: 'grass' };
+  const yard = createTrack('Yard', 'full', 'freestyle');
+  yard.scene = { ...yard.scene, ground: 'concrete' };
+  check('a logo is painted on the grass of a field, the floor of a room, and the ground of a map that has no grass',
+    wordsFor(full).ground === 'grass' && wordsFor(whoop).ground === 'floor' && wordsFor(yard).ground === 'ground',
+    [full, whoop, yard].map((d) => wordsFor(d).ground).join(', '));
+  check('and on the grass of a map whose ground is a lawn', wordsFor(lawn).ground === 'grass');
+  check('a map is a map in a sentence, and a track a track',
+    wordsFor(map).noun === 'map' && wordsFor(full).noun === 'track' && wordsFor(whoop).noun === 'track');
+
+  /* ---- the way back, and Fly (1.24, 5.2a) ---- */
+  check('Back to the simulator from a five inch track: the custom track, on the five inch, not flying',
+    simulatorLink(full) === '../../index.html?map=custom&craft=5inch', simulatorLink(full));
+  check('from a whoop track: the custom track, on the whoop',
+    simulatorLink(whoop) === '../../index.html?map=custom&craft=whoop65', simulatorLink(whoop));
+  check('from a map: the built map, on the five inch',
+    simulatorLink(map) === '../../index.html?map=built&craft=5inch', simulatorLink(map));
+  check('no way back carries fly=1, and Fly is the same address with it',
+    [full, whoop, map].every((d) => !/fly=/.test(simulatorLink(d)) && simulatorLink(d, { fly: true }) === `${simulatorLink(d)}&fly=1`));
+
+  /* ---- the names Publish refuses (4.3) ---- */
+  const refused = ['Untitled track', 'Untitled map', 'untitled  TRACK', '  Untitled map  ', '', '   ', null, undefined];
+  check('Publish refuses a new document\'s own name in any case or spacing, and no name at all',
+    refused.every((n) => isPlaceholderName(n)), refused.filter((n) => !isPlaceholderName(n)).map(String).join(', '));
+  const named = ['Ladder Loop', 'Untitled', 'Untitled tracks', 'My untitled track', 'Untitled track 2', 'Map'];
+  check('and takes any real name, even one with the word in it', named.every((n) => !isPlaceholderName(n)),
+    named.filter((n) => isPlaceholderName(n)).join(', '));
+  check('the names a new track and a new map are given are both refused',
+    [createTrack(undefined, 'full'), createTrack(undefined, 'micro'), createTrack(undefined, 'full', 'freestyle')].every((d) => isPlaceholderName(d.name)),
+    createTrack(undefined, 'full', 'freestyle').name);
+
+  /* ---- Load's times (1.21) ---- */
+  const now = Date.parse('2026-10-01T12:00:00Z');
+  const ago = (seconds) => changedAgo(new Date(now - seconds * 1000).toISOString(), now);
+  const said = {
+    10: 'just now', 60: 'a minute ago', 300: '5 minutes ago', 3600: 'an hour ago', 7200: '2 hours ago',
+    86400: 'yesterday', [2 * 86400]: '2 days ago', [7 * 86400]: 'a week ago', [14 * 86400]: '2 weeks ago',
+    [45 * 86400]: 'a month ago', [400 * 86400]: 'a year ago', [800 * 86400]: '2 years ago',
+  };
+  const wrong = Object.entries(said).filter(([sec, words]) => ago(Number(sec)) !== words)
+    .map(([sec, words]) => `${sec} s: ${ago(Number(sec))}, not ${words}`);
+  check('Load says when a row changed the way a person says it', wrong.length === 0, wrong.join('; '));
+  check('a clock a little behind says just now, not a time in the future', ago(-90) === 'just now', ago(-90));
+  check('and a stamp that is not a date says nothing', changedAgo('not a date', now) === '' && changedAgo(undefined, now) === '');
+  check('the row\'s title has the whole date', /29 September 2026/.test(exactDate('2026-09-29T12:00:00Z')), exactDate('2026-09-29T12:00:00Z'));
+  check('and nothing for a stamp that is not one', exactDate('nonsense') === '');
+
+  /* ---- an error inside a line of ours ---- */
+  check('a browser\'s own words for a request that never arrived add nothing, and are left out',
+    ['Failed to fetch', 'Load failed', 'NetworkError when attempting to fetch resource.', new TypeError('Failed to fetch')].every((e) => errorSentence(e) === ''));
+  check('any other message is a sentence, with its full stop',
+    errorSentence(new Error('The board did not answer within 8 s.')) === 'The board did not answer within 8 s.'
+    && errorSentence(new Error('The board is asleep')) === 'The board is asleep.' && errorSentence(null) === '');
+
+  /* ---- the tags a whoop track is offered (decision 17) ---- */
+  const tagIds = (cls) => tagsForClass(cls).map((t) => t.id);
+  check('a whoop track is not offered Small field or Big field',
+    !tagIds('micro').includes('micro') && !tagIds('micro').includes('big'), tagIds('micro').join(','));
+  check('a five inch track is offered both', tagIds('full').includes('micro') && tagIds('full').includes('big'));
+  check('and every other tag is offered on both canvases',
+    TRACK_TAGS.filter((t) => !t.classes).every((t) => tagIds('micro').includes(t.id) && tagIds('full').includes(t.id)));
+
+  /* ---- one letter, one tool (1.20, 4.2a) ---- */
+  const keysOf = (cls, mode) => [
+    ...paletteItems(cls, mode).map((d) => [d.key, d.id]),
+    ...(cls === 'micro' && mode === 'race' ? WHOOP_TOOLS.map((t) => [t.key, t.id]) : []),
+  ].filter(([k]) => k);
+  for (const [name, cls, mode] of [['five inch', 'full', 'race'], ['whoop', 'micro', 'race'], ['map', 'full', 'freestyle']]) {
+    const seen = new Map();
+    const twice = [];
+    for (const [k, id] of keysOf(cls, mode)) {
+      if (seen.has(k)) {
+        twice.push(`${k}: ${seen.get(k)} and ${id}`);
+      }
+      seen.set(k, id);
+    }
+    check(`no letter arms two tools on the ${name} canvas`, twice.length === 0, twice.join('; '));
+    check(`P is never a piece's letter on the ${name} canvas, because P is Show line`, !seen.has('P'), seen.get('P'));
+  }
+  const fullKeys = new Map(keysOf('full', 'race').map(([k, id]) => [id, k]));
+  const whoopKeys = new Map(keysOf('micro', 'race').map(([k, id]) => [id, k]));
+  const moved = [...fullKeys].filter(([id, k]) => whoopKeys.has(id) && whoopKeys.get(id) !== k)
+    .map(([id, k]) => `${id}: ${k} and ${whoopKeys.get(id)}`);
+  check('a tool on both race canvases keeps its letter', moved.length === 0, moved.join('; '));
+  const mapKeys = new Map(keysOf('full', 'freestyle').map(([k, id]) => [id, k]));
+  check('Ground logo is O on all three canvases',
+    fullKeys.get('groundLogo') === 'O' && whoopKeys.get('groundLogo') === 'O' && mapKeys.get('groundLogo') === 'O');
+  check('and the whoop\'s Fly order is N', WHOOP_TOOLS.find((t) => t.id === 'route')?.key === 'N');
+  check('F frames the selection on the whoop canvas, so no whoop tool has it', !keysOf('micro', 'race').some(([k]) => k === 'F'));
+
+  /* ---- the whoop's names in counts (4.2b) ---- */
+  const room = createTrack('Counted', 'micro');
+  place(room, 'diveGate', 5, 6);
+  place(room, 'diveGate', 6, 6);
+  check('a whoop track\'s count says horizontal gate, as its palette does',
+    /horizontal gate/i.test(formatElementCounts(countElementsByType(room.elements, 'micro'))) && labelOf('diveGate', 'micro') === 'Horizontal gate',
+    formatElementCounts(countElementsByType(room.elements, 'micro')));
+  check('and a five inch track\'s says dive gate', /dive gate/i.test(formatElementCounts(countElementsByType(room.elements, 'full'))));
+
+  /* ---- the five inch share link (4.2b) ---- */
+  const here = dirname(fileURLToPath(import.meta.url));
+  const jsonDir = join(here, '..', '..', 'tracks', 'json');
+  let fives = 0;
+  const lost = [];
+  for (const f of readdirSync(jsonDir).filter((n) => n.endsWith('.json'))) {
+    const doc = normalize(JSON.parse(readFileSync(join(jsonDir, f), 'utf8'))).doc;
+    if (trackClassOf(doc) !== 'full') {
+      continue;
+    }
+    fives += 1;
+    const back = await decodeTrack(await encodeTrack(doc));
+    if (!back || serialize(back) !== serialize(doc)) {
+      lost.push(f);
+    }
+  }
+  check(`every five inch track that ships comes back byte for byte through a share link (${fives} read)`,
+    fives >= 10 && lost.length === 0, lost.join(', '));
+  const every = createTrack('Every piece', 'full');
+  let at = 4;
+  for (const def of paletteItems('full')) {
+    if (def.id === 'groundLogo') {
+      continue;
+    }
+    place(every, def.id, at, at % 8 ? 10 : 24, { text: def.id === 'label' ? 'Start <here> "now"' : undefined });
+    at += 4;
+  }
+  for (const el of every.elements) {
+    if (isSequenceable(el)) {
+      addToSequence(every, el.id, 0);
+    }
+  }
+  const figured = every.elements.filter((el) => figuresFor(el).length > 1);
+  for (const el of figured) {
+    const figs = figuresFor(el);
+    applyFigure(every, el.id, figs[figs.length - 1].id);
+  }
+  every.branding = {
+    ...every.branding,
+    logos: [{ id: 'logo-1', image: `data:image/png;base64,${'iVBORw0KGgo'.repeat(40)}`, name: 'sponsor.png' }],
+  };
+  place(every, 'groundLogo', 30, 30);
+  const plain = normalize(JSON.parse(JSON.stringify(toPlain(every)))).doc;
+  const everyBack = await decodeTrack(await encodeTrack(every));
+  check('a five inch track with every piece on its palette, its figures and a sponsor logo comes back byte for byte',
+    everyBack && serialize(everyBack) === serialize(plain) && everyBack.branding.logos.length === 1
+    && everyBack.elements.length === every.elements.length && figured.length >= 2,
+    `${every.elements.length} pieces, ${figured.length} with figures`);
+  const link = await trackLink(plain, 'https://example.test/src/trackbuilder/index.html');
+  const viaHash = await docFromHash(link.slice(link.indexOf('#')));
+  check('and More\'s Copy share link is the address with #track=, which opens it again',
+    link.startsWith('https://example.test/src/trackbuilder/index.html#track=') && viaHash && serialize(viaHash) === serialize(plain));
+
+  /* ---- Load, canvas by canvas, and Delete's Undo (1.21) ---- */
+  const hadStore = globalThis.localStorage;
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => {
+      store.set(k, String(v));
+    },
+    removeItem: (k) => {
+      store.delete(k);
+    },
+  };
+  try {
+    const five = createTrack('Field one', 'full');
+    place(five, 'gate', 10, 10);
+    const five2 = createTrack('Field two', 'full');
+    const hall = createTrack('Hall one', 'micro');
+    place(hall, 'gate', 5, 6);
+    const plot = createTrack('Plot one', 'full', 'freestyle');
+    check('nothing saved yet', librarySize() === 0);
+    saveTrack(five);
+    saveTrack(five2);
+    saveTrack(hall);
+    saveTrack(plot);
+    check('four saved', librarySize() === 4);
+    const fiveList = listTracks('full', 'race');
+    check('a saved row says which race canvas it is for',
+      fiveList.find((t) => t.id === five.id)?.trackClass === 'full' && fiveList.find((t) => t.id === hall.id)?.trackClass === 'micro');
+    const onFive = rowsForCanvas(fiveList, 'full');
+    check('the five inch canvas lists the five inch tracks and not the whoop one',
+      onFive.rows.some((t) => t.id === five.id) && onFive.rows.some((t) => t.id === five2.id) && !onFive.rows.some((t) => t.id === hall.id),
+      onFive.rows.map((t) => t.name).join(', '));
+    check('and says one is on the other canvas', onFive.others === 1, String(onFive.others));
+    const onWhoop = rowsForCanvas(listTracks('micro', 'race'), 'micro');
+    const shipped = onWhoop.rows.filter((t) => t.preset).length;
+    check('the whoop canvas lists the whoop track and the whoop tracks that ship, and not the five inch ones',
+      onWhoop.rows.some((t) => t.id === hall.id) && !onWhoop.rows.some((t) => t.id === five.id || t.id === five2.id) && shipped >= 8,
+      `${onWhoop.rows.length} rows, ${shipped} shipped`);
+    check('and says two are on the five inch canvas', onWhoop.others === 2, String(onWhoop.others));
+    check('the shipped whoop rows are all whoop tracks', onWhoop.rows.filter((t) => t.preset).every((t) => t.trackClass === 'micro'));
+    const onMap = rowsForCanvas(listTracks('full', 'freestyle'), 'freestyle');
+    check('the freestyle canvas lists the map and the maps that ship, and no track',
+      onMap.rows.some((t) => t.id === plot.id) && onMap.rows.every((t) => t.id !== five.id && t.id !== hall.id) && onMap.others === 0);
+    const before = listTracks('full', 'race').find((t) => t.id === five.id);
+    const raw = savedTrack(five.id);
+    deleteTrack(five.id);
+    check('Delete takes it out of Load', !listTracks('full', 'race').some((t) => t.id === five.id) && librarySize() === 3);
+    restoreTrack(raw);
+    const after = listTracks('full', 'race').find((t) => t.id === five.id);
+    check('and Undo puts it back as it was, with its own time, not now',
+      Boolean(after) && after.modifiedUtc === before.modifiedUtc && after.mix === before.mix && librarySize() === 4,
+      after ? `${after.modifiedUtc} against ${before.modifiedUtc}` : 'not back');
+    check('what Delete keeps for Undo is a copy, and a document that is not there keeps nothing',
+      raw && raw !== savedTrack(five.id) && savedTrack('trk-nothing') === null);
+
+    /* ---- the simulator's Build a track (2.4): a 'new' intent ---- */
+    check('the simulator\'s Build a track writes a new intent', writeBuilderIntent({ kind: 'new' }) === true);
+    const taken = takeBuilderIntent();
+    check('the builder takes it, once', taken && taken.kind === 'new' && takeBuilderIntent() === null, JSON.stringify(taken));
+  } finally {
+    globalThis.localStorage = hadStore;
+  }
+}
+
 async function main() {
   if (process.argv.includes('--emit')) {
     process.stdout.write(serialize(demoTrack()));
@@ -9530,6 +12592,10 @@ async function main() {
   suitePoleSquare();
   suiteSchemaDoc();
   suiteFreestyle();
+  suiteClone();
+  suiteSink();
+  suiteTilt();
+  suiteHollowTurbine();
   suiteBoardPlan();
   suiteSchemaProps();
   suiteRoadsAndVehicles();
@@ -9541,6 +12607,7 @@ async function main() {
   suiteStartBlock();
   suiteDiveSupports();
   suiteSeat();
+  suiteMapRoom();
   suiteClubhouseShell();
   suiteWhoopRepairs();
   suiteWhoopPlacement();
@@ -9556,6 +12623,15 @@ async function main() {
   await suiteShareLink();
   suiteBuildSheet();
   suiteImportFpv();
+  suiteFiveInchParts();
+  suiteManoeuvres();
+  suiteFlightPaths();
+  suiteStackHands();
+  suiteRuns();
+  suiteHurdles();
+  suiteLaunchGate();
+  suiteFiveInchRoom();
+  await suiteMenus();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;
 }

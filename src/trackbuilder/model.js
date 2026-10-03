@@ -41,12 +41,12 @@
 import {
   ELEMENTS, KIND, TUNING, TRACK_CLASSES, TRACK_CLASS_DEFAULT, FRAME_SIDES, apertureLevels, apertureShapeOf,
   defaultDims, defaultPitch, defaultZ, elementHeight, normalizeFlagSide, normalizeUnbuiltSides,
-  trackClassOf, tuningFor, docModeOf, isTrafficType, clampByLimits,
-  ROAD_NODES_MAX, ROAD_NODE_REACH,
+  trackClassOf, tuningFor, docModeOf, isTrafficType, clampByLimits, FLAG_SIDES, GATE_FLAG_H, GATE_STYLES,
+  ROAD_NODES_MAX, ROAD_NODE_REACH, SINK_MAX,
 } from './elements.js';
 import { apertureFrame, wrapAngle } from './geometry.js';
 import {
-  styleOf as propStyleOf, clampDim, gapPointsOf, styleDims, GAP_POINTS, CAR_STYLES,
+  styleOf as propStyleOf, clampDim, fitDims, gapPointsOf, styleDims, GAP_POINTS, CAR_STYLES, tiltOf,
 } from '../props/types.js';
 import { isRoomType, ROOM_SIZE_MIN, ROOM_SIZE_MAX } from '../props/room.js';
 
@@ -78,6 +78,11 @@ import { isRoomType, ROOM_SIZE_MIN, ROOM_SIZE_MAX } from '../props/room.js';
  * smuggled in at 2.
  */
 export const SCHEMA_VERSION = 3;
+
+/* How a pass of a stacked gate is reached from the one before it on the same stack: round the left of it as flown, round
+ * the right, or over the front in a loop (figures.js). The default, when none is said, is left for neighbouring
+ * levels and over the front for a leap. */
+export const WRAPS = ['left', 'right', 'over'];
 
 /* The whoop room before it grew to 10 by 12 m, the only other size it has
  * ever had: see the migration at the foot of normalize(). */
@@ -760,7 +765,9 @@ export function elementNormal(el) {
 }
 
 export function topOf(el) {
-  return el.position.z + elementHeight(defOf(el), el.dims);
+  /* Style and tilt, for the assets: a container stood on end is as tall as it
+   * is long, and which length depends on its style. */
+  return el.position.z + elementHeight(defOf(el), el.dims, propStyleOf(el), tiltOf(el));
 }
 
 /* How many sequence entries point at an element. Multi referenced elements
@@ -994,6 +1001,10 @@ export function normalize(raw) {
         dims[key] = fallback;
       }
     }
+    /* Dimensions that hold one another to a limit, now each is in its own. */
+    if (isProp) {
+      fitDims(type, dims);
+    }
 
     /*
      * A HOOP AND A HEX GATE HAVE ONE OPENING. There is no such thing as a stack of hoops, and
@@ -1025,6 +1036,20 @@ export function normalize(raw) {
     };
     if (def.kind === KIND.ANNOTATION) {
       el.text = str(rawEl.text, 'Label');
+    }
+    /* An asset that stands on end holds the pitch it is built at: upright or a
+     * quarter turn either way, so the inspector never shows 50 degrees for a
+     * container that is flat, the way the heading of a building is read to the
+     * compass. (tiltOf reads the pitch to the nearest quarter.) */
+    if (def.kind === KIND.STRUCTURE && ELEMENTS[type]?.tilt) {
+      el.pitch = tiltOf({ type, pitch: el.pitch }) * (Math.PI / 2) + 0;
+    }
+    /* An asset may be sunk, to hide some of it, but not out of reach of its
+     * own inspector: see SINK_MAX in elements.js. Nothing else is held to a
+     * floor here, as it never was. */
+    if (def.kind === KIND.STRUCTURE && el.position.z < -SINK_MAX) {
+      repairs.push(`${id}: its base was ${el.position.z} m, further under the ground than the ${SINK_MAX} m an asset may be sunk, so it is -${SINK_MAX} m.`);
+      el.position.z = -SINK_MAX;
     }
     if (isProp && def.styles) {
       el.style = propStyleOf({ type, style: rawEl.style });
@@ -1074,6 +1099,17 @@ export function normalize(raw) {
     if (def.flagSide) {
       el.flagSide = normalizeFlagSide(rawEl.flagSide, def.flagSide);
     }
+    /* A piece that may carry flags and does not by default, a hurdle: only when it says so, and
+     * then with the mast height beside it, so a barrier with none is the bytes it was. */
+    if (def.flagsOptional && rawEl.flagSide !== undefined) {
+      if (FLAG_SIDES.includes(rawEl.flagSide)) {
+        el.flagSide = rawEl.flagSide;
+        const mast = num(rawEl.dims?.flagH, GATE_FLAG_H);
+        el.dims.flagH = mast > 0 ? mast : GATE_FLAG_H;
+      } else {
+        repairs.push(`${id}: flagSide was not left, right, both or top, so it has no flags.`);
+      }
+    }
     /* An opening with no frame of its own: see isUnbuilt in elements.js.
      * Carried only on apertures, because nothing else has a frame to
      * leave off, and only when true, so an ordinary gate's JSON is the
@@ -1106,6 +1142,16 @@ export function normalize(raw) {
         }
       } else {
         repairs.push(`${id}: group was not a name, so it is on its own.`);
+      }
+    }
+    /* The dress a gate wears besides the MultiGP one: see GATE_STYLES in elements.js. Only on an
+     * aperture and only when it is one this build knows. A style this build has never heard of is
+     * the usual dress and is said, because it is somebody's edit or a newer build's. */
+    if (def.kind === KIND.APERTURE && rawEl.style !== undefined) {
+      if (GATE_STYLES.includes(rawEl.style)) {
+        el.style = rawEl.style;
+      } else {
+        repairs.push(`${id}: style "${String(rawEl.style).slice(0, 40)}" is not a dress this build knows, so it wears the usual one.`);
       }
     }
     doc.elements.push(el);
@@ -1158,6 +1204,11 @@ export function normalize(raw) {
       clearance = Math.max(0, num(rawSeq.clearance, owner?.dims?.clearance ?? def.dims.clearance));
     }
 
+    /* HOW THE LINE GETS HERE FROM THE PASS BEFORE, when that was another opening of the same stack: round its left,
+     * round its right, or looping out over the front. Written only when it was said, so a document that never
+     * said keeps the bytes it had, and a reader that does not know the word flies the default wrap. */
+    const wrap = def.kind === KIND.APERTURE && WRAPS.includes(rawSeq.wrap) ? rawSeq.wrap : null;
+
     doc.sequence.push({
       id,
       elementId,
@@ -1166,6 +1217,7 @@ export function normalize(raw) {
       passSide,
       clearance,
       overridden: bool(rawSeq.overridden),
+      ...(wrap ? { wrap } : {}),
     });
   }
 
@@ -1309,6 +1361,9 @@ export function toPlain(doc) {
           : (road || vehicle ? num(clampByLimits(def, key, el.dims[key]))
             : (key === 'levels' ? int(el.dims[key], def.dims[key], 1, 24) : num(el.dims[key], def.dims[key])));
       }
+      if (isProp) {
+        fitDims(el.type, out.dims);
+      }
       if (road) {
         out.nodes = roadNodesRead(el.nodes).nodes;
         out.closed = el.closed === true;
@@ -1334,6 +1389,10 @@ export function toPlain(doc) {
       if (def.flagSide) {
         out.flagSide = normalizeFlagSide(el.flagSide, def.flagSide);
       }
+      if (def.flagsOptional && FLAG_SIDES.includes(el.flagSide)) {
+        out.flagSide = el.flagSide;
+        out.dims.flagH = num(el.dims?.flagH > 0 ? el.dims.flagH : GATE_FLAG_H);
+      }
       if (el.unbuilt === true && def.kind === KIND.APERTURE) {
         out.unbuilt = true;
       }
@@ -1344,6 +1403,9 @@ export function toPlain(doc) {
         }
         if (typeof el.group === 'string' && el.group.trim() !== '') {
           out.group = el.group.slice(0, GROUP_NAME_MAX);
+        }
+        if (GATE_STYLES.includes(el.style)) {
+          out.style = el.style;
         }
       }
       return out;
@@ -1356,6 +1418,7 @@ export function toPlain(doc) {
       passSide: s.passSide ?? null,
       clearance: s.clearance == null ? null : num(s.clearance),
       overridden: Boolean(s.overridden),
+      ...(WRAPS.includes(s.wrap) ? { wrap: s.wrap } : {}),
     })),
   };
 }
