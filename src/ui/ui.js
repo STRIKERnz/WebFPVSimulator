@@ -9798,7 +9798,7 @@ export class Ui {
         stepper('Stick trail thickness', 'Width of the movement tails.', `${s.stickTrailWidth}`, d => { s.stickTrailWidth = Math.max(1, Math.min(6, s.stickTrailWidth + d)); }),
         toggle('Stick labels', 'Show the channel names beneath the panels. Follows your selected stick mode.', s.stickOverlayLabels, v => { s.stickOverlayLabels = v; }),
         { label: 'Edit OSD layout', throttlePreview: true,
-          note: 'Open the full-screen editor to drag the flight readouts, sticks and weight slider. The crosshair sits where the nose points.' },
+          note: 'Open the full-screen editor to drag the flight readouts, sticks and weight slider. The crosshair stays centred.' },
         { label: 'Throttle OSD', section: true },
         choice('Throttle display', 'Bar, Betaflight-style percentage, or off.', ['bar', 'percent', 'off'], s.throttleDisplay,
           id => ({ bar: 'Bar', percent: 'Percentage', off: 'Off' }[id]), v => { s.throttleDisplay = v; }),
@@ -10575,7 +10575,7 @@ export class Ui {
     const viewHeight = window.innerHeight;
     const overlay = el('div', 'throttle-place-overlay');
     const title = el('h2', null, 'Edit flight OSD');
-    const help = el('p', null, 'Drag a highlighted element to move it. Elements may overlap. The crosshair sits where the nose points.');
+    const help = el('p', null, 'Drag a highlighted element to move it. Elements may overlap. The crosshair stays centred.');
     const frame = el('div', 'throttle-place-frame');
     frame.style.aspectRatio = `${viewWidth} / ${viewHeight}`;
     frame.style.width = `${Math.floor(Math.min(window.innerWidth * 0.92,
@@ -14084,7 +14084,6 @@ export class Ui {
     this.osd.style.display = screen === 'flight' || screen === 'paused' ? '' : 'none';
     /* A toggle, not a className: setOsd keeps is-free on the same node. */
     this.osd.classList.toggle('dim', screen === 'paused');
-    this.syncCrosshair();
     this.syncFps();
     this.pauseAirSlider(screen);
     /* The score follows the OSD onto and off the screen, but only in
@@ -15532,9 +15531,9 @@ export class Ui {
   }
 
   /*
-   * The FPS readout follows the Show FPS row. Called from show() for the
-   * same reason syncCrosshair is. The count restarts on every show so a
-   * pause does not read as one very slow frame.
+   * The FPS readout follows the Show FPS row. Called from show(), because
+   * every way from the row to the flight goes through one. The count
+   * restarts on every show so a pause does not read as one very slow frame.
    */
   syncFps() {
     if (!this.osdFps) {
@@ -15562,28 +15561,6 @@ export class Ui {
       this.osdFpsFrames = 0;
       this.osdFpsAt = now;
     }
-  }
-
-  /*
-   * The crosshair sits where the nose line lands. Called from show(),
-   * because the OSD is only up in flight and paused, and every way from the
-   * camera rows to the flight goes through a show().
-   */
-  syncCrosshair() {
-    if (!this.flightOverlay) {
-      return;
-    }
-    /* The nose line is the camera's axis tilted DOWN by the camera angle, so
-     * it lands below the centre of the picture by tan(tilt) over tan(half the
-     * vertical lens angle), as a share of the half height. At 30 degrees on
-     * the 85 degree lens that is 63 percent of the half height: the horizon
-     * of a level hover, where a real OSD crosshair is set. The lens angle is
-     * three.js's vertical one, the same number main.js hands the camera.
-     * Written only when the number changes, and only from show(). */
-    const tilt = Math.tan(cameraTiltRad(clampCameraAngle(this.settings.cameraAngle)));
-    const half = Math.tan((this.settings.cameraFov * Math.PI) / 360);
-    const down = half > 0 ? Math.min(90, Math.round((tilt / half) * 50 * 10) / 10) : 0;
-    this.flightOverlay.setCrosshairDrop(down);
   }
 
   /*

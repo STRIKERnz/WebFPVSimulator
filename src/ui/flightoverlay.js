@@ -95,14 +95,6 @@ export class FlightOverlay {
     this.clearTrails();
   }
 
-  /* Percent of the picture height the crosshair sits below the centre: see
-   * syncCrosshair in ui.js. */
-  setCrosshairDrop(down) {
-    if (down === this.crossDrop) return;
-    this.crossDrop = down;
-    this.crosshair.style.top = `${50 + down}%`;
-  }
-
   clearTrails() {
     this.history[0].length = this.history[1].length = 0;
     this.lastSample = -Infinity;
