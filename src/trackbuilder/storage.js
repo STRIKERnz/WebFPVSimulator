@@ -341,8 +341,9 @@ export function makeAutosaver(delayMs = 700) {
 /* ------------------------------------------------------------------ */
 
 /* The track's name, reduced to something safe on every platform. One rule,
- * used by both filenames below and matched by scripts/trackgif.js, so a track
- * exported by the button and by the script lands on the same name. */
+ * used by the filenames below and matched by scripts/trackgif.js, so a track
+ * exported by the button and by the script lands on the same name. At the
+ * standard animation size, that is: the script puts no size in its own. */
 function slugOf(doc) {
   return String(doc.name || 'track')
     .toLowerCase()
@@ -359,8 +360,16 @@ export function exportFilename(doc) {
   return `${slugOf(doc)}.${docModeOf(doc) === 'freestyle' ? 'map' : 'track'}.json`;
 }
 
-export function animationFilename(doc) {
-  return `${slugOf(doc)}.gif`;
+/* The edge the animation has always been drawn at, and the one a file carries
+ * no mark for. A file at any other edge says so in its name, so a sharper one
+ * saved beside the standard one is not left to the browser to call "(1)" and
+ * nobody has to open both to tell which is which. One set on the race field
+ * says so too, because the same track on the black stage is another file. */
+export const ANIMATION_EDGE = 512;
+
+export function animationFilename(doc, edge = ANIMATION_EDGE, field = false) {
+  const size = edge === ANIMATION_EDGE ? '' : `-${edge}px`;
+  return `${slugOf(doc)}${size}${field ? '-field' : ''}.gif`;
 }
 
 export function pictureFilename(doc) {

@@ -27,6 +27,7 @@ import { App, docFromLocation } from './app.js';
 import { docFromHash } from './sharelink.js';
 import { duplicateTrack } from './model.js';
 import { pingVisit } from '../share/stats.js';
+import { boardOrigin } from '../share/board.js';
 
 /*
  * FIRST, BEFORE ANYTHING READS THE QUERY. It takes a sponsor's
@@ -38,6 +39,25 @@ import { pingVisit } from '../share/stats.js';
  * sends Global Privacy Control. Nothing waits for it.
  */
 pingVisit('builder');
+
+/*
+ * A COMMUNITYGOW ROUND, taken before anything else reads the address. The
+ * community's page opens this builder to make its next round with the
+ * community in the query and the organiser key in the fragment, and the #track=
+ * reader below replaces the fragment wholesale. ./community.js is loaded only
+ * on such a visit, or a reload of one (the community is kept for the tab), so
+ * the builder every other visitor opens fetches nothing more.
+ */
+let community = null;
+try {
+  if (new URLSearchParams(window.location.search).has('community')
+    || window.sessionStorage.getItem('webfpv.community.v1')) {
+    community = (await import('./community.js')).takeCommunity(boardOrigin());
+  }
+} catch (e) {
+  /* Storage refused, or the module did not load: the builder opens as it
+     always has, and the community's page can be pasted from Export bundle. */
+}
 
 /* One canvas for the elevation chart, created once and re-appended by
    the results panel on every render. */
@@ -73,8 +93,13 @@ const hadTrack = new URLSearchParams(window.location.search).has('track');
 const linked = docFromLocation();
 if (linked) {
   /* Kept, not asked: a link opens that track, and what it displaces goes into
-     Load. See openIncoming in app.js. */
-  app.openIncoming(linked, `Opened "${linked.name}" from the link.`);
+     Load. See openIncoming in app.js. The one thing that is asked is the
+     board, and only whether the track is an official one, which opens for
+     nobody but an admin: see mayOpen. */
+  const said = `Opened "${linked.name}" from the link.`;
+  if (await app.mayOpen(linked, { external: true, retry: () => app.openIncoming(linked, said) })) {
+    app.openIncoming(linked, said);
+  }
 } else if (hadTrack) {
   /* A link that held nothing a track could be read from opened nothing and
      said nothing, which looks like a builder that ignored it. */
@@ -87,7 +112,14 @@ if (linked) {
 if (!linked && /(^#|&)track=/.test(window.location.hash)) {
   const shared = await docFromHash(window.location.hash);
   if (shared) {
-    app.openIncoming(duplicateTrack(shared, shared.name), 'A shared track. Editing makes your copy.');
+    /* The copy is the document that opens, but the question is about the
+       track it was made from: a copy of an official track is a way of opening
+       one. See mayOpen in app.js. */
+    const copy = duplicateTrack(shared, shared.name);
+    const said = 'A shared track. Editing makes your copy.';
+    if (await app.mayOpen(shared, { external: true, retry: () => app.openIncoming(copy, said) })) {
+      app.openIncoming(copy, said);
+    }
   } else {
     /* A link that is not one of ours, or was cut short in a chat, or was made by
        a browser that can deflate for one that cannot: the pilot pressed it and
@@ -98,5 +130,8 @@ if (!linked && /(^#|&)track=/.test(window.location.hash)) {
 }
 await app.adoptIncomingShare();
 await app.adoptIncomingMap();
+if (community) {
+  app.attachCommunity(community);
+}
 
 window.trackBuilder = app;

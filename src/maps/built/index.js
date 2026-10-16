@@ -73,9 +73,12 @@
  */
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PAL } from '../city/vendored/core/palette.js';
 import { Pipeline } from '../city/vendored/core/post.js';
 import { mangaPipeline } from '../../render/manga.js';
+import { comicPipeline, setComicQuality, markGround } from '../../render/comic.js';
+import { comicSky } from '../../render/comicsky.js';
 import { buildSky } from '../city/vendored/core/sky.js';
 import { setOutlineResolution } from '../city/vendored/core/outline.js';
 import { cel, flat } from '../city/vendored/core/toon.js';
@@ -86,6 +89,7 @@ import { disposeSceneGraph } from '../../render/shell.js';
 import { SESSION_TEXTURES } from '../../render/session-textures.js';
 import { yieldToPaint } from '../../ui/loading.js';
 import { qualityFor } from '../../render/quality.js';
+import { makeShadowRate } from '../../render/shadowrate.js';
 import { readAutosave } from '../../trackbuilder/storage.js';
 import { normalize } from '../../trackbuilder/model.js';
 import { docModeOf } from '../../trackbuilder/elements.js';
@@ -95,15 +99,17 @@ import { poleWireAnchors } from '../../props/street.js';
 import { sincos } from '../../props/trig.js';
 import { makeStfMark } from '../../art/stf.js';
 import { makePartnerMark, signAspect } from '../../art/partnermark.js';
-import { PARTNERS, MAP_ONLY_PARTNERS } from '../../partners/roster.js';
+import { PARTNERS, MAP_ONLY_PARTNERS, PATRON_MAP_BRANDS } from '../../partners/roster.js';
 import { seatDocument, groundUnder, topUnder, PLATFORM_REACH } from './place.js';
 import { starterMap } from './starter.js';
-import { lookOf, kitLook, paintLights, paintSky, paintPost } from './looks.js';
-import { chooseStfSpot, choosePartnerSpots } from './egg.js';
+import { lookOf, kitLook, paintLights, paintSky, paintPost, skyLook } from './looks.js';
+import { chooseStfSpot, choosePartnerSpots, choosePatronSpots, stfKey } from './egg.js';
+import { choosePatrons } from '../../partners/patrons.js';
 import { trafficOf, uploadTraffic, roadKeepOut } from './traffic.js';
 import { buildRoadMesh, roadCover } from './roadmesh.js';
 import { buildCars } from './cars.js';
 import { buildGround } from './ground.js';
+import { warmPrograms } from '../../render/warm.js';
 
 /* The town's far plane, for the town's reason: the sky dome and the ridge
  * lines live out past the fog. See CAMERA_FAR in src/maps/city/index.js.
@@ -301,6 +307,10 @@ export class BuiltPipeline extends Pipeline {
     /* Stage F's manga layer, folded into the grade and the fxaa pass the
      * same way, on this pipeline's own materials: see src/render/manga.js. */
     this.manga = mangaPipeline(this);
+    /* The comic layer's pen and grade: see src/render/comic.js. The
+     * blobs option is the ink half of the codes the kit's leaf() gives
+     * a tree's canopy blobs (src/props/kit.js). */
+    comicPipeline(this, { blobs: true });
   }
 
   setSize(w, h) {
@@ -343,7 +353,8 @@ export class BuiltPipeline extends Pipeline {
     this.fxaa.mat.uniforms.uTexel.value.copy(texel);
     this.ink.mat.uniforms.uNear.value = this.camera.near;
     this.ink.mat.uniforms.uFar.value = this.camera.far;
-    this.ink.mat.uniforms.uThickness.value = 1.05 + 0.55 * scale;
+    /* Times the comic layer's heavier pen (src/render/comic.js). */
+    this.ink.mat.uniforms.uThickness.value = (1.05 + 0.55 * scale) * (this.inkWeight || 1);
 
     this.renderer.setPixelRatio(shellPr);
     this.renderer.setSize(w, h, false);
@@ -890,9 +901,33 @@ function paintPartnerMarks(props, placed, spots, look) {
     }
     try {
       const mark = paintMark(props, placed, spot, look, (opts) => makePartnerMark(THREE, partner, opts), 1);
-      out.push({ ...mark, slug: partner.slug });
+      out.push({ ...mark, slug: partner.slug, findable: true });
     } catch (e) {
       console.error(`partners: ${partner.slug}'s mark could not be painted on this map`, e);
+    }
+  }
+  return out;
+}
+
+/*
+ * THE PATRON MARKS, up to PATRON_MAX_PER_MAP where ./egg.js chose, painted
+ * after partners so they never take a partner's wall. Patrons are NOT
+ * findable: their signs do not stamp, count toward achievements, or show the
+ * found panel. Returns the same `egg` shape with the patron's slug and
+ * findable: false.
+ */
+function paintPatronMarks(props, placed, spots, look) {
+  const out = [];
+  for (const spot of spots) {
+    const patron = PATRON_MAP_BRANDS.find((p) => p.slug === spot.slug);
+    if (!patron) {
+      continue;
+    }
+    try {
+      const mark = paintMark(props, placed, spot, look, (opts) => makePartnerMark(THREE, patron, opts), 1);
+      out.push({ ...mark, slug: patron.slug, findable: false });
+    } catch (e) {
+      console.error(`patrons: ${patron.slug}'s mark could not be painted on this map`, e);
     }
   }
   return out;
@@ -964,10 +999,100 @@ function drawnRelief(chunk, spot, right, share = STF_PROBE_SHARE) {
   return depths[Math.floor((depths.length - 1) * share)];
 }
 
+/*
+ * ONE SHADOW CASTER A CHUNK, instead of one a material.
+ *
+ * The kit merges each 48 m chunk's props into one mesh per material, and every
+ * one of those casts: 236 casting meshes, 184 of them drawn into the 1024 map
+ * a frame, more draws than the colour pass has. A proxy is the chunk's casters
+ * again as position and index alone, merged into one mesh (one for each side
+ * the originals are drawn on, because three picks the shadow's face from it),
+ * with colour and depth writes off so it paints nothing and a shadow pass
+ * still draws it. The originals stop casting. It lives IN the chunk's group, so
+ * the cull switches it with the chunk exactly as it switched the casters.
+ *
+ * A caster whose shadow depends on its texture (an alpha tested pennant or
+ * sign) keeps casting for itself, since a proxy would cast the whole card.
+ * Cars are outside the chunks and keep theirs. The town does the same with a
+ * gate on the shadow box (buildShadowProxies in ../city/bake.js); here the
+ * chunk's own cull is the gate, so the proxy draws wherever its casters did.
+ */
+function proxyCasters(props, materials) {
+  props.updateMatrixWorld(true);
+  const proxyMaterials = new Map();
+  const stats = { chunks: 0, from: 0, to: 0, triangles: 0 };
+  for (const chunk of props.children) {
+    const buckets = new Map();
+    for (const m of chunk.children) {
+      const mat = m.material;
+      if (!m.isMesh || m.isInstancedMesh || !m.castShadow || !m.geometry || !m.geometry.attributes.position
+        || !mat || Array.isArray(mat) || mat.alphaTest > 0 || mat.alphaMap) {
+        continue;
+      }
+      const key = `${mat.side}|${m.geometry.index ? 1 : 0}`;
+      let b = buckets.get(key);
+      if (!b) {
+        b = { side: mat.side, geos: [], meshes: [] };
+        buckets.set(key, b);
+      }
+      const src = m.geometry.attributes.position;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(src.array.slice(), src.itemSize));
+      if (m.geometry.index) {
+        g.setIndex(new THREE.BufferAttribute(m.geometry.index.array.slice(), 1));
+      }
+      g.applyMatrix4(m.matrixWorld);
+      b.geos.push(g);
+      b.meshes.push(m);
+    }
+    let made = false;
+    for (const b of buckets.values()) {
+      const geo = b.geos.length === 1 ? b.geos[0] : mergeGeometries(b.geos, false);
+      if (b.geos.length > 1) {
+        for (const g of b.geos) {
+          g.dispose();
+        }
+      }
+      if (!geo) {
+        continue;
+      }
+      let mat = proxyMaterials.get(b.side);
+      if (!mat) {
+        mat = new THREE.MeshBasicMaterial({ side: b.side });
+        mat.colorWrite = false;
+        mat.depthWrite = false;
+        mat.name = 'shadowProxy';
+        proxyMaterials.set(b.side, mat);
+        materials.push(mat);
+      }
+      geo.computeBoundingSphere();
+      const proxy = new THREE.Mesh(geo, mat);
+      proxy.castShadow = true;
+      proxy.receiveShadow = false;
+      proxy.matrixAutoUpdate = false;
+      proxy.userData.shadowProxy = true;
+      /* Never a pick target: it is not drawn, so nothing it stands for is under it. */
+      proxy.raycast = () => {};
+      chunk.add(proxy);
+      for (const m of b.meshes) {
+        m.castShadow = false;
+      }
+      stats.from += b.meshes.length;
+      stats.to += 1;
+      stats.triangles += Math.round(geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3);
+      made = true;
+    }
+    if (made) {
+      stats.chunks += 1;
+    }
+  }
+  return stats;
+}
+
 function trianglesOf(root) {
   let n = 0;
   root.traverse((o) => {
-    if (o.isMesh && o.geometry) {
+    if (o.isMesh && o.geometry && !o.userData.shadowProxy) {
       const g = o.geometry;
       n += g.index ? g.index.count / 3 : g.attributes.position.count / 3;
     }
@@ -1019,6 +1144,20 @@ export async function buildMap(shell, onProgress, options) {
       allPartners.map((p) => ({ slug: p.slug, aspect: signAspect(p) })));
   } catch (e) {
     console.error('partners: no spots for the marks on this map', e);
+  }
+  /* And the patrons', after partners and never on a partner's or STF's wall
+   * (./egg.js, rule 8). At most PATRON_MAX_PER_MAP per map, chosen
+   * deterministically by the map's key. */
+  let patronSpots = [];
+  try {
+    const mapKey = stfKey(doc, chosen.source);
+    const chosenPatrons = choosePatrons(PATRON_MAP_BRANDS, mapKey);
+    if (chosenPatrons.length > 0) {
+      patronSpots = choosePatronSpots(placed, doc, chosen.source, stfSpot, partnerSpots,
+        chosenPatrons.map((p) => ({ slug: p.slug, aspect: signAspect(p) })));
+    }
+  } catch (e) {
+    console.error('patrons: no spots for the marks on this map', e);
   }
   /* Its time of day and its ground (./looks.js): golden over concrete for
    * a map that never chose, which is this map as it always was. */
@@ -1093,6 +1232,9 @@ export async function buildMap(shell, onProgress, options) {
   const BOUNCE_OFFSET = new THREE.Vector3(...T.bounce.at);
 
   const sky = buildSky(scene, skyRadius);
+  /* Heaped cumulus in place of the vendored cards, and the streak cloud on
+   * Medium and High, in the time's colours: src/render/comicsky.js. */
+  comicSky(sky, skyLook(T), { streaks: q.id !== 'low' });
   paintSky(sky, T);
   const backdrop = buildBackdrop(scene, hillScale, T.hills);
   progress(0.1);
@@ -1106,6 +1248,11 @@ export async function buildMap(shell, onProgress, options) {
   if (roads.batches) {
     scene.add(roads.group);
   }
+  /* Both are ground, paint and all, for the comic pass's turf, stones and
+   * patches; nothing else here is (render/comic.js, GROUND). Marked here
+   * and not in ./ground.js, which the landing page copies byte for byte. */
+  markGround(ground.group);
+  markGround(roads.group);
   progress(0.2);
   await yieldToPaint();
 
@@ -1116,7 +1263,7 @@ export async function buildMap(shell, onProgress, options) {
    * hundred draw calls at most and a chunk switched off takes all of its
    * batches with it.
    */
-  const kit = new PropKit(kitLook(look.timeId));
+  const kit = new PropKit(kitLook(look.timeId), { clumps: q.city.leafClumps !== false });
   for (const it of placed.items) {
     kit.begin(it.x, it.y, it.z, it.yaw, chunkKeyOf(it));
     kit.element(it.el);
@@ -1136,6 +1283,8 @@ export async function buildMap(shell, onProgress, options) {
     }
   }
   const marks = paintPartnerMarks(props, placed, partnerSpots, look);
+  const patronMarks = paintPatronMarks(props, placed, patronSpots, look);
+  const allMarks = [...marks, ...patronMarks];
   scene.add(props);
   progress(0.8);
 
@@ -1192,6 +1341,10 @@ export async function buildMap(shell, onProgress, options) {
     });
   }
 
+  /* After the cells are measured, which read the geometry of what is in each chunk and not the proxies. */
+  const proxyMaterials = [];
+  const proxied = q.shadows ? proxyCasters(props, proxyMaterials) : null;
+
   /* THE SOLIDS: exactly what place.js said, into the collider set the
    * shell uploads to the plant. */
   const colliders = new Colliders();
@@ -1199,6 +1352,7 @@ export async function buildMap(shell, onProgress, options) {
   colliders.build();
   progress(0.9);
 
+  setComicQuality(q, { edges: true, grime: true });
   const pipeline = new BuiltPipeline(renderer, scene, camera, {
     pixelBudget: q.city.pixelBudget,
     minScale: q.city.minScale,
@@ -1216,9 +1370,15 @@ export async function buildMap(shell, onProgress, options) {
   pipeline.setSize(dims.w, dims.h);
 
   scene.add(shell.quad);
+  /* Every program the yard draws, linked now and against the pipeline's
+   * scene target instead of one at a time as the pilot first sees each: see
+   * render/warm.js. */
+  await warmPrograms(renderer, scene, camera, pipeline.rtScene);
   progress(1);
 
   const shadowTarget = new THREE.Vector3();
+  /* How often the map is redrawn: see render/shadowrate.js. */
+  const shadowRate = makeShadowRate(renderer, q.shadows ? (q.city.shadowEvery || 1) : 1, half);
   function seat(light, offset, origin) {
     light.target.position.copy(origin);
     light.position.copy(origin).add(offset);
@@ -1255,6 +1415,15 @@ export async function buildMap(shell, onProgress, options) {
     seat(sun, SUN_OFFSET, shadowTarget);
     seat(fill, FILL_OFFSET, shadowTarget);
     seat(bounce, BOUNCE_OFFSET, shadowTarget);
+    shadowRate.step(shadowTarget);
+    /* A proxy paints nothing, but the colour pass draws it all the same, so
+     * on a frame that does not redraw the shadow map it is a draw and every
+     * triangle of its chunk's casters for nothing: the proxies are shown only
+     * on a frame that does. A few materials, not a walk of the chunks. */
+    const casting = renderer.shadowMap.autoUpdate || renderer.shadowMap.needsUpdate;
+    for (let i = 0; i < proxyMaterials.length; i += 1) {
+      proxyMaterials[i].visible = casting;
+    }
     sky.dome.position.copy(camera.position);
     sky.clouds.position.copy(camera.position);
     fadeBackdrop(backdrop, camera.position.y, scene.fog.color);
@@ -1273,7 +1442,7 @@ export async function buildMap(shell, onProgress, options) {
   const groundTriangles = trianglesOf(ground.group);
   let propBatches = 0;
   props.traverse((o) => {
-    if (o.isMesh) {
+    if (o.isMesh && !o.userData.shadowProxy) {
       propBatches += 1;
     }
   });
@@ -1371,9 +1540,14 @@ export async function buildMap(shell, onProgress, options) {
      * found it: see paintStfMark and `egg` in src/maps/README.md. Paint
      * only; nothing about it is solid. */
     egg,
-    /* Where each partner's mark is painted, the same shape with the slug:
-     * see paintPartnerMarks and `marks` in src/maps/README.md. */
-    marks,
+    /* Where each partner's and patron's mark is painted, the same shape with
+     * the slug and findable flag: see paintPartnerMarks, paintPatronMarks and
+     * `marks` in src/maps/README.md. */
+    marks: allMarks,
+    /* The stickers that can be found, keyed as the partners' marks are,
+     * with '#sticker:' and the decal's id: see stickerSheet in ./ground.js
+     * and `stickers` in src/maps/README.md. Paint only. */
+    stickers: ground.stickers.map((s) => ({ ...s, key: `${stfKey(doc, chosen.source)}#sticker:${s.id}` })),
     /* The author's named gaps as world rectangles, for the counter
      * (src/game/gaps.js): placeDocument's zones, placed by the one
      * conversion everything on this map goes through. Nothing solid and
@@ -1400,6 +1574,7 @@ export async function buildMap(shell, onProgress, options) {
        * and the one smoke batch). */
       batches: propBatches + roads.batches + carStats.meshes,
       propBatches,
+      shadowProxies: proxied,
       propTriangles,
       triangles: propTriangles + groundTriangles + wires.triangles + roads.triangles + carStats.triangles,
       roads: { roads: roads.roads, lanes: traffic.roads.length, batches: roads.batches, triangles: roads.triangles },

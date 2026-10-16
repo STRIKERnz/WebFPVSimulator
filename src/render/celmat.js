@@ -35,6 +35,9 @@
  */
 
 import * as THREE from 'three';
+/* Installs the comic layer on every toon material before any is built. */
+import './comic.js';
+import { latticeMap, latticeNoiseGlsl } from './lattice.js';
 
 /*
  * Three.js samples the toon gradient map as
@@ -73,22 +76,30 @@ import * as THREE from 'three';
  * which is what makes it look drawn rather than shaded.
  */
 function celRamp() {
-  const stops = [
-    [0.30, 0.38, 0.62], /* deep shadow, sky blue bounce */
-    [0.42, 0.51, 0.72], /* shadow */
-    [0.94, 0.80, 0.62], /* terminator, warm sliver where light wraps */
-    [1.00, 0.97, 0.88], /* sunlit */
+  /* Seven bands, cool shadow to warm light, from the Gem look (look.js). More, finer steps than
+   * the four it had, so neighbouring facets of a polygon land on different tones. The ramp is a
+   * texture's content: it costs nothing a pixel that the four band one did not. The warm sliver
+   * at the terminator is kept, because a surface half in shade reads tan and not grey. */
+  const bands = [
+    [0.00, [0.26, 0.30, 0.58]],
+    [0.30, [0.36, 0.41, 0.68]],
+    [0.40, [0.50, 0.56, 0.80]],
+    [0.46, [0.88, 0.76, 0.64]],
+    [0.54, [0.97, 0.84, 0.66]],
+    [0.66, [1.00, 0.97, 0.88]],
+    [0.82, [1.00, 1.00, 0.96]],
   ];
   const width = 64;
   const data = new Uint8Array(width * 4);
   for (let i = 0; i < width; i += 1) {
     const t = i / (width - 1);
-    /* Hard steps with a one texel soft edge so it does not alias. */
     let band = 0;
-    if (t > 0.36) band = 1;
-    if (t > 0.46) band = 2;
-    if (t > 0.53) band = 3;
-    const c = stops[band];
+    for (let k = 0; k < bands.length; k += 1) {
+      if (t >= bands[k][0]) {
+        band = k;
+      }
+    }
+    const c = bands[band][1];
     data[i * 4 + 0] = Math.round(c[0] * 255);
     data[i * 4 + 1] = Math.round(c[1] * 255);
     data[i * 4 + 2] = Math.round(c[2] * 255);
@@ -148,22 +159,14 @@ const RIM_CHUNK = /* glsl */ `
  * single strongest signal that a stylised world is alive rather than a
  * diorama: they break up large flat areas, they give the terrain a sense
  * of scale, and they make the light feel like it comes from a sky rather
- * than from a lamp. Sampled from procedural noise at world position, so
- * there is no texture to load and it costs a handful of instructions.
+ * than from a lamp. Sampled from value noise at world position, three
+ * octaves of a lattice that holds this shader's own hash (src/render/
+ * lattice.js), a fetch each, where they were four hashes each until the
+ * low end pass after the graphics sweep: a terrain pixel's cloud shadow was
+ * about two hundred operations, on most of every frame's lower half.
  */
 export const CLOUD_SHADOW_GLSL = /* glsl */ `
-  float celHash(vec2 p) {
-    p = fract(p * vec2(233.34, 851.73));
-    p += dot(p, p + 23.45);
-    return fract(p.x * p.y);
-  }
-  float celNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(celHash(i), celHash(i + vec2(1.0, 0.0)), f.x),
-               mix(celHash(i + vec2(0.0, 1.0)), celHash(i + vec2(1.0, 1.0)), f.x), f.y);
-  }
+  ${latticeNoiseGlsl('celNoise', 'uCelNoise')}
   float celCloudShadow(vec2 world, float t) {
     vec2 p = world * 0.0032 + vec2(t * 0.010, t * 0.006);
     float n = celNoise(p) * 0.6 + celNoise(p * 2.3) * 0.3 + celNoise(p * 4.7) * 0.1;
@@ -260,7 +263,7 @@ export const FLAG_SAIL_CLOTH = 0.085;
 
 /*
  * opts: color, rim (0..1), rimColor, spec (0..1), specWidth, cloudShadow,
- * map, alphaTest, cloth, key
+ * map, alphaTest, cloth, key, comic ('ground' or 'foliage')
  *
  * `map` needs `key`, and that is enforced rather than documented. The
  * scenery merger buckets geometry by celKey and celKey is the options
@@ -305,6 +308,10 @@ export function celMaterial(opts = {}) {
     shader.uniforms.uSpecWidth = { value: opts.specWidth ?? 0.01 };
     shader.uniforms.uSpecDir = { value: new THREE.Vector3(0.45, 0.8, 0.4) };
     shader.uniforms.uCloudShadow = { value: cloud };
+    /* The lattice that holds this shader's own hash (lattice.js), built
+     * only by a material that draws a cloud shadow; the rest bind three's
+     * empty texture, which they never read. */
+    shader.uniforms.uCelNoise = { value: cloud > 0 ? latticeMap('cel') : null };
     shader.uniforms.uCelTime = { value: 0 };
     shader.uniforms.uCloudTint = { value: new THREE.Color(0x8397be) };
     if (!registered.has(mat)) {
@@ -413,6 +420,14 @@ ${RIM_CHUNK}
    */
   mat.customProgramCacheKey = () => `cel${clothDecl}${clothBody}`;
   mat.userData.cel = true;
+  /* What the comic pass draws on it (render/comic.js, GROUND and FOLIAGE).
+   * An option rather than a mark set afterwards, so it is in celKey below
+   * and the merger never buckets a marked material with an unmarked one. */
+  if (opts.comic === 'ground') {
+    mat.userData.comicGround = true;
+  } else if (opts.comic === 'foliage') {
+    mat.userData.comicFoliage = true;
+  }
   /* Stable identity for the scenery merger: two materials built from the
    * same options are interchangeable, so their meshes can share one draw.
    * A texture is not JSON, so a keyed material states its own identity and

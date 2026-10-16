@@ -46,7 +46,8 @@
 
 import * as THREE from 'three';
 import { buildShell } from './render/shell.js';
-import { applyPixelRatio, autoMinPixels, bootGuessGraphics, graphicsLabel, inkLinesOn, internalScale, normalizeGraphics, pixelRatioFor, qualityFor, setInkLines } from './render/quality.js';
+import { applyLook } from './render/look.js';
+import { applyPixelRatio, autoMinPixels, bootGuessGraphics, graphicsLabel, inkLinesOn, internalScale, normalizeGraphics, pixelRatioFor, qualityFor, qualityOf, setInkLines } from './render/quality.js';
 import { readGpuInfo } from './render/gpuinfo.js';
 import { makeAttractCamera } from './render/attract.js';
 import { MangaLayer } from './render/manga.js';
@@ -64,12 +65,13 @@ import { InputManager, NAV_DEFLECT } from './input/input.js';
 import { PAD_CALM } from './input/padgate.js';
 import { mountTouchSticks, touchWanted } from './input/touchsticks.js';
 import { RcLink, LINK_DEFAULT, LINK_PRESETS } from './input/link.js';
+import { setTicketMeta, wasmFingerprint } from './share/bugs.js';
 import { FlightRecorder, downloadText, flightLogName } from './share/flightlog.js';
 import { PRACTICE_LAPS, Race, runComplete } from './game/race.js';
 import { TrickDetector } from './game/trickdetect.js';
 import { deriveObstacles, OB_BAR, OB_POLE } from './game/obstacles.js';
 import {
-  MARK_FINDS, PARTNER_FINDS, glimpsesMark, seesMark,
+  MARK_FINDS, PARTNER_FINDS, glimpsesMark, seesMark, shouldFindMark,
 } from './game/egg.js';
 import { partnerBySlug } from './partners/roster.js';
 import { Counter, formatScore } from './game/score.js';
@@ -84,6 +86,17 @@ import { Chase, CHASE_EVERY, pays } from './game/chase.js';
 import { sincos } from './props/trig.js';
 import { setCraftAirframe, CRAFT_R, CRAFT_WORLD_R, CRAFT_V_UP, CRAFT_V_DOWN, craftVerticalHalf, craftVerticalOffset, canPerch, shouldScorePass, shouldEnterTurtle, uprightPlantQuat, turtleFlipEase, turtleFlipLift, turtleSlerpQuat, TURTLE_STICK_MIN, TURTLE_SPEED, TURTLE_RATE, TURTLE_FLIP_MS, TURTLE_INVERT_UPZ, TURTLE_EXIT_UPZ, turtleClearance, findRestSpot, PROP_PLANE_MAX_UP_DOT, GRAZE_SPEED_MAX, BOUNCE_SPEED_MAX, BOUNCE_COOLDOWN_MS, LAND_DESCENT_MAX, LAND_HORIZONTAL_MAX, LAND_TILT_MAX_DEG, LAND_TILT_HARD_DEG, LAND_TIP_SPEED_MAX, GROUND_MU, GROUND_E, CLIP_SPAWN_GRACE_MS, CrashJudge, emptyWorldReport, foldWorldReport } from './game/collide.js';
 import { Ui, formatTime, WEIGHT_STOCK, clampWeight, gravityScaleFor, loadSettings, pacingTimerOn } from './ui/ui.js';
+import { TAKEOFF, guideKind, stepOf, textOf } from './ui/firstflight.js';
+import {
+  AIR_GRIP_STOCK,
+  MOTOR_KV_STOCK,
+  TuneLog,
+  airScaleFor,
+  effectiveTune,
+  kvScaleFor,
+  offBoardTune,
+  tuneKey,
+} from './share/tune.js';
 import { lostStickNotice, noRadioNotice } from './ui/stickhelp.js';
 import {
   adoptMapFromLocation, adoptMostFlownTrack, adoptShareFromLocation, boardPageUrl, fetchGhost,
@@ -95,16 +108,18 @@ import {
 } from './share/stats.js';
 import { sendCardAnimation } from './share/cardgif.js';
 import { nameRules, readPilotName, writePilotName } from './share/pilot.js';
-import { stampFor, writeStamp } from './share/stamps.js';
+import { stampFor, stampedAmong, writeStamp } from './share/stamps.js';
 import { CLIP_FPS, CLIP_H, CLIP_W, clipKeyForMap } from './share/orbitcache.js';
 import {
   clearPendingTime,
   readEditKey,
   readPendingTime,
+  readPostedBest,
   writePendingTime,
   writePostedBest,
   writeShareImport,
 } from './share/session.js';
+import { showSupportPrompt } from './share/supportprompt.js';
 import { createShowcase } from './render/showcase.js';
 import { celTimeCount } from './render/celmat.js';
 import { MAPS, mapById } from './maps/registry.js';
@@ -168,14 +183,14 @@ const WASM_URL = new URL('../dist/sim.wasm', import.meta.url).href;
  * the collision dimensions and the drawn model: these two are a FRAME, and
  * moving one mid lap would move the floor under a craft that is flying.
  */
-let SPAWN_ALT = 0.045;
+let SPAWN_ALT = 0.033;
 /* The craft rests with its underside on the ground, not its centre.
  * Identical to SPAWN_ALT so the parked pose, the spawn state and a landing
  * all agree about where the ground holds the craft. */
-let REST_HEIGHT = 0.045;
+let REST_HEIGHT = 0.033;
 /* One seat for both, so they cannot drift apart. */
 function seatRestHeight(dims) {
-  const h = dims && Number.isFinite(dims.vHalfDown) ? dims.vHalfDown : 0.045;
+  const h = dims && Number.isFinite(dims.vHalfDown) ? dims.vHalfDown : 0.033;
   SPAWN_ALT = h;
   REST_HEIGHT = h;
 }
@@ -267,6 +282,15 @@ const SURFACE_BIAS = 0.40;
  * the pilot did not fly.
  */
 const PARKED_LIFT = 0.30;
+/*
+ * How fast the parked lift goes once the craft is moving across the ground
+ * rather than up off it: metres of lift per metre of horizontal travel, so
+ * the whole 0.30 m is gone 0.6 m from where the craft took off. Render only,
+ * like PARKED_LIFT. Short enough that a low skim away from the pad is flown
+ * through its own lens within a craft length or two, long enough that the
+ * bleed is a slope the eye reads as part of the move and not a drop.
+ */
+const LIFT_TRAVEL_BLEED = 0.5;
 /*
  * Opening shot when a run starts: orbit the quad on the pad, settle
  * behind it, then dolly into the FPV camera. The three spans are wall
@@ -363,18 +387,25 @@ const MS_PER_STEP = 1000 / SIM_HZ;
  */
 const WALL_NEAR_M = 2.0;
 
-/* Pack nominal, for the charge bar: 6S between empty and full. */
-/* The 6 is PLANT.cells in src/native/plant.c, restated here because the ABI
- * does not report it. These are the HUD gauge's ends only: the physics reads
- * its own constant and never these. Change the plant's cell count and this
- * has to follow, or the bar lies while the flight is right. */
-const PLANT_CELLS = 6;
-const PACK_EMPTY_V = PLANT_CELLS * 3.3;
-const PACK_FULL_V = PLANT_CELLS * 4.2;
-/* Full throttle rotor speed on a charged pack, measured off the compiled
- * module at 25,570 RPM. Only the lens shake reads it, to turn motor speed
- * into a 0 to 1 imbalance scale, so a few percent either way is invisible. */
-const FULL_THROTTLE_RPM = 25600;
+/*
+ * WHAT EACH PLANT IS, for the charge bar, the OSD and the lens shake: its
+ * series cells (PLANT.cells in src/native/plant.c) and its full throttle rotor
+ * speed on a charged pack, measured off the compiled module. Restated here
+ * because the ABI does not report them, keyed by the airframe's simId because
+ * that is what selects the plant. The physics reads its own constants and
+ * never these; change a plant and its row has to follow, or the bar lies
+ * while the flight is right.
+ *
+ * Plant 0, the five inch: 6S, 25,570 RPM. Plant 1, the whoop (the shell's
+ * again since 2026-10-09): 1S, 74,800 RPM. Only the lens shake and the
+ * flight log read the speed, to turn motor speed into a 0 to 1 scale, so a
+ * few percent either way is invisible.
+ */
+const PLANT_FACTS = {
+  0: { cells: 6, fullRpm: 25600 },
+  1: { cells: 1, fullRpm: 74800 },
+};
+const plantFacts = (airframeId) => PLANT_FACTS[simIdFor(airframeId)] ?? PLANT_FACTS[0];
 
 const uiRoot = document.getElementById('ui');
 
@@ -513,6 +544,9 @@ async function loadMap(shell, id, loading, options) {
   await yieldToPaint();
   const map = await mod.buildMap(shell, (f) => loading.progress('world', f), options);
   map.graphics = normalizeGraphics(options && options.quality);
+  /* The Gem look, once a world is built: colours and vertex tones only, nothing per frame (look.js). */
+  applyLook(map.scene, shell.quad);
+  map.shadowsOff = Boolean(options && options.quality && options.quality.shadowsOff);
   /* The published map a built world was made from, or null for the
    * pilot's own. The world does not say, because to it a document is a
    * document, and the shell has to tell two of them apart: see
@@ -715,6 +749,44 @@ export async function boot({ loading, bootStart, mapId }) {
       })(),
     }),
   });
+  
+  /* Track total session flight time for the support prompt trigger at 20 minutes */
+  let sessionFlightTimeMs = 0;
+  let lastFlightTick = 0;
+  let sessionTimePromptShown = false;
+  /* Set in the air when the clock passes the line, and spent on the next
+   * pause or results screen, which is where the prompt is shown. */
+  let sessionTimePromptDue = false;
+  const SESSION_TIME_PROMPT_MS = 20 * 60 * 1000; /* 20 minutes */
+  /*
+   * THE PROMPT ON SCREEN, and the screen it was shown on. It goes the
+   * moment that screen is left: "never during a run", and a pilot on a
+   * radio or a pad has no pointer to close it with, so a prompt left up
+   * over the flight would stay there. Settings on it opens the Advanced
+   * room, where the switch for these is. A prompt that fails says nothing
+   * and stops nothing: it is shown from the frame loop and from the post
+   * path, and a throw in either is a fault or a lap reported as not posted.
+   */
+  let supportPrompt = null;
+  let supportPromptScreen = null;
+  const offerSupport = (trigger) => {
+    /* A lap posts while the pilot may already be flying again. */
+    if (ui.settings.supportPrompts === false || ui.screen === 'flight') {
+      return;
+    }
+    try {
+      const prompt = showSupportPrompt(trigger, { onSettings: () => { ui.act('advanced'); } });
+      if (prompt) {
+        if (supportPrompt) {
+          supportPrompt.remove();
+        }
+        supportPrompt = prompt;
+        supportPromptScreen = ui.screen;
+      }
+    } catch (promptError) {
+      console.warn('support prompt', promptError);
+    }
+  };
   /*
    * The last flush, sent when the page goes away. pagehide rather than
    * unload, because a browser that put this tab in its back/forward cache
@@ -1065,6 +1137,16 @@ export async function boot({ loading, bootStart, mapId }) {
     loading.progress('sim', simProgress[0], simProgress[1]);
   }
   const sim = await loadSim(await simBytes);
+  /*
+   * THE PHYSICS VERSION, NAMED ON EVERY TICKET. The hash of the bytes this
+   * page just instantiated, taken off the frame loop (the module is already
+   * in hand, and nothing waits on it), plus the aircraft in the hangar. A
+   * flight feel tune is only worth reading beside the physics it was flown
+   * on, and the deploy stamp alone cannot say: it moves on every deploy,
+   * physics or not. See setTicketMeta in src/share/bugs.js.
+   */
+  setTicketMeta({ airframeOf: () => ui.settings.airframe });
+  simBytes.then((bytes) => wasmFingerprint(bytes)).then((hash) => setTicketMeta({ wasm: hash }));
   if (typeof sim.e.sim_deflect !== 'function') {
     throw new Error('sim.wasm does not export sim_deflect');
   }
@@ -1242,7 +1324,7 @@ export async function boot({ loading, bootStart, mapId }) {
     : {});
   try {
     view = await loadMap(shell, ui.settings.map, loading, {
-      quality: ui.settings.graphics,
+      quality: qualityOf(ui.settings),
       renderScale: renderScaleOf(ui.settings),
       hideSponsors: replayClean,
       ...worldDocument(ui.settings.map),
@@ -1262,7 +1344,7 @@ export async function boot({ loading, bootStart, mapId }) {
     ui.settings.map = 'custom';
     ui.renderMenu();
     view = await loadMap(shell, 'custom', loading, {
-      quality: ui.settings.graphics,
+      quality: qualityOf(ui.settings),
       renderScale: renderScaleOf(ui.settings),
       hideSponsors: replayClean,
     });
@@ -1916,7 +1998,13 @@ export async function boot({ loading, bootStart, mapId }) {
       worldReportPtr = sim.e.malloc(11 * 8);
     }
     sim.e.sim_world_report(worldReportPtr);
-    worldReport.set(new Float64Array(sim.e.memory.buffer, worldReportPtr, 11));
+    /* One view, rebuilt only when the module's memory grows and the buffer changes identity: this runs every step. */
+    const buf = sim.e.memory.buffer;
+    if (worldReportView === null || worldReportViewBuf !== buf) {
+      worldReportView = new Float64Array(buf, worldReportPtr, 11);
+      worldReportViewBuf = buf;
+    }
+    worldReport.set(worldReportView);
     return worldReport;
   }
 
@@ -2019,6 +2107,12 @@ export async function boot({ loading, bootStart, mapId }) {
       trickWeight = runWeight;
     } else if (trickWeight !== runWeight) {
       trickWeightMixed = true;
+    }
+    /* One trick landed on a quad that grips the air or pulls differently and
+     * the run is not the machine the board compares, whatever the rest of it
+     * was flown on. */
+    if (offBoardTune(runAirGrip, runMotorKv)) {
+      trickTuned = true;
     }
   }
   /*
@@ -2604,7 +2698,18 @@ export async function boot({ loading, bootStart, mapId }) {
      * a slider with a different meaning and are orphaned the same way.
      */
     const gravPart = runGravityScale === 1 ? '' : `.g${Math.round(runGravityScale * 100)}`;
-    return `webfpv.best.${h.toString(16)}.${runVoltage.toFixed(2)}${style}${craft}${gravPart}`;
+    /*
+     * AND THE TWO FLIGHT FEEL SCALES, on the same rule and for the same
+     * reason: a lap on a quad that grips the air or pulls differently is a
+     * lap on another machine, and a personal best filed beside the stock
+     * one would mean nothing. Only when off 1.0, so every key that was ever
+     * written stays exactly where it is: `.a85` is Air grip 85, `.k110` is
+     * Motor power 110. Keyed on the multiple the module holds, like the
+     * weight, so the key names the machine and not the menu.
+     */
+    const airPart = runAirScale === 1 ? '' : `.a${Math.round(runAirScale * 100)}`;
+    const kvPart = runKvScale === 1 ? '' : `.k${Math.round(runKvScale * 100)}`;
+    return `webfpv.best.${h.toString(16)}.${runVoltage.toFixed(2)}${style}${craft}${gravPart}${airPart}${kvPart}`;
   }
 
   let mode = 'title'; /* title, flight, paused, results */
@@ -2947,6 +3052,8 @@ export async function boot({ loading, bootStart, mapId }) {
    */
   const worldReport = new Float64Array(11);
   let worldReportPtr = 0;
+  let worldReportView = null;
+  let worldReportViewBuf = null;
   const frameReport = emptyWorldReport(new Float64Array(11));
   const passStats = {
     steps: 0,
@@ -3031,6 +3138,44 @@ export async function boot({ loading, bootStart, mapId }) {
    */
   let runWeight = WEIGHT_STOCK;
   let runGravityScale = 1;
+  /*
+   * FLIGHT FEEL TUNING'S TWO SCALES, held on the Weight's rule and for its
+   * reason: the sliders are on the flight screen so a pilot can feel them
+   * arrive, so they apply at once (see the block after the Weight in
+   * applySettings) and the cost is paid on the lap. Each is the slider value
+   * the module is flying and the multiple it was handed, and both start at
+   * the module's own defaults, 100 and 1.0, which is what a pilot who never
+   * turns the mode on flies forever. Nothing is ever pushed to the module
+   * while they equal what is wanted, so a stock flight makes no call at all.
+   */
+  let runAirGrip = AIR_GRIP_STOCK;
+  let runAirScale = 1;
+  let runMotorKv = MOTOR_KV_STOCK;
+  let runKvScale = 1;
+  /* How many times either export has been called, for the harness: a stock
+   * flight must make none (window.__air). */
+  let tuneCalls = 0;
+  function pushTune(name, scale) {
+    if (typeof sim.e[name] !== 'function') {
+      return false;
+    }
+    tuneCalls += 1;
+    return sim.e[name](scale) === SIM_OK;
+  }
+  /*
+   * AND WHAT THE QUESTION AT THE END OF A FLIGHT IS ABOUT: the sim time spent
+   * in the air on each combination of the three sliders that was off stock,
+   * this flight (src/share/tune.js). Fed once a frame from the physics
+   * branch, read by the Ui when a flight ends, cleared when a new one starts.
+   * Stock airtime is never logged, so a pilot who is not tuning pays for one
+   * comparison a frame.
+   */
+  const tuneLog = new TuneLog();
+  let tuneLogKey = '';
+  let tuneLogMeta = null;
+  /* Whether a trick of the freestyle run was landed off the stock air or
+   * motors, which keeps the run off the public board. See noteTrickWeight. */
+  let trickTuned = false;
   /*
    * The weight the scored freestyle run's tricks were landed at: null
    * before the first, and `trickWeightMixed` once one lands at another.
@@ -3907,6 +4052,29 @@ export async function boot({ loading, bootStart, mapId }) {
   const setDowns = [];
 
   /*
+   * AUTO RESET, bug-918a8c99. When the setting is on, a craft that has gone
+   * down (set down by the crash rule or by stuckTick, or turtled on its back)
+   * is put back on the start line with reset(), exactly what R does, once
+   * autoResetS has run out. The deadline is on the SIM clock, in ms, so a
+   * dropped frame or a paused game moves nothing, and -1 is not armed.
+   * autoResetKind says what to watch for the pilot saving it: 'set' is
+   * cancelled by the craft leaving the ground again, 'turtle' by the craft
+   * no longer being on its back or the flip starting. The frame's cost is
+   * one compare, and only while armed.
+   */
+  let autoResetAtMs = -1;
+  let autoResetKind = '';
+  /* The deadline has passed and the reset is taken at the next frame's top. */
+  let autoResetDue = false;
+  function armAutoReset(kind) {
+    if (!ui.settings.autoReset) {
+      return;
+    }
+    autoResetAtMs = simTimeMs + ui.settings.autoResetS * 1000;
+    autoResetKind = kind;
+  }
+
+  /*
    * A CRASH IS A RESET, AND A RESET IS NOT A TAKEOFF. The keys and the thumb sticks are put at idle when a craft is
    * set down (resetKeyboardSticks: a recovery that left them high would relaunch the wreck by itself), and a radio's
    * gimbals cannot be put anywhere, because the hand is on them. So a craft set down with the right stick off centre
@@ -3939,6 +4107,11 @@ export async function boot({ loading, bootStart, mapId }) {
      * was waiting to pay, and a skim is never paid for the wall it ended
      * on. The trick scorer is told only where it always was. */
     counterCrash(false);
+    /* The pilot's own X is not a crash. A crash and a stuck craft are. If no
+     * spot is found below, reset() puts the craft on the line and disarms. */
+    if (why !== 'x') {
+      armAutoReset('set');
+    }
     const from = haveRecoverFrom ? recoverFrom : null;
     /* On a map with traffic, never in a car's path: a landed craft is not
      * stepped, and the car would drive through it. The verge instead, the
@@ -4016,8 +4189,14 @@ export async function boot({ loading, bootStart, mapId }) {
   const STUCK_SPEED = 0.3;
   const STUCK_RATE = 1.5;
   let stuckSinceMs = -1;
+  /* Freestyle leaves a crash to the contact solver unless the pilot asked
+   * for a recovery: Automatic crash recovery, or Auto reset, which arms on
+   * the set down. */
+  function crashRecoveryOn() {
+    return view.mode !== 'freestyle' || ui.settings.autoCrashRecovery || ui.settings.autoReset;
+  }
   function stuckTick() {
-    if (view.mode === 'freestyle' && !ui.settings.autoCrashRecovery) {
+    if (!crashRecoveryOn()) {
       stuckSinceMs = -1;
       return;
     }
@@ -4056,6 +4235,43 @@ export async function boot({ loading, bootStart, mapId }) {
         : 'Stuck, so you were set down nearby.',
       untilMs: performance.now() + 2800,
     };
+  }
+
+  /* See autoResetAtMs. Called once a frame, after crashResetTick has had its
+   * chance to arm it and before turtle can take the craft. */
+  function autoResetTick() {
+    if (!ui.settings.autoReset || poseLock || launchStaging) {
+      autoResetAtMs = -1;
+      autoResetDue = false;
+      return;
+    }
+    /* A pause (Esc, a menu, a radio unplugged) holds the deadline rather
+     * than dropping it: the sim clock it is on does not move while paused,
+     * and a dropped deadline never came back for a craft set down. */
+    if (mode !== 'flight' || ui.screen !== 'flight') {
+      return;
+    }
+    if (autoResetAtMs < 0) {
+      /* A craft turtled by a soft crash was never set down, so nothing armed
+       * it. Arm it as it lands on its back. */
+      if (turtleWait && !turtleFlip.active) {
+        armAutoReset('turtle');
+      }
+      return;
+    }
+    if (autoResetKind === 'set' ? !landed : (!turtleWait || turtleFlip.active)) {
+      autoResetAtMs = -1;
+      return;
+    }
+    if (simTimeMs >= autoResetAtMs) {
+      /* Taken at the top of the next frame, where R and the restart switch
+       * are, not here: this runs after the frame has already placed the
+       * craft and seeded the race and the ghost from it, so a reset here
+       * left one frame drawn at the crash and the race sweeping from the
+       * crash to the start line. */
+      autoResetAtMs = -1;
+      autoResetDue = true;
+    }
   }
 
   /*
@@ -4127,7 +4343,7 @@ export async function boot({ loading, bootStart, mapId }) {
   /* Whether a crash read now would be taken: the step loop asks it before
    * it steps, so a crash step ends the loop only when the reset follows. */
   function crashCanReset() {
-    return (view.mode !== 'freestyle' || ui.settings.autoCrashRecovery)
+    return crashRecoveryOn()
       && mode === 'flight' && ui.screen === 'flight' && !poseLock && !launchStaging && !landed
       && !turtleFlip.active;
   }
@@ -4285,6 +4501,9 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     eggFwd.set(0, 0, -1).applyQuaternion(fpvQuat);
     for (const mark of view.marks) {
+      if (!shouldFindMark(mark)) {
+        continue;
+      }
       if (glimpse && !marksSeen.has(mark.slug) && glimpsesMark(fpvPos, eggFwd, mark, view.colliders)) {
         markSeen(mark);
       }
@@ -4313,6 +4532,72 @@ export async function boot({ loading, bootStart, mapId }) {
     import('./art/partnermark.js')
       .then((m) => ui.partnerFound(partner, m.partnerDataUrl(partner)))
       .catch(() => ui.partnerFound(partner, null));
+  }
+
+  /*
+   * THE STICKERS (`stickers` in src/maps/README.md): decals a map's author
+   * cut from a sticker sheet and gave an achievement, found by the same
+   * seesMark as a partner's mark with the same camera. A sticker is found
+   * once in a browser, not once a run, because finding it is the
+   * achievement: the stamp under its own key (src/share/stamps.js) is the
+   * record, and a sticker this browser has stamped is not asked about
+   * again. Nothing goes to the board: the board's mark words are the
+   * partners', and a sticker is nobody's numbers.
+   *
+   * THE COST, for the latency rule: a map's stickers are asked every third
+   * frame, a frame after the partners' marks, and almost every one stops
+   * at seesMark's range test, three subtractions and a compare. A hundred
+   * of them is a few hundred multiplications a check; the sight line is
+   * walked only for a sticker the pilot is close to and looking at. The
+   * found set is read from storage once per map, and a find writes one
+   * stamp and draws one sticker into a small canvas for the panel.
+   */
+  let stickersView = null;
+  let stickersFound = new Set();
+  function findStickers() {
+    if (stickersView !== view) {
+      stickersView = view;
+      stickersFound = stampedAmong(view.stickers.map((s) => s.key));
+    }
+    if (stickersFound.size >= view.stickers.length) {
+      return;
+    }
+    eggFwd.set(0, 0, -1).applyQuaternion(fpvQuat);
+    for (const s of view.stickers) {
+      if (stickersFound.has(s.key) || !seesMark(fpvPos, eggFwd, s, view.colliders)) {
+        continue;
+      }
+      stickersFound.add(s.key);
+      writeStamp(s.key);
+      ui.stickerFound({
+        word: s.achievement, name: s.name, got: stickersFound.size, total: view.stickers.length,
+        picture: stickerPicture(s),
+      });
+      /* One a check: a second find in the same frame would replace this
+       * one's callout before anybody read it. */
+      return;
+    }
+  }
+  /* The sticker as cut from its sheet, fitted in a square canvas for the
+   * found panel, or null while the sheet has not decoded. */
+  const STICKER_PANEL_PX = 256;
+  function stickerPicture(s) {
+    const img = s.sheet && s.sheet.image;
+    if (!img || !img.naturalWidth) {
+      return null;
+    }
+    const sx = s.crop.x * img.naturalWidth;
+    const sy = s.crop.y * img.naturalHeight;
+    const sw = Math.max(1, s.crop.w * img.naturalWidth);
+    const sh = Math.max(1, s.crop.h * img.naturalHeight);
+    const k = Math.min(STICKER_PANEL_PX / sw, STICKER_PANEL_PX / sh);
+    const cv = document.createElement('canvas');
+    cv.width = STICKER_PANEL_PX;
+    cv.height = STICKER_PANEL_PX;
+    const g = cv.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(img, sx, sy, sw, sh, (STICKER_PANEL_PX - sw * k) / 2, (STICKER_PANEL_PX - sh * k) / 2, sw * k, sh * k);
+    return cv;
   }
 
   /*
@@ -4370,6 +4655,8 @@ export async function boot({ loading, bootStart, mapId }) {
      * next fault is a new one and deserves to be reported in its turn. See
      * the frame boundary. */
     frameFault = null;
+    autoResetAtMs = -1;
+    autoResetDue = false;
     /* A new run, so the mark is there to be found again, and the partners'. */
     eggFound = false;
     marksFound.clear();
@@ -4438,6 +4725,10 @@ export async function boot({ loading, bootStart, mapId }) {
     score.reset();
     trickWeight = null;
     trickWeightMixed = false;
+    trickTuned = false;
+    /* A new flight is a new question: what was flown last time is not what
+     * the end of this one is asked about. */
+    tuneLog.clear();
     trickDetector.restart();
     ui.resetScore();
     /* The counter's gaps and close calls from nothing. */
@@ -4482,9 +4773,56 @@ export async function boot({ loading, bootStart, mapId }) {
   let swapInFlight = false;
   let finishLoadingOnFrame = true;
 
+  /*
+   * THE RACE LINE: a whoop room's trail of crumbs through the next gates
+   * (src/render/raceline.js). The Race line setting, off by default; only a
+   * room has one, so on every other world this does nothing. Nothing is
+   * built or solved while it is off. The notice says what the trail is doing,
+   * so a pilot who turns it on and sees nothing yet knows why: it is being
+   * worked out, or this track has no line.
+   */
+  let raceLineSaid = '';
+  function raceLineNotice(st) {
+    const said = st.wanted ? st.phase : '';
+    if (said === raceLineSaid) {
+      return;
+    }
+    raceLineSaid = said;
+    if (said === 'solving') {
+      notice = { text: 'Working out the race line.', untilMs: performance.now() + 2800 };
+    } else if (said === 'refused') {
+      notice = { text: st.reason, untilMs: performance.now() + 4800 };
+    }
+  }
+  /* Next gate cue, set on the view when the setting or the world changes,
+   * so a world built with the cue on does not light its gate on the title,
+   * the launch card and the results when the pilot has it off. The flight
+   * frame still sets it too (updateTargetLock), and both are one compare. */
+  function applyGuidance(s) {
+    if (view && view.setGuidance) {
+      view.setGuidance(s.nextGateCue !== false);
+    }
+  }
+  function applyRaceLine(s) {
+    const trail = view && view.raceLine;
+    if (!trail) {
+      return;
+    }
+    if (!trail.heard) {
+      trail.heard = true;
+      /* Never solve inside a flying frame: see step in render/raceline.js. */
+      trail.canSolve = () => !(mode === 'flight' && ui.screen === 'flight');
+      raceLineSaid = '';
+      trail.listen(raceLineNotice);
+    }
+    view.setRaceLine(Boolean(s.raceLine));
+  }
+
   function adoptLoadedView(keepPlace, stayMode, stayScreen) {
     /* A new view is a new set of solids, whether or not the place is kept. */
     uploadPlantWorld();
+    applyRaceLine(ui.settings);
+    applyGuidance(ui.settings);
     /* And a new GPU cost: the old world's average says nothing about this
      * one's. See reset in gpugate.js. */
     gpuGate.reset(true);
@@ -4499,6 +4837,7 @@ export async function boot({ loading, bootStart, mapId }) {
     if (!keepPlace) {
       race = new Race(view.gates, view.trackClass ?? 'full');
       race.setWeight(runWeight);
+      race.setTuned(offBoardTune(runAirGrip, runMotorKv));
       race.setRecordKey(recordKey());
       ui.setBest(race.bestMs, view.mode);
       adoptSpawn();
@@ -4562,6 +4901,7 @@ export async function boot({ loading, bootStart, mapId }) {
     return view
       && wantId === view.id
       && wantQ === view.graphics
+      && Boolean(ui.settings.shadowsOff) === Boolean(view.shadowsOff)
       && wantedCourseKey(wantId) === loadedCourseKey(view);
   }
 
@@ -4613,6 +4953,7 @@ export async function boot({ loading, bootStart, mapId }) {
     await yieldToPaint();
     const previous = view.id;
     const previousGraphics = view.graphics;
+    const previousShadowsOff = Boolean(view.shadowsOff);
     /*
      * The published map each side of the swap flies, when it is the built
      * world. The failure below names the one that would not build by its
@@ -4631,7 +4972,7 @@ export async function boot({ loading, bootStart, mapId }) {
     applyPixelRatio(shell, wantQ, renderScaleOf(ui.settings));
     try {
       view = await loadMap(shell, wantId, loading, {
-        quality: wantQ,
+        quality: qualityOf(ui.settings),
         renderScale: renderScaleOf(ui.settings),
         hideSponsors: replayClean,
         ...worldDocument(wantId),
@@ -4655,12 +4996,13 @@ export async function boot({ loading, bootStart, mapId }) {
       };
       ui.settings.map = previous;
       ui.settings.graphics = previousGraphics;
+      ui.settings.shadowsOff = previousShadowsOff;
       sharedMap = previousShared;
       ui.setSharedMap(sharedMap);
       try {
         applyPixelRatio(shell, previousGraphics, renderScaleOf(ui.settings));
         view = await loadMap(shell, previous, loading, {
-          quality: previousGraphics,
+          quality: qualityOf(ui.settings),
           renderScale: renderScaleOf(ui.settings),
           hideSponsors: replayClean,
           ...worldDocument(previous),
@@ -5161,10 +5503,13 @@ export async function boot({ loading, bootStart, mapId }) {
    * shipped hover, and the quad fell whenever W came up. Called from
    * applySettings, which every settings write reaches, the weight slider in
    * flight included, and from the run start, where the pack is latched.
+   * Motor power moves hover as well, by about 1 / kV, so the spring reads the
+   * percent the module is actually flying (runMotorKv, 100 until the tuning
+   * mode has moved it).
    */
   function syncKeyHover() {
     input.setKeyHover(hoverStickPercent(
-      normaliseRates(ui.settings.rates).throttleCap, runAirframe, runWeight, runVoltage,
+      normaliseRates(ui.settings.rates).throttleCap, runAirframe, runWeight, runVoltage, runMotorKv,
     ) / 100);
   }
 
@@ -5397,6 +5742,81 @@ export async function boot({ loading, bootStart, mapId }) {
        * time the race hears it, before anything can be flown. */
       race.setWeight(runWeight);
     }
+    /*
+     * FLIGHT FEEL TUNING: AIR GRIP AND MOTOR POWER, on the Weight's rule and
+     * straight after it, for the same reason (read the note at runWeight).
+     * They apply at once, and a lap the change lands inside is voided,
+     * because a lap flown on two different quads is not a lap flown on
+     * either. Between laps, on the start line, or in freestyle, nothing is
+     * interrupted.
+     *
+     * THE STOCK RULE, which is the whole safety of the feature: what is wanted
+     * is effectiveTune(s), and with the mode off that is 100 and 100 whatever
+     * is stored, so a pilot who never turns it on, or turns it on and touches
+     * nothing, asks for exactly the 1.0 and 1.0 the module already holds. The
+     * test is on the SCALE, so equal means no call at all: stock flight does
+     * not so much as invoke the exports.
+     *
+     * Guarded because an older dist/sim.wasm predates the export. On such a
+     * build the slider moves and the plant does not, so the guard also puts
+     * the stored value back to what the module is flying: a record must not
+     * be filed under an air or a motor the module never flew.
+     */
+    {
+      const want = effectiveTune(s);
+      const wantAir = airScaleFor(want.airGrip);
+      const wantKv = kvScaleFor(want.motorKv);
+      let moved = false;
+      if (wantAir !== runAirScale) {
+        if (pushTune('sim_set_air', wantAir)) {
+          runAirGrip = want.airGrip;
+          runAirScale = wantAir;
+          moved = true;
+        } else {
+          s.airGrip = runAirGrip;
+        }
+      }
+      if (wantKv !== runKvScale) {
+        if (pushTune('sim_set_motor_kv', wantKv)) {
+          runMotorKv = want.motorKv;
+          runKvScale = wantKv;
+          moved = true;
+        } else {
+          s.motorKv = runMotorKv;
+        }
+      }
+      if (moved) {
+        if (race.currentLapMs(simTimeMs) != null) {
+          race.voidLap('Feel changed\nLap voided', performance.now());
+        }
+        /* Motor power moves where hover sits on the stick, and the keyboard's
+         * throttle springs back to it: see syncKeyHover. */
+        syncKeyHover();
+      }
+      /* Stamped on every lap counted from here on, after the void above, so
+       * the lap the change landed in is thrown away and the next is counted
+       * under the new machine. */
+      race.setTuned(offBoardTune(runAirGrip, runMotorKv));
+      /* What the airtime is filed under from here on: the combination the
+       * module is flying, and only while the mode is on and something is off
+       * stock. Weight counts, because it is one of the three the question is
+       * about, but only inside the mode: a pilot who never turned tuning on
+       * is never asked. */
+      if (s.feelTuning && !(runWeight === WEIGHT_STOCK && runAirGrip === AIR_GRIP_STOCK && runMotorKv === MOTOR_KV_STOCK)) {
+        tuneLogKey = tuneKey(runAirframe, runWeight, runAirGrip, runMotorKv);
+        tuneLogMeta = {
+          airframe: runAirframe,
+          weight: runWeight,
+          airGrip: runAirGrip,
+          motorKv: runMotorKv,
+          gravityScale: runGravityScale,
+        };
+      } else {
+        tuneLogKey = '';
+        tuneLogMeta = null;
+      }
+      ui.paintAir();
+    }
     race.setRecordKey(recordKey());
     ui.setBest(race.bestMs, view.mode);
     if (!worldMatchesSettings()) {
@@ -5411,6 +5831,14 @@ export async function boot({ loading, bootStart, mapId }) {
      * dump under the one id, so the id stays 'custom' while the dump that
      * should fly changes. See dumpFor.
      */
+    /* Or a tune from the board rewriting Your edits' dump under the same id
+     * and aircraft: forget whose dump is loaded, so it is loaded again. */
+    if (ui.tuneDumpChanged) {
+      ui.tuneDumpChanged = false;
+      if (s.tune === 'custom') {
+        dumpFor = null;
+      }
+    }
     if (s.tune !== menuTune || (s.tune === 'custom' && dumpFor !== s.airframe)) {
       menuTune = s.tune;
       configLoadWait = swapTune(s.tune).catch((e) => {
@@ -5515,6 +5943,8 @@ export async function boot({ loading, bootStart, mapId }) {
     audio.setLevel(s.volume / 10);
     audio.setEnabled(s.sound);
     applyMix(s);
+    applyRaceLine(s);
+    applyGuidance(s);
     /* Last, after the weight, the aircraft, the pack and the rates above
      * have all settled on what the run is flying. */
     syncKeyHover();
@@ -5681,7 +6111,14 @@ export async function boot({ loading, bootStart, mapId }) {
           text: 'Practice laps stay off the public board.\nSet Laps to 1, 3 or 5 and fly it again.',
           untilMs: performance.now() + 3600,
         }
-        : { text: 'No clean lap to post.', untilMs: performance.now() + 2800 };
+        : (race.hasTunedLaps()
+          /* The laps are there and were left out on purpose: say so rather
+           * than telling a pilot who flew them that there is no clean lap. */
+          ? {
+            text: 'Laps flown on Air grip or Motor power off 100 stay off the public board.\nSet both back to 100 and fly it again.',
+            untilMs: performance.now() + 3800,
+          }
+          : { text: 'No clean lap to post.', untilMs: performance.now() + 2800 });
       return;
     }
     let name = readPilotName();
@@ -5771,7 +6208,15 @@ export async function boot({ loading, bootStart, mapId }) {
           throw e;
         }
       }
+      /* Read before the write replaces it. writePostedBest answers true for
+       * a lap stored AND for one the stored best already beats, so whether
+       * this lap beat the pilot's own posted best is worked out here. Until
+       * 2026-10-05 readPostedBest was not imported, so this line threw with
+       * the lap already on the board and the pilot was told it had not
+       * posted (bug-7f783182). */
+      const prevBest = readPostedBest(trackIdNow);
       writePostedBest(trackIdNow, fastest);
+      const newBest = prevBest != null && Math.round(fastest) < prevBest;
       /* Under the id it was stored against, which is the one the pilot flew
        * it on, and under the live one too when the seat moved: a pending lap
        * left behind a heal would be offered for upload again forever. */
@@ -5793,6 +6238,12 @@ export async function boot({ loading, bootStart, mapId }) {
         untilMs: performance.now() + 3600,
       };
       ui.markTimePosted(posted);
+      /* Show support prompt on new personal best, if enabled. The lap is on
+       * the board by here, so a prompt that fails says nothing (offerSupport):
+       * the catch below would tell the pilot the time had not posted. */
+      if (newBest) {
+        offerSupport('pb');
+      }
     } catch (e) {
       notice = { text: `Could not post that time.\n${e.message ?? e}`, untilMs: performance.now() + 3600 };
     }
@@ -5858,6 +6309,9 @@ export async function boot({ loading, bootStart, mapId }) {
      * board labels a run with it, and a run landed at two has none. */
     summary.weight = clampWeight(trickWeight ?? runWeight, null);
     summary.weightMixed = trickWeightMixed;
+    /* A trick landed off the stock air or motors keeps the whole run off the
+     * public board, and the results row says so. See noteTrickWeight. */
+    summary.tuned = trickTuned;
     ui.showFreestyleResults(summary);
   }
 
@@ -5925,6 +6379,21 @@ export async function boot({ loading, bootStart, mapId }) {
     if (trickWeightMixed) {
       notice = {
         text: 'The weight changed during this run, so it has no one weight to go on the board with.\nFly it again at one weight.',
+        untilMs: performance.now() + 4200,
+      };
+      return;
+    }
+    /*
+     * AND A RUN FLOWN ON THE TUNED AIR OR MOTORS IS NOT POSTED. Weight is
+     * labelled on the board; Air grip and Motor power are not, so a run
+     * landed on them would sit beside stock runs looking identical. The
+     * results row greys itself for the same reason (summary.tuned,
+     * showFreestyleResults), so this is the backstop for a press that
+     * reaches it some other way.
+     */
+    if (summary.tuned || trickTuned) {
+      notice = {
+        text: 'Tricks landed on Air grip or Motor power off 100 stay off the public board.\nSet both back to 100 and fly it again.',
         untilMs: performance.now() + 4200,
       };
       return;
@@ -6179,62 +6648,94 @@ export async function boot({ loading, bootStart, mapId }) {
   /*
    * The first flight's prompts.
    *
-   * THREE LINES, FIRED BY WHAT THE PILOT DOES, not by a clock. The banner
-   * already carries the launch prompt and the lap splits, and the guide
-   * arrows are already painted on the grass, so a first run needs nothing
-   * new: it needs the three sentences that carry somebody from a hover to a
-   * gate, and then it needs to get out of the way.
+   * A HANDFUL OF LINES PER KIND OF PLACE, FIRED BY WHAT THE PILOT DOES, not
+   * by a clock: a five inch race track, a whoop room and a freestyle world
+   * each get theirs once, at the first launch into that kind, by any door
+   * (see src/ui/firstflight.js for the words and for why it starts at launch
+   * and not on a menu row). The banner already carries the launch prompt and
+   * the lap splits, and the guide arrows are already painted on the grass, so
+   * a first run needs nothing new: it needs the sentences that carry somebody
+   * from a hover to a gate, or from a hover to a flip, and then it needs to
+   * get out of the way.
    *
    * It retires itself. Once a lap is on the board, or three gates are behind
-   * them, the pilot is flying and the lap splits are the more useful message.
-   * Retiring here rather than on a timer means a slow first lap is never cut
-   * off mid prompt and a fast one is never nagged.
+   * them, the pilot is flying and the lap splits are the more useful message;
+   * a freestyle world has no gates, so it retires on airtime. Retiring here
+   * rather than on a timer means a slow first lap is never cut off mid
+   * prompt and a fast one is never nagged.
    */
   /*
    * THE FIRST FLIGHT TOLD EVERY PILOT TO PRESS A KEY THEY MIGHT NOT HAVE.
    *
-   * These three lines are the only instruction this simulator ever gives,
-   * and they named the up arrow, R and Escape to a pilot who could be
-   * holding a radio or a phone. A thumb pilot in landscape has no arrow key
-   * and no Escape, so the one screen meant to teach the controls was
-   * describing somebody else's.
+   * These lines are the only instruction this simulator ever gives, and
+   * they named the up arrow, R and Escape to a pilot who could be holding a
+   * radio or a phone. A thumb pilot in landscape has no arrow key and no
+   * Escape, so the one screen meant to teach the controls was describing
+   * somebody else's.
    *
    * It is the same root as the feel reports that prompted this round: three
    * transducers reach this shell and the shell kept assuming one of them.
-   * Read once per prompt rather than cached, because a radio can be plugged
-   * in between the line that says "arrow" and the line that says "stick".
+   * The device is read every frame the guide is up rather than once, because
+   * a radio can be plugged in between the line that says "arrow" and the
+   * line that says "stick". The words are rebuilt only when the step, the
+   * device, the stick mode or the flight mode changes, which is the last
+   * time the pilot could have seen a different string, so a guided frame
+   * builds no string: it asks the input layer who is flying, as it always
+   * did, and compares five fields.
    */
-  const guidedWords = () => {
-    if (input.isTouchPrimary()) {
-      return {
-        nose: 'Push the right plate up, then throttle on the left',
-        again: 'Pause, then Restart puts you back on the line',
-      };
+  const guideMemo = {
+    kind: '', step: null, device: '', stickMode: 0, angle: false, text: '',
+  };
+  const guideLine = (kind, step) => {
+    const device = input.isTouchPrimary() ? 'touch' : (input.firstGamepad() ? 'pad' : 'keys');
+    const stickMode = ui.settings.stickMode;
+    const m = guideMemo;
+    if (m.kind !== kind || m.step !== step || m.device !== device
+      || m.stickMode !== stickMode || m.angle !== angleModeOn) {
+      m.kind = kind;
+      m.step = step;
+      m.device = device;
+      m.stickMode = stickMode;
+      m.angle = angleModeOn;
+      m.text = textOf(kind, step, { device, stickMode, angle: angleModeOn });
     }
-    if (input.firstGamepad()) {
-      return {
-        nose: 'Ease the right stick forward, then throttle',
-        again: 'R puts you back on the line. Escape pauses',
-      };
-    }
-    return {
-      nose: 'Tip forward with the up arrow, then throttle',
-      again: 'R puts you back on the line. Escape pauses',
-    };
+    return m.text;
+  };
+  /*
+   * The kind the armed guide is for, or '' when none is armed or the run on
+   * screen is not that kind's. A guide armed for a race track must not read
+   * out over a whoop room because the aircraft was changed in the pause menu
+   * and the run restarted, so it says nothing while the two disagree. It is
+   * hidden and not retired: ui.armGuide decides afresh at every launch from
+   * the same two facts this compares, and a frame during a world swap sees
+   * the old world's race for a moment, which must not use the guide up.
+   */
+  const guidedKindNow = (race) => {
+    const kind = ui.guided;
+    return kind && guideKind(race.freestyle, ui.settings.airframe) === kind ? kind : '';
   };
   const guidedPrompt = (race) => {
-    if (race.freestyle || race.lastLapMs != null || race.next >= 3) {
+    const kind = guidedKindNow(race);
+    if (!kind) {
+      return '';
+    }
+    const step = stepOf(kind, {
+      next: race.next,
+      lapRunning: race.lapStartMs != null,
+      lapDone: race.lastLapMs != null,
+      airMs: airtimeMs,
+    });
+    if (step < 0) {
       ui.guided = false;
       return '';
     }
-    const words = guidedWords();
-    if (race.next === 0) {
-      return `${words.nose}\nThe green gate starts your lap`;
-    }
-    if (race.next === 1) {
-      return 'Through. The next gate turns green\nRed is the same gate, wrong side';
-    }
-    return `Gate by gate. ${words.again}`;
+    return guideLine(kind, step);
+  };
+  /* The line a parked quad gets while a guide is armed, or '' for the usual
+   * prompt. Launch control is the pilot's own switch and keeps its prompt. */
+  const guidedTakeoff = (race) => {
+    const kind = ui.settings.launchControl ? '' : guidedKindNow(race);
+    return kind ? guideLine(kind, TAKEOFF) : '';
   };
   /*
    * A published course chosen from the Courses grid. This is exactly what a
@@ -6613,6 +7114,17 @@ export async function boot({ loading, bootStart, mapId }) {
       } else {
         input.beginRestartCapture();
       }
+    } else if (action === 'autoreset-switch') {
+      if (!input.firstGamepad()) {
+        notice = noRadioBanner('reload');
+      } else if (input.autoCapture) {
+        input.cancelAutoResetCapture();
+      } else {
+        input.beginAutoResetCapture();
+      }
+    } else if (action === 'autoreset-switch-clear') {
+      input.clearAutoResetSwitch();
+      notice = { text: 'Auto reset switch forgotten.\nThe setting stays as it is.', untilMs: performance.now() + 2800 };
     } else if (action === 'restart-switch-clear') {
       input.clearRestartSwitch();
       notice = { text: 'Restart switch forgotten.\nR on the keyboard still restarts.', untilMs: performance.now() + 2800 };
@@ -6914,9 +7426,35 @@ export async function boot({ loading, bootStart, mapId }) {
     const finishFpvQuat = new THREE.Quaternion();
     /* -1: not on the finish shot. 0+: milliseconds into the pull-out. */
     let finishCamMs = -1;
-  /* Eased toward PARKED_LIFT while the craft is down and toward zero once it
-   * is flying, so the view rises off the pad rather than jumping. */
+  /* Eased toward PARKED_LIFT while the craft is down, so the view rises off
+   * the grass rather than jumping. Once the craft is up it is let go by the
+   * climb and the travel, never by the clock: see liftFloorY. */
   let parkedLift = PARKED_LIFT;
+  /*
+   * THE VIEW DOES NOT SINK BEFORE THE CRAFT LIFTS (bug-2d0907fa, "the quad
+   * starts sinking into the ground first before it gets lift"; bug-eaae5428,
+   * "pushed down when taking off").
+   *
+   * The lift used to ease to zero, with a time constant of about 170 ms, the
+   * frame `landed` went false, and `landed` goes false at TAKEOFF_THROTTLE,
+   * 25 percent. The craft hovers at about 40, so a pilot rolling the throttle
+   * on gently spent the gap between the two with the craft sitting on the
+   * grass and the lens dropping 30 cm toward it: measured on the field with
+   * the 65 mm whoop and a four second ramp, the camera went from 0.363 m to
+   * 0.061 m while the plant still reported four hull points on the ground,
+   * and only then climbed. The plant was never pulling anything down; the
+   * picture was.
+   *
+   * So when the craft is released, the camera's height at that moment is
+   * kept as a floor, and the lift is whatever holds the lens up to it: it
+   * goes as the craft climbs, so the view only ever rises on a takeoff, and
+   * it goes with horizontal travel, LIFT_TRAVEL_BLEED metres of lift per
+   * metre, so a craft that skims away low does not carry a lens 30 cm over
+   * its own for long. It never grows again in the air. Null while down.
+   */
+  let liftFloorY = null;
+  let liftAnchorX = 0;
+  let liftAnchorZ = 0;
 
   /*
    * World contact, already spawn-offset, back into plant metres. Inverse of
@@ -7196,6 +7734,16 @@ export async function boot({ loading, bootStart, mapId }) {
   };
 
   /*
+   * WHETHER THE STICK OVERLAY IS UP, for the target mark's bottom margin, so
+   * a radio pilot's chevron does not land on the overlay (the bug
+   * AIM_MARGIN_BOTTOM above records). On the thumb sticks the mark parks
+   * clear of the plates anyway; see bottomBand.
+   */
+  function stickOverlayUp() {
+    return ui.settings.stickOverlay !== false && !input.isTouchPrimary();
+  }
+
+  /*
    * Put the target mark where the next gate is.
    *
    * The map owns which gate that is and which side of it the pilot is on,
@@ -7208,6 +7756,9 @@ export async function boot({ loading, bootStart, mapId }) {
     if (crashflipOn || turtleRecover) {
       ui.setTargetLock(LOCK_OFF);
       return;
+    }
+    if (view.setGuidance) {
+      view.setGuidance(ui.settings.nextGateCue !== false);
     }
     const aim = view.targetAim ? view.targetAim() : null;
     if (!aim || !aim.active) {
@@ -7257,10 +7808,10 @@ export async function boot({ loading, bootStart, mapId }) {
     const maxX = vw - AIM_MARGIN;
     const minY = AIM_MARGIN_TOP;
     /* Whichever of the two the frame is currently showing. isTouchPrimary
-     * moves the corner blocks to the bottom centre; the keyboard ghost puts
+     * moves the corner blocks to the bottom centre; the stick overlay puts
      * the gimbals there. Either way the bottom band is taller than the
      * corner instruments alone. */
-    const bottomBand = (input.isKeyboardPrimary() || input.isTouchPrimary())
+    const bottomBand = (stickOverlayUp() || input.isTouchPrimary())
       ? AIM_MARGIN_BOTTOM_STICKS
       : AIM_MARGIN_BOTTOM;
     const maxY = vh - bottomBand;
@@ -7526,6 +8077,40 @@ export async function boot({ loading, bootStart, mapId }) {
         flying: flownThisRun && !landed && !turtleWait && !turtleRecover,
         laps: race.laps.length,
       });
+      
+      /* Track session flight time for support prompt at 20 minutes. In
+       * flight: a pause holds the craft in the air, and was counted. */
+      if (flownThisRun && !landed && !turtleWait && !turtleRecover && ui.screen === 'flight') {
+        const was = lastFlightTick;
+        lastFlightTick = nowWall;
+        if (was > 0 && nowWall > was) {
+          sessionFlightTimeMs += Math.min(nowWall - was, 1000);
+          /* Show support prompt after 20 minutes of flying if not already
+           * shown. This read was a bare `settings` until 2026-10-05, which
+           * is not a name in this scope: every frame in the air after twenty
+           * minutes threw, and the fault came back the moment the craft was
+           * flying again after R (bug-7f783182, bug-551a5c32, bug-03ae2f2a).
+           * scripts/longflight-check.js flies past the line. */
+          if (!sessionTimePromptShown
+              && sessionFlightTimeMs >= SESSION_TIME_PROMPT_MS
+              && ui.settings.supportPrompts !== false
+              && ui.screen === 'flight') {
+            sessionTimePromptShown = true;
+            sessionTimePromptDue = true;
+          }
+        }
+      }
+      /* Shown when the pilot next stops. It used to look once, 100 ms
+       * after the line, when the pilot was still flying, so it never showed. */
+      if (sessionTimePromptDue && (ui.screen === 'paused' || ui.screen === 'results')) {
+        sessionTimePromptDue = false;
+        offerSupport('time');
+      }
+    }
+    if (supportPrompt && (ui.screen !== supportPromptScreen || !supportPrompt.isConnected)) {
+      supportPrompt.remove();
+      supportPrompt = null;
+      supportPromptScreen = null;
     }
 
     /* The seated world's note, released on the first frame of a flight and
@@ -7552,8 +8137,37 @@ export async function boot({ loading, bootStart, mapId }) {
     if (input.takeRestart() && ui.screen === 'flight' && mode === 'flight') {
       reset();
     }
+    if (autoResetDue && ui.screen === 'flight' && mode === 'flight') {
+      reset();
+      notice = { text: 'Auto reset.', untilMs: performance.now() + 1600 };
+    }
     if (input.restartCapture && ui.screen !== 'pilot') {
       input.cancelRestartCapture();
+    }
+    if (input.autoCapture && ui.screen !== 'pilot') {
+      input.cancelAutoResetCapture();
+    }
+    /* The Auto reset switch, bug-918a8c99: see noteAutoResetSwitch in
+     * input.js. Taken every frame so a flip in a menu is spent there; it
+     * changes the setting wherever it is made. */
+    {
+      const flipped = input.takeAutoResetSwitch();
+      if (flipped !== null) {
+        const was = Boolean(ui.settings.autoReset);
+        ui.settings.autoReset = flipped === 'toggle' ? !was : Boolean(flipped);
+        if (ui.settings.autoReset !== was) {
+          ui.writeSettings();
+          autoResetAtMs = -1;
+          autoResetDue = false;
+          notice = {
+            text: ui.settings.autoReset ? 'Auto reset on.' : 'Auto reset off.',
+            untilMs: performance.now() + 1800,
+          };
+          if (ui.isModal()) {
+            ui.renderMenu();
+          }
+        }
+      }
     }
     pollManualFlip();
     const launchNow = syncLaunchControl(nowWall);
@@ -7925,6 +8539,13 @@ export async function boot({ loading, bootStart, mapId }) {
         /* Airtime: only steps flown off the stand. See airtimeMs. */
         if (!stood && !replayMode) {
           airtimeMs += flown * MS_PER_STEP;
+          /* And, with flight feel tuning on and a slider off stock, the same
+           * sim time filed under the combination it was flown on: what the
+           * end of the flight is asked about. An empty key is stock, so the
+           * common frame pays for one comparison. */
+          if (tuneLogKey !== '') {
+            tuneLog.add(tuneLogKey, tuneLogMeta, flown * MS_PER_STEP);
+          }
         }
         simStepIdx += flown;
         /* A replay steps nothing, so its frames read the cars as a frame
@@ -7939,7 +8560,7 @@ export async function boot({ loading, bootStart, mapId }) {
         }
         /* Launch stand constraint runs inside sim_step. Ground contact
          * runs after plant_step at 1 kHz when the plane is raised. */
-        flightLog.push(stateCurr, rcHeld, FULL_THROTTLE_RPM);
+        flightLog.push(stateCurr, rcHeld, plantFacts(runAirframe).fullRpm);
       }
       /*
        * Ground is a plane in the plant, not a sphere test after the
@@ -8026,6 +8647,24 @@ export async function boot({ loading, bootStart, mapId }) {
           && nowWall - groundCueAtWall >= GROUND_CUE_GAP_MS) {
           groundCueAtWall = nowWall;
           audio.event('land');
+        }
+        /*
+         * A CLEAN SET DOWN is the one moment the invitation to help tune
+         * flight feel is weighed (Ui.noteLanding, src/ui/tuneinvite.js). It
+         * is called here and nowhere else, so a crash is never a landing, and
+         * it reads only what the Ui kept: no storage is read, one write is
+         * made. Guarded because it is optional and this is the frame: on
+         * 2026-10-05 a prompt read a name that was not declared, and every
+         * frame after it faulted.
+         */
+        try {
+          ui.noteLanding({
+            course: ghostCourseKey(),
+            freestyle: race.freestyle,
+            airMs: airtimeMs,
+          });
+        } catch (err) {
+          console.error('tune invitation', err);
         }
       }
       if (crashJudge.hit) {
@@ -8300,6 +8939,7 @@ export async function boot({ loading, bootStart, mapId }) {
 
     /* Before turtle can take it: see CRASH IS A RESET. */
     crashResetTick();
+    autoResetTick();
 
     if (
       mode === 'flight'
@@ -8378,6 +9018,9 @@ export async function boot({ loading, bootStart, mapId }) {
              * visit: the lap, the three and the weight they were flown at,
              * all from one weight. See boardRow. */
             board: race.boardRow(),
+            /* Whether a lap of this run was left off it for being flown on
+             * the tuned air or motors, so the Upload row can say why. */
+            offBoard: race.hasTunedLaps(),
           });
         }
       }
@@ -8521,10 +9164,23 @@ export async function boot({ loading, bootStart, mapId }) {
       lastCamFwdY = camFwd.y;
       lastCamUpY = camUp.y;
     }
-    const wantLift = (landed || launchStaging || turtleWait || turtleFlip.active) && !poseLock
-      ? PARKED_LIFT
-      : 0;
-    parkedLift += (wantLift - parkedLift) * Math.min(1, dt * 0.006);
+    const parked = (landed || launchStaging || turtleWait || turtleFlip.active) && !poseLock;
+    if (parked) {
+      liftFloorY = null;
+      parkedLift += (PARKED_LIFT - parkedLift) * Math.min(1, dt * 0.006);
+    } else if (poseLock) {
+      liftFloorY = null;
+      parkedLift += (0 - parkedLift) * Math.min(1, dt * 0.006);
+    } else {
+      if (liftFloorY === null) {
+        liftFloorY = fpvPos.y + parkedLift;
+        liftAnchorX = pCurr.x;
+        liftAnchorZ = pCurr.z;
+      }
+      const travel = Math.hypot(pCurr.x - liftAnchorX, pCurr.z - liftAnchorZ);
+      const hold = liftFloorY - fpvPos.y - LIFT_TRAVEL_BLEED * travel;
+      parkedLift = Math.min(parkedLift, hold > 0 ? hold : 0);
+    }
     if (parkedLift > 0.001) {
       fpvPos.y += parkedLift;
     }
@@ -8538,7 +9194,7 @@ export async function boot({ loading, bootStart, mapId }) {
      */
     {
       const rpmMean = (stateCurr[14] + stateCurr[15] + stateCurr[16] + stateCurr[17]) * 0.25;
-      const shake = lensShake.update(dt, rpmMean / FULL_THROTTLE_RPM);
+      const shake = lensShake.update(dt, rpmMean / plantFacts(runAirframe).fullRpm);
       /* Plus whatever the last contact threw the airframe by. The camera
        * is bolted to the frame, so a hit moves the picture; with the hit
        * banners gone this and the sound are the whole of what the pilot is
@@ -9149,6 +9805,11 @@ export async function boot({ loading, bootStart, mapId }) {
         && frames % EGG_EVERY === 1) {
         findMarks(frames % MARKS_SEEN_EVERY === 1);
       }
+      /* The map's stickers, a frame after the partners' marks: see
+       * findStickers. */
+      if (view.stickers && view.stickers.length && ui.screen === 'flight' && frames % EGG_EVERY === 2) {
+        findStickers();
+      }
       if (view.mode === 'freestyle') {
         const wasOver = score.over();
         /* What waited out its window while nothing stepped, then the
@@ -9215,13 +9876,13 @@ export async function boot({ loading, bootStart, mapId }) {
         gate: race.next + 1,
         gateCount: race.gates.length,
         gateCue: nextGt && nextGt.cue ? nextGt.cue : '',
-        /* The pack the airframe SAYS it has: the plant's 6S volts scaled to
-         * the airframe's cells, so a whoop reads 1S, 4.2 V charged. Display
-         * only; the physics and the charge bar below read the plant's own.
-         * See `cells` in configs/airframes.js. */
-        volts: st[18] * (airframeById(runAirframe).cells / PLANT_CELLS),
+        /* The pack the airframe SAYS it has: the plant's volts scaled to the
+         * airframe's cells. Both whoop and five inch now say what their plant
+         * is, so the ratio is 1; it stays because `cells` and the plant are
+         * two facts that could part again. Display only. */
+        volts: st[18] * (airframeById(runAirframe).cells / plantFacts(runAirframe).cells),
         lastLapMs: race.lastLapMs,
-        packFrac: (st[18] - PACK_EMPTY_V) / (PACK_FULL_V - PACK_EMPTY_V),
+        packFrac: (st[18] - plantFacts(runAirframe).cells * 3.3) / (plantFacts(runAirframe).cells * (4.2 - 3.3)),
         /* The same biased fromY every contact query in this file uses, and
          * for the same reason: the city's height walker takes any platform
          * within a step of fromY as the floor, so an unbiased query from the
@@ -9249,10 +9910,11 @@ export async function boot({ loading, bootStart, mapId }) {
         ghostFinal: Boolean(ghostGap && ghostGap.final),
       });
       const ch = input.channels;
+      const vis = turtleAxes(ch.roll, ch.pitch);
       ui.setStickOverlay({
         show: true,
-        roll: ch.roll,
-        pitch: ch.pitch,
+        roll: vis[0],
+        pitch: vis[1],
         yaw: ch.yaw,
         throttle: ch.throttle,
       });
@@ -9312,7 +9974,7 @@ export async function boot({ loading, bootStart, mapId }) {
        * The one-time thumb-rates hand-off, at the first moment touch is
        * actually about to fly. A fresh touch profile was already seeded
        * by loadSettings; this catches the OTHER pilot, an existing
-       * profile still on the stock defaults, whose 670-no-expo is a
+       * profile still on the stock defaults, whose no-expo 600 is a
        * gimbal calibration and reads as "way too fast" on glass, which
        * is the report this answers. A pilot who chose their own rates is
        * respected: the flag still flips so this never asks again, and
@@ -9365,6 +10027,12 @@ export async function boot({ loading, bootStart, mapId }) {
       notice = restartSet === 'saved'
         ? { text: `Restart switch: ${padSum.restart}.\nFlip it in flight to go back to the start line.`, untilMs: nowWall + 3600 }
         : { text: `Restart switch: ${padSum.restart}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
+    }
+    const autoSet = input.takeAutoResetResult();
+    if (autoSet && padSum.autoReset) {
+      notice = autoSet === 'saved'
+        ? { text: `Auto reset switch: ${padSum.autoReset}.\nA switch sets it on or off; a button toggles it.`, untilMs: nowWall + 3600 }
+        : { text: `Auto reset switch: ${padSum.autoReset}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
     }
     const queuedPick = input.takePadPickQueue();
     if (queuedPick) {
@@ -9439,9 +10107,11 @@ export async function boot({ loading, bootStart, mapId }) {
        * borrowing the scored run's sentence. Only a scored run gets the two
        * minutes, from the first thing scored, whatever kind it is.
        */
-      const start = ui.settings.launchControl
+      /* A first flight names the control: see src/ui/firstflight.js. */
+      const guidedStart = guidedTakeoff(race);
+      const start = guidedStart || (ui.settings.launchControl
         ? 'L for launch control, or throttle up'
-        : 'Throttle up to take off';
+        : 'Throttle up to take off');
       /* Practice is the one race that does not end, so it says so on the
        * line that promises what starts. See PRACTICE_LAPS. */
       let second = runLaps === PRACTICE_LAPS
@@ -9464,7 +10134,11 @@ export async function boot({ loading, bootStart, mapId }) {
         }
       }
       ui.setBanner(`${start}${second}`);
+      if (guidedStart) {
+        ui.noteGuideShown();
+      }
     } else if (guidedText) {
+      ui.noteGuideShown();
       ui.setBanner(guidedText);
     } else if (lapFlash) {
       ui.setBanner(lapFlash);
@@ -9591,6 +10265,7 @@ export async function boot({ loading, bootStart, mapId }) {
       loading.done('frame');
       loading.finish();
       flyIfLinked();
+      ui.adoptLinkedTune();
     }
   }
   /* The course a track card asked flyIfLinked for, beside the map in
@@ -9689,8 +10364,44 @@ export async function boot({ loading, bootStart, mapId }) {
    * a parked craft gets takes it down. Coming back, the next frame feeds
    * the live state again and the mix ramps up on the same 30 ms tau.
    */
+  /*
+   * THE SCREEN STAYS AWAKE WHILE THE PAGE IS UP (bug-011db6b9, "the screen
+   * saver kicks in after some time while playing").
+   *
+   * A browser counts a key, a mouse move or a touch as someone being there,
+   * and a radio or a gamepad is none of those: the Gamepad API does not reset
+   * the idle timer. A pilot flying on sticks therefore watched the display
+   * dim or blank mid lap. The Screen Wake Lock API is the browser's own way to
+   * say the page is in use. It is a request, not a promise: a browser without
+   * it, a refusal (battery saver, an insecure page) and a page that is not
+   * visible are all quietly ignored, and the lock is dropped by the browser
+   * whenever the page hides, so it is asked for again each time it comes back.
+   *
+   * Latency: none. Two calls when the page loads or returns to the screen,
+   * nothing in the frame, the input path or the physics.
+   */
+  let wakeLock = null;
+  const keepAwake = () => {
+    if (wakeLock || document.hidden || !navigator.wakeLock) {
+      return;
+    }
+    navigator.wakeLock.request('screen').then((lock) => {
+      wakeLock = lock;
+      lock.addEventListener('release', () => {
+        if (wakeLock === lock) {
+          wakeLock = null;
+        }
+      });
+    }).catch(() => {});
+  };
+  keepAwake();
+  /* A pilot's first tap or key is a gesture some browsers want before they
+   * grant it, so ask again on that, once. */
+  window.addEventListener('pointerdown', keepAwake, { once: true });
+  window.addEventListener('keydown', keepAwake, { once: true });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
+      keepAwake();
       /* A browser may have suspended the sound while the tab was away. See
        * MotorAudio.wake: a no-op when it is running or was never made. */
       if (ui.settings.sound) {
@@ -9821,6 +10532,22 @@ export async function boot({ loading, bootStart, mapId }) {
    * `race` at call time; this one captured the object identity at boot, so
    * after a map swap it answered with the previous map's race. */
   window.__race = () => race;
+  /* The whoop room's race line, for the harness: its state, or null on a
+   * world that has none. */
+  window.__raceLine = () => (view && view.raceLine ? view.raceLine : null);
+  /* The support prompt's session clock, read and set. A check cannot fly
+   * for twenty minutes to reach the line that faulted every frame on
+   * 2026-10-05, so scripts/longflight-check.js sets the clock just short of
+   * it and flies across. Nothing in the shell calls it. */
+  window.__sessionFlight = (ms) => {
+    if (Number.isFinite(ms)) {
+      sessionFlightTimeMs = ms;
+    }
+    return {
+      ms: sessionFlightTimeMs, shown: sessionTimePromptShown, due: sessionTimePromptDue,
+      thresholdMs: SESSION_TIME_PROMPT_MS, prompt: supportPrompt ? supportPromptScreen : null,
+    };
+  };
   /* P12 and P13 are audio budgets, and neither can be read while the audio
    * context is null: update() returns immediately and reports a cost of
    * nothing. A capture run has to click the page to satisfy the browser's
@@ -10001,6 +10728,12 @@ export async function boot({ loading, bootStart, mapId }) {
       return null;
     }
     return view.colliders.gapAt(x, y, z, r);
+  };
+  window.__segmentCrossesAny = (ax, ay, az, bx, by, bz) => {
+    if (!view.colliders) {
+      return false;
+    }
+    return view.colliders.segmentCrossesAny(ax, ay, az, bx, by, bz);
   };
   /* What is solid, and how well the broadphase is doing. */
   /*
@@ -10249,6 +10982,20 @@ export async function boot({ loading, bootStart, mapId }) {
     scale: runGravityScale,
     module: typeof sim.e.sim_gravity === 'function' ? sim.e.sim_gravity() : null,
     key: recordKey(),
+    /* Flight feel tuning, the same discipline: what the menu holds, what the
+     * run believes, and what the module says back. `calls` is how many times
+     * either export was invoked, which is zero for any flight that never
+     * left stock. */
+    tuning: Boolean(ui.settings.feelTuning),
+    airGrip: runAirGrip,
+    airScale: runAirScale,
+    moduleAir: typeof sim.e.sim_air === 'function' ? sim.e.sim_air() : null,
+    motorKv: runMotorKv,
+    kvScale: runKvScale,
+    moduleKv: typeof sim.e.sim_motor_kv === 'function' ? sim.e.sim_motor_kv() : null,
+    calls: tuneCalls,
+    tuned: race.tuned === true,
+    flown: tuneLog.dominant(),
   });
   window.__contacts = () => ({
     ...passStats,
@@ -10544,6 +11291,9 @@ export async function boot({ loading, bootStart, mapId }) {
   window.__craftState = () => ({
     mode,
     flownThisRun,
+    /* The run's airtime in sim milliseconds, which the tune invitation counts
+     * (check:tuneinvite): harness only. */
+    airMs: airtimeMs,
     /* The plant's own pack volts, which the OSD scales to the airframe's
      * cells: a check can see the display change and the physics not. */
     packVolts: stateCurr ? stateCurr[18] : null,
@@ -10699,6 +11449,7 @@ export async function boot({ loading, bootStart, mapId }) {
     /* Same reason as __placeCraft: a seat is a teleport. */
     haveRecoverFrom = false;
     parkedLift = 0;
+    liftFloorY = null;
     adoptSimClock();
     acc = 0;
     groundY = hy;
@@ -10951,6 +11702,9 @@ export async function boot({ loading, bootStart, mapId }) {
     lowLatency: shell.granted.desynchronized,
     opaque: shell.granted.opaque,
     pixelRatio: Math.round(shell.pixelRatio * 100) / 100,
+    /* The Shadows row, because Medium with it Off is a lighter machine than
+     * the report's graphics field says. */
+    shadowsOff: Boolean(ui.settings.shadowsOff),
     /* Auto graphics: its resolution factor now, and whether it moved the
      * preset this session. Null when the pilot fixed a preset by hand. */
     auto: ui.settings.graphicsAuto
@@ -11016,6 +11770,26 @@ export async function boot({ loading, bootStart, mapId }) {
     gpuMs: gpuGate.state.samples ? gpuGate.state.gpuMs : null,
     lowLatency: shell.granted.desynchronized && ui.settings.lowLatency !== false,
   }));
+  /*
+   * FLIGHT FEEL TUNING'S TWO HANDLES ON THE MODULE, given to the Ui rather
+   * than reached for by it.
+   *
+   * The probe is the flight the question at its end is about: the
+   * combination of Weight, Air grip and Motor power that was flown longest
+   * this flight, with its airtime, or null when nothing was flown off stock
+   * in the mode (src/share/tune.js, TuneLog). The caps are which sliders this
+   * module can honestly move. An older dist/sim.wasm has neither export, and
+   * a slider that moves nothing is a lie, so the Ui draws only the rows the
+   * module can answer.
+   */
+  ui.setTuneProbe(() => {
+    const d = tuneLog.dominant();
+    return d ? { ...d, airtimeS: d.ms / 1000 } : null;
+  });
+  ui.setTuneCaps({
+    air: typeof sim.e.sim_set_air === 'function',
+    kv: typeof sim.e.sim_set_motor_kv === 'function',
+  });
   window.__perfProbe = () => (ui.perfProbe ? ui.perfProbe() : null);
   /* The predicted view on the last frame: whether it moved the camera, how
    * far ahead it looked and how far it turned and moved the view. Harness
@@ -11326,6 +12100,15 @@ export async function boot({ loading, bootStart, mapId }) {
   };
   /* Harness: the STF mark on this map (null where it carries none),
    * whether this run has found it, and this browser's stamp for it. */
+  /* The map's stickers: where each is, and which this browser has found.
+   * Harness only. */
+  window.__stickers = () => ({
+    stickers: (view.stickers ?? []).map((s) => ({
+      id: s.id, name: s.name, achievement: s.achievement, key: s.key, p: s.p, n: s.n, w: s.w, h: s.h,
+    })),
+    found: [...stickersFound],
+    sheetDecoded: (view.stickers ?? []).every((s) => Boolean(s.sheet && s.sheet.image)),
+  });
   /* The partners' marks, the same way. Harness only. */
   window.__marks = () => ({
     marks: view.marks ?? [],
@@ -11342,9 +12125,12 @@ export async function boot({ loading, bootStart, mapId }) {
    * only; nothing in the shell reads these. */
   window.__map = () => ({
     id: view.id,
+    /* The key the tune invitation counts this course under: harness only. */
+    course: ghostCourseKey(),
     name: view.name,
     mode: view.mode,
     graphics: view.graphics,
+    shadowsOff: Boolean(view.shadowsOff),
     gates: view.gates.length,
     sponsorsPainted: view.sponsorsPainted ?? 0,
     spawn: { x: startX, y: startY, z: startZ, yaw: startYaw },

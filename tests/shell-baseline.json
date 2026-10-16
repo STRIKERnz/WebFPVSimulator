@@ -18,11 +18,11 @@
       "belowFold": 0
     },
     "quad": {
-      "overflow": 0,
+      "overflow": 171,
       "belowFold": 0
     },
     "pilot": {
-      "overflow": 829,
+      "overflow": 1106,
       "belowFold": 0
     },
     "osd": {
@@ -34,7 +34,7 @@
       "belowFold": 0
     },
     "rates": {
-      "overflow": 405,
+      "overflow": 453,
       "belowFold": 0
     },
     "pids": {
@@ -70,7 +70,7 @@
       "belowFold": 0
     },
     "advanced": {
-      "overflow": 0,
+      "overflow": 35,
       "belowFold": 0
     }
   },

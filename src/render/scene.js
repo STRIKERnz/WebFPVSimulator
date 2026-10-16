@@ -45,6 +45,8 @@ import {
   celMaterial, outlineHull, updateCelTime, setCelCloudShadows, CLOUD_SHADOW_GLSL,
   CLOTH_CHUNK, FLAG_SAIL_CLOTH,
 } from './celmat.js';
+import { setComicQuality, COMIC_SHADING } from './comic.js';
+import { CIRRUS_GLSL, cirrusUniforms } from './comicsky.js';
 import { disposeSceneGraph } from './shell.js';
 import { SESSION_TEXTURES } from './session-textures.js';
 /* The obstacle dimensions come from the track module, which holds MultiGP's
@@ -86,6 +88,7 @@ const ROOM_HEIGHT = ROOM_HEIGHT_TRUE * MICRO_SCALE;
 const RACEGOW_PIPE_OD = RACEGOW_PIPE_OD_TRUE * MICRO_SCALE;
 const RACEGOW_GATE_OPENING_MAX = RACEGOW_GATE_OPENING_MAX_TRUE * MICRO_SCALE;
 import { qualityFor } from './quality.js';
+import { makeShadowRate } from './shadowrate.js';
 /* The shape of the built in circuit, shared with the map screen's thumbnail
  * so the picture of the course and the course cannot drift apart. */
 import { circuitPoint, CIRCUIT_POINTS, CIRCUIT_STATIONS } from '../game/circuit.js';
@@ -93,6 +96,7 @@ import { GUIDE, guideFromPolyline } from '../game/guide.js';
 /* The gate frame belongs to the scorer, so the mesh and the test agree. */
 import { travelAxis } from '../game/race.js';
 import { buildGuideMesh } from './marks.js';
+import { createRaceLine } from './raceline.js';
 /* The printed vinyl a course is dressed in, shared with the track builder's
  * own preview so an author sees the gates they will fly. See src/art/. */
 import {
@@ -100,6 +104,7 @@ import {
   paintGateHeader, paintGateSleeve, paintFlagSailPair, paintGroundLogo, GROUND_TURF,
   flagMast, flagSailProfile,
 } from '../art/banners.js';
+import { paintSprayed } from '../art/sponsorpaint.js';
 import {
   assembleStartBlock, startBlockDeck, startBlockDeckHeight, START_BLOCK_WOOD, START_BLOCK_WOOD_DARK,
   START_BLOCK_FOAM, START_BLOCK_LIP,
@@ -114,8 +119,14 @@ import { Colliders } from '../game/collide.js';
 /* A living room's furniture: a table, a chair and a banner, made of boxes. */
 import { isRoomType, roomSolids, ROOM_COLOURS } from '../props/room.js';
 import { addSolids } from '../props/solids.js';
-/* A hoop and a hex gate: the outline of the hole, and of the run of tubes round it. */
-import { frameParts, outlineOf, barsAlong, paneFan } from '../props/aperture.js';
+/* A hoop and a hex gate: the outline of the hole, and of the run of tubes round it. A letter's holes are
+ * polygons, which push in and cut into triangles for the same two jobs. */
+import {
+  frameParts, outlineOf, barsAlong, paneFan, insetPolygon, paneOfPolygon, polygonArea, polygonBounds,
+} from '../props/aperture.js';
+/* The capital letters as pipe, and the holes in them. */
+import { layoutLetter } from '../props/letters.js';
+import { LETTER_TUBE_OD } from '../units.js';
 
 /*
  * Static scenery merger. A forest of individual Groups costs a draw call
@@ -147,8 +158,12 @@ function makeBaker() {
         b = { material: o.material, hull: o.material.userData.hullColor != null, geos: [] };
         buckets.set(key, b);
       }
-      /* Non-indexed so polyhedra and cylinders merge into one buffer. */
-      const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      /* Every member is indexed, so polyhedra and cylinders merge into one indexed buffer and a shared vertex is
+       * shaded once, not once per triangle corner. A member that arrives without an index is welded first, with a
+       * tolerance far under the smallest prop (the whoop room is built at MICRO_SCALE, and the default 1e-4 could
+       * weld neighbouring vertices of a small one). mergeVertices joins vertices equal in EVERY attribute, so a
+       * flat face keeps its own corners, its normal differs, and the picture is the one the exploded buffer drew. */
+      const geo = o.geometry.index ? o.geometry.clone() : mergeVertices(o.geometry, 1e-6);
       geo.applyMatrix4(o.matrixWorld);
       b.geos.push(geo);
     });
@@ -308,6 +323,8 @@ const SKY_GLSL = /* glsl */ `
     return col;
   }
 `;
+/* The high streak cloud the dome paints (graphics pass 18) is CIRRUS_GLSL
+ * in ./comicsky.js, which the town's and the yard's domes share. */
 const FOG_NEAR = 130;
 /* 2200, not 780. At 780 every piece of terrain past that distance renders
  * as exactly the horizon colour, 0.781 linear, which leaves no room above
@@ -946,7 +963,14 @@ function pitchSurface(pitch, course, sponsorMarks) {
       ctx.translate(toPx(dec.x), toPy(dec.z));
       ctx.rotate(-dec.yaw);
       ctx.translate(-bw * 0.5, -bd * 0.5);
-      paintGroundLogo(ctx, bw, bd, { logo: mark });
+      /* Sprayed, as a pitch sponsor is (src/art/sponsorpaint.js). Drawn
+       * into a canvas of its own and stamped here, so the blade speckle is
+       * in the mark's pixels and not the pitch's. Runs at load only. */
+      const spray = document.createElement('canvas');
+      spray.width = Math.max(2, Math.round(bw));
+      spray.height = Math.max(2, Math.round(bd));
+      paintSprayed(spray.getContext('2d', { willReadFrequently: true }), spray.width, spray.height, { logo: mark, seed: seedOfDecal(dec) });
+      ctx.drawImage(spray, 0, 0, bw, bd);
       ctx.restore();
       sponsorMarks.painted += 1;
     }
@@ -996,7 +1020,7 @@ function pitchSurface(pitch, course, sponsorMarks) {
   geo.rotateX(-Math.PI / 2);
   /* Same material family as the terrain, so the pitch takes the same cel
    * ramp and the same cloud shadows and does not read as a decal. */
-  const mat = celMaterial({ color: 0xffffff, rim: 0.0, cloudShadow: 0.34, transparent: true });
+  const mat = celMaterial({ color: 0xffffff, rim: 0.0, cloudShadow: 0.34, transparent: true, comic: 'ground' });
   mat.map = tex;
   const mesh = new THREE.Mesh(geo, mat);
   /* Two centimetres up. The ground under the pitch is levelled to exactly
@@ -1033,6 +1057,12 @@ function pitchSurface(pitch, course, sponsorMarks) {
     img.src = logos[slot];
   }
   return mesh;
+}
+
+/* A decal's own noise seed from where it lies, so two copies of one mark on
+ * one pitch do not break up alike. Integers only. */
+function seedOfDecal(dec) {
+  return (Math.imul(Math.round(dec.x * 100), 73856093) ^ Math.imul(Math.round(dec.z * 100), 19349663)) | 0;
 }
 
 /*
@@ -1339,9 +1369,12 @@ function groundAlbedo(x, z, y, samples, c, pitch) {
   return c;
 }
 
-function terrain(height, samples, pitch) {
+function terrain(height, samples, pitch, indoor = false) {
   const size = 1700;
-  const seg = 230;
+  /* Indoors the height field is dead level and the room's boards lie over the terrain to well past its walls, so
+   * nothing of it is ever seen: two cells a side hold the plane, instead of 105,800 triangles drawn in two of the
+   * room's three passes. The mesh stays because the ambient occlusion pass below reads its vertices. */
+  const seg = indoor ? 2 : 230;
   const geo = new THREE.PlaneGeometry(size, size, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -1373,7 +1406,9 @@ function terrain(height, samples, pitch) {
     }
   }
   geo.attributes.color.needsUpdate = true;
-  const mat = celMaterial({ color: 0xffffff, rim: 0.0, cloudShadow: 0.34 });
+  /* comic: its vertices paint it grass and rock, and the comic pass gives
+   * each its own texture (comic.js, GROUND). */
+  const mat = celMaterial({ color: 0xffffff, rim: 0.0, cloudShadow: 0.34, comic: 'ground' });
   mat.vertexColors = true;
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
@@ -1461,6 +1496,54 @@ function grassField(samples, rng, pitch) {
  * silhouette the post pass already inks from depth. Off for the far scatter
  * and the horizon, which is where most of the trees are.
  */
+/*
+ * Break a canopy blob's sphere into leaf clumps, 2026-10-07: a perfect
+ * icosphere reads as a ball on a stick, and the lumps are what make a
+ * stylised tree read as foliage. Every vertex moves along its own radius by
+ * a smooth function of its direction and the tree's place, so two vertices
+ * at one place (a uv seam) move together and the mesh stays closed.
+ *
+ * The normals stay mostly the sphere's. A 42 vertex blob shaded with its
+ * own lumpy normals breaks into flat facets, each with its own toon band,
+ * which reads as a rock. Painted foliage is shaded as one round mass with a
+ * clumped outline, the old trick of borrowing a sphere's normals for a
+ * bush, so the lumps show in the silhouette and the ink and only a quarter
+ * of their slope reaches the shading.
+ *
+ * It draws nothing from the world's rng (the seed is the tree's place), so
+ * the world, and every collider placed after it, is exactly as it was. The
+ * canopy's collider is still the undeformed radius from the geometry's
+ * parameters, and the lumps are within a fifth of it.
+ */
+function lumpCanopy(geo, r, seed) {
+  const pos = geo.attributes.position;
+  const unit = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  for (let k = 0; k < pos.count; k += 1) {
+    v.fromBufferAttribute(pos, k).normalize();
+    v.toArray(unit, k * 3);
+    const n =
+      Math.sin(v.x * 4.2 + seed) * Math.sin(v.y * 3.7 + seed * 1.3) * 0.6 +
+      Math.sin(v.z * 4.9 + seed * 0.7) * Math.cos(v.x * 2.8 - seed) * 0.4;
+    /* Flatter underneath, the way a canopy hangs. */
+    const under = v.y < -0.25 ? 0.85 : 1;
+    v.multiplyScalar(r * (1 + n * 0.19) * under);
+    pos.setXYZ(k, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  const nrm = geo.attributes.normal;
+  for (let k = 0; k < nrm.count; k += 1) {
+    v.fromBufferAttribute(nrm, k).multiplyScalar(0.25);
+    v.x += unit[k * 3] * 0.75;
+    v.y += unit[k * 3 + 1] * 0.75;
+    v.z += unit[k * 3 + 2] * 0.75;
+    v.normalize();
+    nrm.setXYZ(k, v.x, v.y, v.z);
+  }
+  nrm.needsUpdate = true;
+}
+
 function tree(rng, height, x, z, caps, bigness = 1, hull = true) {
   const g = new THREE.Group();
   const scale = (0.85 + rng() * 1.5) * bigness;
@@ -1489,10 +1572,10 @@ function tree(rng, height, x, z, caps, bigness = 1, hull = true) {
      * edge, which is how this style draws a canopy. */
     let blobGeo = new THREE.IcosahedronGeometry(r, 1);
     blobGeo = mergeVertices(blobGeo);
-    blobGeo.computeVertexNormals();
+    lumpCanopy(blobGeo, r, x * 0.37 + z * 0.61 + i * 1.7);
     const blob = new THREE.Mesh(
       blobGeo,
-      celMaterial({ color: tint, rim: 0.3 }),
+      celMaterial({ color: tint, rim: 0.3, comic: 'foliage' }),
     );
     const a = rng() * Math.PI * 2;
     const spread = i === 0 ? 0 : (0.35 + rng() * 0.55) * scale;
@@ -1803,11 +1886,35 @@ function outlineBars(shape, halfW, halfH, bar) {
 }
 
 /*
+ * THE LIT OUTLINE OF A LETTER'S HOLE: the same bar, laid along the polygon pulled in by half a bar so its outer
+ * face is on the hole's edge. A hole too small to take the bar pulled in (the point of a W at a small size) is
+ * outlined where it stands, which is a thick line on a thin hole and still the hole.
+ */
+function polygonBars(poly, bar) {
+  const inner = insetPolygon(poly, bar * 0.5);
+  return barsAlong(inner.length >= 3 && polygonArea(inner) > 1e-6 ? inner : poly, bar);
+}
+
+/*
  * THE TARGET PANE OF A ROUND OR SIX SIDED OPENING: src/props/aperture.js's fan of triangles, with the
  * uv the square's pane has, so the wrong way bar on it is drawn by the same shader.
  */
 function shapedPaneGeometry(shape, w, h) {
   const fan = paneFan(shape, w, h);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(fan.position, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(fan.uv, 2));
+  geo.setIndex(fan.index);
+  return geo;
+}
+
+/*
+ * THE TARGET PANE OF A LETTER'S HOLE: the polygon cut into triangles, about the middle of the box it fits in
+ * (where the cue is put) and a little inside it, with the uv a rectangle's pane has across that box.
+ */
+function polygonPaneGeometry(hole, scale) {
+  const rel = hole.poly.map(([x, y]) => [(x - hole.bx) * scale, (y - hole.by) * scale]);
+  const fan = paneOfPolygon(rel, hole.bw, hole.bh);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(fan.position, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(fan.uv, 2));
@@ -1828,7 +1935,7 @@ function shapedPaneGeometry(shape, w, h) {
  * the obstacle's own local frame and returns them, along with which
  * opening ended up carrying the glow.
  */
-function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWanted, micro = false, shape = 'square') {
+function apertureMarkers(group, sills, clearWs, clearHs, stack, isStart, primaryWanted, micro = false, shape = 'square', holes = null) {
   /*
    * The aperture markers. Square now, because the opening is square, and
    * built as one merged geometry per obstacle so a stacked obstacle still
@@ -1868,6 +1975,9 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
   for (let k = 0; k < stack; k += 1) {
     const outlineGeos = [];
     const haloGeos = [];
+    /* One size for every opening, or a list with each opening's own (a stack sized opening by opening). */
+    const clearW = Array.isArray(clearWs) ? clearWs[k] : clearWs;
+    const clearH = Array.isArray(clearHs) ? clearHs[k] : clearHs;
     const cy = sills[k] + clearH * 0.5;
     /*
      * The lit bar's thickness, and it is a LEGIBILITY number.
@@ -1907,7 +2017,7 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
     const halfH = clearH * 0.5;
     /* Four thin bars just inside the frame, so the lit line the pilot aims
      * at is the clear opening itself and not the tube around it. */
-    const parts = shape === 'square' ? [
+    const parts = shape === 'square' && !holes ? [
       [0, cy + halfH - bar * 0.5, clearW, bar],
       [0, cy - halfH + bar * 0.5, clearW, bar],
       [-halfW + bar * 0.5, cy, bar, clearH],
@@ -1924,8 +2034,23 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
       hg.translate(px, py, 0);
       haloGeos.push(hg);
     }
+    /* A letter's hole is a polygon of its own, in the letter's frame and not in a box that is centred on anything:
+     * its lit outline is the same bar, one length for each side of it. */
+    if (holes) {
+      for (const seg of polygonBars(holes[k].poly, bar)) {
+        const geo = new THREE.BoxGeometry(seg.len, bar, bar);
+        geo.rotateZ(seg.angle);
+        geo.translate(seg.x, seg.y, 0);
+        outlineGeos.push(geo);
+        const grow = micro ? 0.009 * MICRO_SCALE : 0.05;
+        const hg = new THREE.BoxGeometry(seg.len * 1.06 + grow, bar * 1.06 + grow, bar * 0.7);
+        hg.rotateZ(seg.angle);
+        hg.translate(seg.x, seg.y, 0);
+        haloGeos.push(hg);
+      }
+    }
     /* A hoop's and a hex gate's outline is the same bar, in one length for each side of the shape. */
-    if (shape !== 'square') {
+    if (shape !== 'square' && !holes) {
       for (const seg of outlineBars(shape, halfW, halfH, bar)) {
         const geo = new THREE.BoxGeometry(seg.len, bar, bar);
         geo.rotateZ(seg.angle);
@@ -1973,7 +2098,14 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
    * as light around a gate rather than as a pane in one, at a size the room
    * can hold. The gain is turned down with it, at the call sites.
    */
-  const glowSize = Math.max(clearW, clearH) * (micro ? 1.5 : 2.6);
+  /* A letter's glow sits round the box of the hole it is on, which is not the box of the letter and is not
+   * centred on its racing line point. */
+  const lit = holes ? holes[primary] : null;
+  const primaryW = Array.isArray(clearWs) ? clearWs[primary] : clearWs;
+  const primaryH = Array.isArray(clearHs) ? clearHs[primary] : clearHs;
+  const glowW = lit ? lit.bw : primaryW;
+  const glowH = lit ? lit.bh : primaryH;
+  const glowSize = Math.max(glowW, glowH) * (micro ? 1.5 : 2.6);
   const glow = new THREE.Mesh(
     new THREE.PlaneGeometry(glowSize, glowSize),
     new THREE.ShaderMaterial({
@@ -1988,7 +2120,7 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
         uGain: { value: 0.1 },
         /* Half the clear opening as a fraction of the plane, so the lit
          * band lands on the frame whatever size the opening is. */
-        uEdge: { value: (clearW * 0.5) / glowSize },
+        uEdge: { value: (glowW * 0.5) / glowSize },
         /*
          * How much of the wash goes ACROSS the opening, and it is zero in a
          * room. The comment on the term below says what it is for: it is
@@ -2004,8 +2136,9 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
         uFill: { value: micro ? 0.0 : 0.16 },
         /* What a hoop and a hex gate need to find their own edge: half the opening as a fraction
          * of the plane along each axis, and whether it is a hexagon. Unused by a square's. */
-        uHalf: { value: new THREE.Vector2((clearW * 0.5) / glowSize, (clearH * 0.5) / glowSize) },
-        uHex: { value: shape === 'hex' ? 1.0 : 0.0 },
+        uHalf: { value: new THREE.Vector2((glowW * 0.5) / glowSize, (glowH * 0.5) / glowSize) },
+        /* 0 an ellipse, 1 a hexagon, 2 a box (a letter's hole, which is lit round the box it fits in). */
+        uHex: { value: shape === 'hex' ? 1.0 : (holes ? 2.0 : 0.0) },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -2014,7 +2147,7 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
-      fragmentShader: shape !== 'square' ? /* glsl */ `
+      fragmentShader: shape !== 'square' || holes ? /* glsl */ `
         varying vec2 vUv;
         uniform vec3 uFront;
         uniform vec3 uBack;
@@ -2028,7 +2161,7 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
            * radius is its length and the hexagon's is the larger of its flat and its slant, and
            * either is put back into the square's units, where the band sits at uEdge. */
           vec2 u = abs(vUv - 0.5) / uHalf;
-          float rho = mix(length(u), max(u.y, u.x + 0.5 * u.y), uHex);
+          float rho = uHex > 1.5 ? max(u.x, u.y) : mix(length(u), max(u.y, u.x + 0.5 * u.y), uHex);
           float r = rho * uEdge;
           float band = exp(-pow((r - uEdge) / 0.055, 2.0));
           float fill = smoothstep(uEdge, 0.0, r) * uFill;
@@ -2059,14 +2192,22 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
       `,
     }),
   );
-  glow.position.y = sills[primary] + clearH * 0.5;
+  if (lit) {
+    glow.position.set(lit.bx, lit.by, 0);
+  } else {
+    glow.position.y = sills[primary] + primaryH * 0.5;
+  }
   glow.layers.set(1);
   group.add(glow);
   /* The pane the pilot actually aims at: green from the entry face, red
    * from the other. Hidden until the race names this gate as next, then
    * it jumps with the target. */
-  const cue = gateCue(clearW, clearH, shape);
-  cue.position.y = sills[primary] + clearH * 0.5;
+  const cue = gateCue(glowW, glowH, lit ? 'poly' : shape, lit);
+  if (lit) {
+    cue.position.set(lit.bx, lit.by, 0);
+  } else {
+    cue.position.y = sills[primary] + primaryH * 0.5;
+  }
   group.add(cue);
   return {
     ring, halo, rings, halos, glow, cue, fillMat: cue.userData.fillMat, ringColor, primary,
@@ -2091,7 +2232,7 @@ function apertureMarkers(group, sills, clearW, clearH, stack, isStart, primaryWa
  * value of it: a gate that scores differently from how it looks is a gate the
  * pilot cannot learn.
  */
-function gateCue(clearW, clearH, shape = 'square') {
+function gateCue(clearW, clearH, shape = 'square', hole = null) {
   const cue = new THREE.Group();
   cue.visible = false;
   const mat = new THREE.ShaderMaterial({
@@ -2148,7 +2289,7 @@ function gateCue(clearW, clearH, shape = 'square') {
   const fill = new THREE.Mesh(
     shape === 'square'
       ? new THREE.PlaneGeometry(clearW * 0.94, clearH * 0.94)
-      : shapedPaneGeometry(shape, clearW * 0.94, clearH * 0.94),
+      : (hole ? polygonPaneGeometry(hole, 0.94) : shapedPaneGeometry(shape, clearW * 0.94, clearH * 0.94)),
     mat,
   );
   cue.add(fill);
@@ -2714,17 +2855,21 @@ function openingBadge(n, scale = 1) {
  * measures.
  */
 function cornerFittings(group, sills, clearW, clearH, tubeR, postBuilt = null) {
+  /* postBuilt(sx, k): the upright on this side, at opening k from the bottom. clearW and clearH are one size for
+   * every opening, or a list with each opening's own. */
   const mats = sharedObstacleMats();
   const s = tubeR * 2.9;
-  for (const sillY of sills) {
-    for (const sy of [sillY - tubeR, sillY + clearH + tubeR]) {
+  for (const [k, sillY] of sills.entries()) {
+    const w = Array.isArray(clearW) ? clearW[k] : clearW;
+    const h = Array.isArray(clearH) ? clearH[k] : clearH;
+    for (const sy of [sillY - tubeR, sillY + h + tubeR]) {
       for (const sx of [-1, 1]) {
         /* A side taken away takes its fittings: see obstacle(). */
-        if (postBuilt && !postBuilt(sx)) {
+        if (postBuilt && !postBuilt(sx, k)) {
           continue;
         }
         const f = new THREE.Mesh(new THREE.BoxGeometry(s, s, s * 0.92), mats.fitting);
-        f.position.set(sx * (clearW * 0.5 + tubeR), sy, 0);
+        f.position.set(sx * (w * 0.5 + tubeR), sy, 0);
         f.castShadow = true;
         group.add(f);
       }
@@ -3113,12 +3258,25 @@ function coursePlacements(course) {
     sillH: structure.dims.sillH ?? 0,
     stack: structure.dims.stack ?? 1,
     levelPitch: structure.dims.levelPitch,
+    /* A stack whose openings are not all one size: each opening's own built size, and the stack's own for the
+     * rest of the spec (the opening this station flies is one of them, not the stack). Not there for any other. */
+    ...(structure.dims.openings ? {
+      openings: structure.dims.openings, clearW: structure.dims.clearW, clearH: structure.dims.clearH,
+    } : {}),
     /* An opening that is a gap in the lattice: it scores and it
      * lights, and no pipe is built for it. See isUnbuilt in
      * src/trackbuilder/elements.js. */
     unbuilt: structure.unbuilt === true,
     /* 'circle' for a hoop and 'hex' for a hex gate; not there for a gate. */
     ...(structure.shape ? { shape: structure.shape } : {}),
+    /* A letter: which one, which way round it is built, and the size of its PRIMARY hole, which is what its pipe is
+     * laid out from whichever hole the first pass is through. Not there for a gate. */
+    ...(structure.letter ? {
+      letter: structure.letter,
+      mirror: structure.letterMirror === true,
+      clearW: structure.dims.clearW,
+      clearH: structure.dims.clearH,
+    } : {}),
     /* The plain dress: no sleeves, a header board as wide as the frame. Not there for a gate in the
      * MultiGP dress, which is every gate that has ever shipped. */
     ...(structure.plain ? { plain: true } : {}),
@@ -3175,8 +3333,9 @@ function coursePlacements(course) {
       const structure = st.structure;
       pl = {
         spec: specFor(structure, st.clearW, st.clearH),
-        x: st.x,
-        z: st.z,
+        /* The piece stands at its own middle, and a letter's station stands at its hole. */
+        x: structure.letter ? structure.x : st.x,
+        z: structure.letter ? structure.z : st.z,
         baseY: st.baseY,
         /* The MESH takes the first station's heading and the SCORING takes
          * each station's own. A vertical frame drawn at a heading and at
@@ -3209,6 +3368,11 @@ function coursePlacements(course) {
       pitch: st.pitch,
       cue: st.cue ?? '',
       elementId: st.elementId,
+      /* A letter's hole scores where it is and as it is shaped, which is not the piece's middle and not a box:
+       * the station says so. Nothing here for any other piece. */
+      ...(st.poly ? {
+        x: st.x, z: st.z, poly: st.poly, centreY: st.centreY, clearW: st.clearW, clearH: st.clearH,
+      } : {}),
     });
   });
   /*
@@ -3618,6 +3782,120 @@ function shapedGate(spec, index, isStart, pitch, opts = {}) {
 }
 
 /*
+ * A LETTER: a run of straight tubes in the shape of a capital, with one to three holes to fly through.
+ *
+ * The pipe is src/props/letters.js's: layoutLetter says where every tube and joint is for the primary hole's size,
+ * which is the size this structure was handed (spec.clearW by spec.clearH, already through the game's obstacle
+ * scale, with the tube's radius to match), so what is drawn, what is solid and what is scored are one layout.
+ * Each tube is a cylinder and a capsule made from the same two points, as a hoop's are; a joint is a fitting where
+ * two tubes meet and a plain cap where one ends. Fittings are not solid, as an upright gate's corners are not.
+ *
+ * WHICH WAY ROUND. A letter reads the right way round to a pilot flying along its normal, and the mesh is built
+ * facing the first pass through it, so a first pass the other way is built turned about the vertical axis
+ * (spec.mirror, from src/game/trackdoc.js). The holes score in each station's own frame and are turned
+ * for it there, not here.
+ *
+ * AN INVISIBLE LETTER (spec.unbuilt) has no pipe, no joint and no solid, and keeps what it is for: the holes,
+ * which score, light and carry the line. The same rule as a gate that is a gap in the lattice.
+ *
+ * The lit target: each hole has its own outline and halo, so only the hole a pass names lights, and the glow and
+ * the pane are put on the hole the race wants next (setNextGate moves them to `glowAt`). Local frame, and
+ * colliders, match obstacle(): x across, y up from the base, z through.
+ */
+function letterGate(spec, index, isStart, opts = {}) {
+  const g = new THREE.Group();
+  const mats = sharedObstacleMats();
+  /* A letter's own pipe, 2 inch, through the obstacle scale as the gate's is. */
+  const tubeR = LETTER_TUBE_OD * GATE_SCALE * 0.5;
+  const laid = layoutLetter(spec.letter, spec.clearW, spec.clearH, tubeR, { mirror: spec.mirror === true });
+  const unbuilt = spec.unbuilt === true;
+  const caps = [];
+
+  if (!unbuilt) {
+    const up = new THREE.Vector3(0, 1, 0);
+    const along = new THREE.Vector3();
+    const joins = new Map();
+    const at = (p) => `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)}`;
+    for (const [a, b] of laid.tubes) {
+      along.set(b[0] - a[0], b[1] - a[1], 0);
+      const len = along.length();
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(tubeR, tubeR, len, 8), mats.frame);
+      tube.position.set((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, 0);
+      tube.quaternion.setFromUnitVectors(up, along.divideScalar(len));
+      tube.castShadow = true;
+      outlineHull(tube, 1.06);
+      g.add(tube);
+      caps.push({
+        kind: 'gate', ax: a[0], ay: a[1], az: 0, bx: b[0], by: b[1], bz: 0, r: tubeR,
+      });
+      for (const p of [a, b]) {
+        joins.set(at(p), (joins.get(at(p)) ?? 0) + 1);
+      }
+    }
+    for (const p of laid.joints) {
+      const fitted = (joins.get(at(p)) ?? 0) > 1;
+      const joint = new THREE.Mesh(
+        new THREE.SphereGeometry(fitted ? tubeR * 1.5 : tubeR, 8, 6),
+        fitted ? mats.fitting : mats.frame,
+      );
+      joint.position.set(p[0], p[1], 0);
+      joint.castShadow = true;
+      g.add(joint);
+    }
+  }
+
+  /* The holes as the lit target draws them: each polygon in the letter's frame, with the box it fits in. A hole
+   * the pipe has squeezed to nothing is drawn where its centre lines put it, so there is still something lit. */
+  const holes = laid.openings.map((o) => {
+    const poly = o.ok ? o.poly : o.nominal;
+    const b = polygonBounds(poly);
+    return {
+      poly,
+      bx: (b.x0 + b.x1) / 2,
+      by: (b.y0 + b.y1) / 2,
+      bw: Math.max(0.05, b.x1 - b.x0),
+      bh: Math.max(0.05, b.y1 - b.y0),
+    };
+  });
+  const marks = apertureMarkers(
+    g, holes.map(() => 0), spec.clearW, spec.clearH, holes.length, isStart, opts.primary, false, 'letter', holes,
+  );
+  const apertures = laid.openings.map((o, k) => ({
+    shape: 'poly',
+    index: k,
+    sillH: o.sillH,
+    centreY: o.cy,
+    centreX: o.cx,
+    clearW: o.clearW,
+    clearH: o.clearH,
+    glowAt: [holes[k].bx, holes[k].by],
+  }));
+
+  return {
+    group: g,
+    kindName: spec.kindName ?? 'letter',
+    /* An invisible letter is not there to be cleared by anything. */
+    top: unbuilt ? 0 : laid.top,
+    animate: [...marks.rings, ...marks.halos, marks.glow, marks.cue],
+    ringMat: marks.ring.material,
+    haloMat: marks.halo.material,
+    ringMeshes: marks.rings,
+    haloMeshes: marks.halos,
+    glowMat: marks.glow.material,
+    glowMesh: marks.glow,
+    cueGroup: marks.cue,
+    fillMat: marks.fillMat,
+    ringColor: marks.ringColor,
+    apertures,
+    primary: marks.primary,
+    aperture: apertures[marks.primary],
+    colliders: caps,
+    /* Where a number goes beside a letter whose holes are each flown: past the pipe, not past the primary hole. */
+    badgeX: Math.max(Math.abs(laid.left), Math.abs(laid.right)) + 0.3,
+  };
+}
+
+/*
  * One obstacle, at its BUILT dimensions.
  *
  * `spec` is a set of built dimensions: clearW, clearH, sillH, an optional
@@ -3670,11 +3948,22 @@ function obstacle(spec, index, isStart, opts = {}) {
    * spacing it was authored with, and defaulting over the top of it would
    * quietly rebuild somebody's ladder at a spacing they did not choose. */
   const pitch = spec.levelPitch ?? (clearH + BUILT_FRAME_TUBE_OD);
+  /* Each opening's own width and height: the stack's for every opening unless the spec carries a list (a stack whose
+   * openings were sized one by one, built by trackdoc.js builtDims). Then the sills follow the heights, each one
+   * member above the opening below it, at the gap the stack was authored with. */
+  const widths = [];
+  const heights = [];
   const sills = [];
+  const own = Array.isArray(spec.openings) && spec.openings.length === stack ? spec.openings : null;
+  const memberGap = pitch - clearH;
   for (let k = 0; k < stack; k += 1) {
-    sills.push(spec.sillH + k * pitch);
+    widths.push(own ? own[k].clearW : clearW);
+    heights.push(own ? own[k].clearH : clearH);
+    sills.push(own ? (k === 0 ? spec.sillH : sills[k - 1] + heights[k - 1] + memberGap) : spec.sillH + k * pitch);
   }
-  const topSurface = sills[stack - 1] + clearH;
+  /* The widest opening is the one the header, the sleeves' offset and the reported size are measured from. */
+  const evenWidth = widths.every((w) => Math.abs(w - widths[0]) < 1e-9);
+  const topSurface = sills[stack - 1] + heights[stack - 1];
 
   /*
    * NOTHING IS BUILT FOR A GAP IN THE LATTICE.
@@ -3700,26 +3989,64 @@ function obstacle(spec, index, isStart, opts = {}) {
    */
   const sides = unbuilt ? null : (spec.sides || null);
   const postBuilt = (sx) => !sides || Boolean(sides[sx < 0 ? 'xNeg' : 'xPos']);
+  /* One opening's stretch of an upright, on a stack: `sides.stretches` is there only when some stretch has gone, one
+   * entry per opening from the bottom (meshSidesFor in src/game/trackdoc.js). A whole upright that is gone takes
+   * every stretch with it. */
+  const stretchBuilt = (sx, k) => postBuilt(sx)
+    && (!sides?.stretches || Boolean(sides.stretches[k]?.[sx < 0 ? 'xNeg' : 'xPos'] ?? true));
+  /* The printed sleeve is one board the height of the stack, so it hangs only on a whole upright. */
+  const postWhole = (sx) => postBuilt(sx) && (sides?.stretches ?? []).every((st) => st[sx < 0 ? 'xNeg' : 'xPos']);
 
   /* Uprights. Their INNER surfaces are the opening's width, so their
    * centres sit half a tube outboard of the clear span. They run from the
    * ground to just above the topmost cross member, which is what makes a
    * tower or a dive gate a tower rather than a floating hoop. */
   const upX = clearW * 0.5 + tubeR;
+  /* An upright stands at its own opening's width, so on a stack sized opening by opening it steps in and out. */
+  const upXAt = (k) => widths[k] * 0.5 + tubeR;
   const upTop = topSurface + 2 * tubeR;
+  /* An upright is built in runs of the openings that have their stretch: a whole one is the single run from the
+   * ground to just above the top member, exactly as it always was, and a stack that has lost a stretch is the
+   * runs either side of the gap. A stretch spans from the member between it and the opening below to the one
+   * above it, so two built stretches meet at a member and a run ends at the member that holds its last opening. */
+  const sillsAt = (k) => sills[k] + heights[k] + tubeR;
+  const stretchLo = (k) => (k === 0 ? 0 : sillsAt(k - 1));
+  const stretchHi = (k) => (k === stack - 1 ? upTop : sillsAt(k));
   for (const sx of (unbuilt ? [] : [-1, 1])) {
     if (!postBuilt(sx)) {
       continue;
     }
-    const post = new THREE.Mesh(
-      new THREE.CylinderGeometry(tubeR, tubeR, upTop, 8),
-      mats.frame,
-    );
-    post.position.set(sx * upX, upTop * 0.5, 0);
-    post.castShadow = true;
-    outlineHull(post, 1.06);
-    g.add(post);
-    caps.push({ kind: 'gate', ax: sx * upX, ay: 0, az: 0, bx: sx * upX, by: upTop, bz: 0, r: tubeR });
+    const runs = [];
+    for (let k = 0; k < stack; k += 1) {
+      if (!stretchBuilt(sx, k)) {
+        continue;
+      }
+      const run = runs[runs.length - 1];
+      /* A run is one pipe at one width: where the width changes a new one begins. */
+      if (run && run.to === k - 1 && Math.abs(widths[k] - widths[run.from]) < 1e-9) {
+        run.to = k;
+      } else {
+        runs.push({ from: k, to: k });
+      }
+    }
+    for (const run of runs) {
+      const lo = stretchLo(run.from);
+      const hi = stretchHi(run.to);
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(tubeR, tubeR, hi - lo, 8),
+        mats.frame,
+      );
+      const runX = sx * upXAt(run.from);
+      post.position.set(runX, (lo + hi) * 0.5, 0);
+      post.castShadow = true;
+      outlineHull(post, 1.06);
+      g.add(post);
+      caps.push({ kind: 'gate', ax: runX, ay: lo, az: 0, bx: runX, by: hi, bz: 0, r: tubeR });
+    }
+    /* The foot stands under the lowest opening's stretch, so it goes with it. */
+    if (!stretchBuilt(sx, 0)) {
+      continue;
+    }
 
     /*
      * A foot, so it looks like it is standing on the grass rather than
@@ -3752,13 +4079,16 @@ function obstacle(spec, index, isStart, opts = {}) {
    * opening only when that opening is off the ground: a gate standing on
    * grass has the ground as its sill, which is how a 5 ft opening is
    * measured on a chapter gate. */
-  const memberLen = clearW + 4 * tubeR;
   const members = [];
+  const memberLens = [];
   for (let k = 0; k < stack; k += 1) {
-    members.push(sills[k] + clearH + tubeR);
+    members.push(sills[k] + heights[k] + tubeR);
+    /* A member between two openings holds both up, so it is as long as the wider of the two. */
+    memberLens.push(Math.max(widths[k], k + 1 < stack ? widths[k + 1] : 0) + 4 * tubeR);
   }
   if (spec.sillH > 0) {
     members.push(spec.sillH - tubeR);
+    memberLens.push(widths[0] + 4 * tubeR);
   }
   /* Which of those is the top side and which the bottom: the member over
    * the top opening, and the one under a raised lowest opening. A member
@@ -3769,6 +4099,7 @@ function obstacle(spec, index, isStart, opts = {}) {
     if (!memberBuilt(i)) {
       continue;
     }
+    const memberLen = memberLens[i];
     const bar = new THREE.Mesh(
       new THREE.CylinderGeometry(tubeR, tubeR, memberLen, 8),
       mats.frame,
@@ -3785,7 +4116,7 @@ function obstacle(spec, index, isStart, opts = {}) {
    * fitting stays with its upright: with the upright gone there is no
    * junction, and with only the member gone it caps the upright's end. */
   if (!unbuilt) {
-    cornerFittings(g, sills, clearW, clearH, tubeR, sides ? postBuilt : null);
+    cornerFittings(g, sills, own ? widths : clearW, own ? heights : clearH, tubeR, sides ? stretchBuilt : null);
   }
 
   /*
@@ -3816,8 +4147,8 @@ function obstacle(spec, index, isStart, opts = {}) {
   const substrate = isStart ? mats.panelStart : mats.panelRace;
   const panelBottom = sills[0];
   const panelH = topSurface - panelBottom;
-  for (const sx of (micro || unbuilt || plain ? [] : [-1, 1])) {
-    if (!postBuilt(sx)) {
+  for (const sx of (micro || unbuilt || plain || !evenWidth ? [] : [-1, 1])) {
+    if (!postWhole(sx)) {
       continue;
     }
     const cx = sx * (upX + tubeR + panelW * 0.5);
@@ -3845,7 +4176,8 @@ function obstacle(spec, index, isStart, opts = {}) {
    * they collapse to the top of the uprights and the opening's own half
    * width, which is exactly what the structure is.
    */
-  const outerW = 2 * (upX + tubeR + (micro || plain ? 0 : panelW));
+  /* The header board sits on the top opening's rail, and is as wide as that opening's frame. */
+  const outerW = 2 * (upXAt(stack - 1) + tubeR + (micro || plain ? 0 : panelW));
   let plateY = upTop + tubeR;
   let plateHalfW = outerW * 0.5;
   let plateR = tubeR;
@@ -3860,7 +4192,7 @@ function obstacle(spec, index, isStart, opts = {}) {
   }
 
   /* The lit target, shared with the tilted gate builder. */
-  const marks = apertureMarkers(g, sills, clearW, clearH, stack, isStart, opts.primary, micro);
+  const marks = apertureMarkers(g, sills, own ? widths : clearW, own ? heights : clearH, stack, isStart, opts.primary, micro);
   const { ring, halo, glow, cue, ringColor, primary } = marks;
 
   /*
@@ -3882,14 +4214,31 @@ function obstacle(spec, index, isStart, opts = {}) {
   for (let k = 0; k < stack; k += 1) {
     /* The clear height of opening k is its sill to the underside of the
      * member above it, both of which are positions in this group. */
-    const memberY = sills[k] + clearH + tubeR;
+    const memberY = sills[k] + heights[k] + tubeR;
     const measuredH = (memberY - tubeR) - sills[k];
+    /* On a stack sized opening by opening the uprights are not one pair, so this opening's width is read off the
+     * uprights that stand at its own height: the gap between the inner surfaces of the left one and the right one.
+     * An opening with an upright gone has nothing to measure against, and is as wide as it was built. */
+    let openW = measuredW;
+    if (own) {
+      const mid = sills[k] + measuredH * 0.5;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const post of postMeshes) {
+        const half = post.geometry.parameters.height * 0.5;
+        if (Math.abs(post.position.y - mid) <= half) {
+          lo = Math.min(lo, post.position.x);
+          hi = Math.max(hi, post.position.x);
+        }
+      }
+      openW = hi > lo ? (hi - lo) - 2 * postMeshes[0].geometry.parameters.radiusTop : widths[k];
+    }
     apertures.push({
       shape: 'square',
       index: k,
       sillH: sills[k],
       centreY: sills[k] + measuredH * 0.5,
-      clearW: measuredW,
+      clearW: openW,
       clearH: measuredH,
     });
   }
@@ -4478,16 +4827,28 @@ function attractOrbit(course, gates, tops, heightFn) {
   };
 }
 
-function skyDome() {
+function skyDome(q = null) {
   const geo = new THREE.SphereGeometry(1500, 40, 24);
+  /* The streak cloud on Medium and High, compiled in rather than switched
+   * by a uniform: Low's dome is main's program. It was a uniform branch
+   * until the sweep after graphics pass 25, which found Low paying, in a
+   * software renderer, for comic code it never drew (src/render/comic.js,
+   * chunkOn), and a preset change builds the dome again anyway. */
+  const cirrus = COMIC_SHADING && !(q && q.id === 'low');
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     fog: false,
+    defines: cirrus ? { COMIC_CIRRUS: 1 } : {},
+    /* The streak cloud's fwidth. WebGL 2 has derivatives built in and three
+     * ignores this there; on WebGL 1, which three falls back to and main
+     * draws on, it is what lets the dome compile at all. */
+    extensions: { derivatives: cirrus },
     uniforms: {
       uHigh: { value: new THREE.Color(SKY_HIGH) },
       uHorizon: { value: new THREE.Color(HORIZON) },
       uSun: { value: SUN_DIR.clone() },
+      ...(cirrus ? cirrusUniforms() : {}),
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -4498,12 +4859,20 @@ function skyDome() {
     `,
     fragmentShader: /* glsl */ `
       ${SKY_GLSL}
+      #ifdef COMIC_CIRRUS
+      ${CIRRUS_GLSL}
+      #endif
       varying vec3 vDir;
       uniform vec3 uHigh;
       uniform vec3 uHorizon;
       uniform vec3 uSun;
       void main() {
-        gl_FragColor = vec4(celSkyColor(vDir, uSun, uHorizon, uHigh), 1.0);
+        vec3 col = celSkyColor(vDir, uSun, uHorizon, uHigh);
+        #ifdef COMIC_CIRRUS
+        col = celSkyCirrus(col, normalize(vDir), uSun,
+          vec3(0.93, 0.94, 0.97), vec3(1.0, 0.95, 0.86), 0.30);
+        #endif
+        gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
@@ -4512,7 +4881,7 @@ function skyDome() {
 
 /* Chunky stylised clouds: clustered flattened icospheres, unlit, so they
  * stay bright and flat like painted shapes. */
-function clouds(rng) {
+function clouds(rng, count = 26, size = 1) {
   const g = new THREE.Group();
   /* One mesh per puff with a hard painted terminator keyed to world up,
    * plus a warm sun side rim. The previous build overlaid a second,
@@ -4524,17 +4893,40 @@ function clouds(rng) {
     uniforms: { uSun: { value: SUN_DIR.clone() } },
     vertexShader: `
       varying vec3 vN;
+      varying vec3 vNView;
+      varying vec3 vView;
       void main() {
         vN = normalize(mat3(modelMatrix) * normal);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vNView = normalMatrix * normal;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vView = -mv.xyz;
+        gl_Position = projectionMatrix * mv;
       }
     `,
     fragmentShader: `
       varying vec3 vN;
+      varying vec3 vNView;
+      varying vec3 vView;
       uniform vec3 uSun;
       void main() {
         vec3 n = normalize(vN);
-        vec3 col = mix(vec3(0.70, 0.77, 0.91), vec3(1.0, 0.98, 0.94), step(0.12, n.y));
+        /* Three painted bands, the way a cumulus is painted: the sunlit
+         * crown, a pale body, and the belly in the blue grey. They are
+         * keyed to an axis leaning from straight up toward the sun, not to
+         * up alone, so the lit side of every puff is the sun's side: a
+         * pilot looking away from the sun sees white heads, and looking
+         * into it sees shaded flanks under a bright lip, which is what
+         * makes a heap of spheres read as a lit volume. Two bands on world
+         * up, which is what this was, gave a pilot looking up at a cloud a
+         * grey pill with a white lip from every side (graphics pass 14).
+         * The belly is a little deeper and bluer than the old body, about
+         * 0.46 linear luminance against the sky's 0.375, so the shadow
+         * reads as a colour and not as a dirty white; the body band is
+         * about 0.59, under the crown's 0.697 and well under the gate
+         * ring's 0.826, so the ladder below holds. */
+        float k = dot(n, normalize(vec3(0.0, 1.0, 0.0) + normalize(uSun) * 0.9));
+        vec3 col = mix(vec3(0.63, 0.68, 0.88), vec3(0.86, 0.87, 0.94), smoothstep(-0.38, -0.32, k));
+        col = mix(col, vec3(1.0, 0.98, 0.94), smoothstep(0.20, 0.26, k));
         /* Sun side warmth, but not enough to clip. Measured, cloud tops
          * reached 255 255 253, luminance 0.999, so a piece of dressing in
          * the corner of the frame was brighter than the gate the pilot is
@@ -4547,20 +4939,79 @@ function clouds(rng) {
          * thing on screen, and a clipped pixel has no hue left either. */
         col *= 0.68;
         col += vec3(1.0, 0.86, 0.60) * pow(max(dot(n, normalize(uSun)), 0.0), 3.0) * 0.08;
+        /* No ink rim: a line round a cloud clashed with the polygon world (bug-09e28ecf). */
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
-  for (let i = 0; i < 26; i += 1) {
+  /*
+   * HEAPED HEADS AND A FLAT BASE (graphics pass 14). A cumulus is
+   * cauliflower on top and flat underneath, and a cluster of evenly
+   * flattened spheres was neither: a row of pills, about a third as tall as
+   * it was wide. Each cluster now keeps its flat spread of base puffs and
+   * gets two tiers heaped on them toward its middle, each tier smaller and
+   * rounder than the one under it, and every puff is cut off at a shared
+   * base a little under the cluster's middle, its cut face turned to face
+   * straight down so it takes the belly band.
+   *
+   * The world's rng is drawn exactly as before, the same number of draws in
+   * the same order, because the first bank is drawn on it and one more draw
+   * would move every tree and collider after it. The tiers are drawn from a
+   * stream of their own, seeded by the call, and the base cut moves
+   * vertices only, so it draws on nothing.
+   */
+  const heap = makeRng(0x3c1a7 + count * 131 + Math.round(size * 10));
+  const BASE = -7 * size;
+  const cut = (geo, py, sy) => {
+    const pos = geo.attributes.position;
+    const nrm = geo.attributes.normal;
+    for (let k = 0; k < pos.count; k += 1) {
+      /* In the cluster's frame the vertex is at py + y * sy. */
+      if (py + pos.getY(k) * sy < BASE) {
+        pos.setY(k, (BASE - py) / sy);
+        nrm.setXYZ(k, 0, -1, 0);
+      }
+    }
+    pos.needsUpdate = true;
+    nrm.needsUpdate = true;
+  };
+  const puff = (cluster, r, x, y, z, sy) => {
+    const geo = new THREE.IcosahedronGeometry(r, 1);
+    cut(geo, y, sy);
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.scale.y = sy;
+    cluster.add(m);
+    return { x, z, r, top: y + r * sy };
+  };
+  /* A tier: n puffs, each on a puff of the tier below, drawn toward the
+   * cluster's middle so the heap rises there, its centre a little under
+   * its parent's top, so most of its upper half stands clear as a dome. */
+  const tier = (cluster, under, n, lo, span, sy) => {
+    const made = [];
+    for (let c = 0; c < n; c += 1) {
+      const t = under[Math.floor(heap() * under.length)];
+      const r = t.r * (lo + heap() * span);
+      made.push(puff(cluster, r,
+        t.x * 0.6 + (heap() - 0.5) * t.r * 0.6,
+        t.top - r * sy * 0.15,
+        t.z * 0.6 + (heap() - 0.5) * t.r * 0.4, sy));
+    }
+    return made;
+  };
+  for (let i = 0; i < count; i += 1) {
     const cluster = new THREE.Group();
     const puffs = 4 + Math.floor(rng() * 5);
+    const base = [];
     for (let p = 0; p < puffs; p += 1) {
-      const r = 16 + rng() * 26;
-      const puff = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), mat);
-      puff.position.set((rng() - 0.5) * 70, (rng() - 0.5) * 12, (rng() - 0.5) * 40);
-      puff.scale.y = 0.52;
-      cluster.add(puff);
+      const r = (16 + rng() * 26) * size;
+      const x = (rng() - 0.5) * 70;
+      const y = (rng() - 0.5) * 12;
+      const z = (rng() - 0.5) * 40;
+      base.push(puff(cluster, r, x, y, z, 0.52));
     }
+    const mid = tier(cluster, base, 2 + Math.floor(heap() * 3), 0.6, 0.2, 0.8);
+    tier(cluster, mid, 1 + Math.floor(heap() * 2), 0.55, 0.2, 0.9);
     const a = rng() * Math.PI * 2;
     const rad = 260 + rng() * 780;
     cluster.position.set(Math.cos(a) * rad, 190 + rng() * 190, Math.sin(a) * rad);
@@ -4620,6 +5071,7 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
    * build: Low turns the drifting cloud shading off with the shadow maps
    * (quality.js, field.clouds), fill rate back on the machines Low is for. */
   setCelCloudShadows(q.field.clouds !== false);
+  setComicQuality(q);
   const renderer = shell.renderer;
   const camera = shell.camera;
   const progress = onProgress ?? (() => {});
@@ -4671,6 +5123,9 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
    * it is doing the job the sky dome does outdoors.
    */
   scene.background = new THREE.Color(indoor ? ROOM.air : HORIZON);
+  /* The ink reads this: a room's course is a frame of tubes a few pixels
+   * across (buildComposer in src/render/post.js). */
+  scene.userData.indoor = indoor;
   /*
    * IN THE ROOM'S OWN METRES, WHICH ARE MICRO_SCALE TIMES RACEGOW'S. The
    * room is built through that factor so a five inch has space to fly, and
@@ -4690,7 +5145,7 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
     ? new THREE.Fog(ROOM.air, 5.5 * MICRO_SCALE, 44 * MICRO_SCALE)
     : new THREE.Fog(HORIZON, FOG_NEAR, FOG_FAR);
   if (!indoor) {
-    const sky = skyDome();
+    const sky = skyDome(q);
     sky.layers.set(1);
     scene.add(sky);
   }
@@ -4790,6 +5245,8 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
   sun.shadow.camera.right = shadowExtent;
   sun.shadow.camera.top = shadowExtent;
   sun.shadow.camera.bottom = -shadowExtent;
+  /* How often the map is redrawn: see shadowrate.js. */
+  const shadowRate = makeShadowRate(renderer, sun.castShadow ? (q.field.shadowEvery || 1) : 1, shadowExtent);
   scene.add(sun);
   scene.add(sun.target);
   /* Sky above, warm grass bounce below: this is what keeps shadowed faces
@@ -4827,7 +5284,7 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
   const clubPad = clubhousePad(clubSite);
   const height = makeHeightField(samples, pitch, clubPad, indoor);
 
-  const ground = terrain(height, samples, pitch);
+  const ground = terrain(height, samples, pitch, indoor);
   scene.add(ground);
 
   /*
@@ -4863,6 +5320,12 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
   /* Clouds, indoors, would be through the ceiling. */
   if (!indoor) {
     noInkBaker.bake(clouds(rng));
+    /* A second, larger bank from its OWN stream, 2026-10-07, for a sky
+     * that reads as weather rather than as a few stickers. Never from the
+     * world's rng: every draw on it after this point places scenery and
+     * colliders, so one more draw would move the world under every saved
+     * replay. */
+    noInkBaker.bake(clouds(makeRng(0x5c10d5), 16, 1.6));
   }
   /* Layer 0, not the no ink layer. Clouds used to write no depth into the
    * outline prepass, so the ink pass drew mountain silhouettes ACROSS the
@@ -5286,19 +5749,21 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
     const dress = st.virtual ? null : kit.forGate(st.dress ?? i);
     const made = st.virtual
       ? virtualGate(st.spec.clearW, st.spec.clearH, st.marker)
-      : (st.spec.shape
-        ? shapedGate(st.spec, flyOrder, st.isStart, st.pitch, { micro })
-        : (Math.abs(st.pitch) > 1e-6
-          ? tiltedGate(st.spec, flyOrder, st.isStart, st.pitch, { kit: dress, micro })
-          : obstacle(st.spec, flyOrder, st.isStart, {
-            micro,
-            primary: st.primary,
-            kit: dress,
-            flagSigns: st.flagSigns,
-            flagLeans: st.flagLeans,
-            flagH: st.flagH,
-            flagPoleR: st.flagPoleR,
-          })));
+      : (st.spec.letter
+        ? letterGate(st.spec, flyOrder, st.isStart, { primary: st.primary })
+        : (st.spec.shape
+          ? shapedGate(st.spec, flyOrder, st.isStart, st.pitch, { micro })
+          : (Math.abs(st.pitch) > 1e-6
+            ? tiltedGate(st.spec, flyOrder, st.isStart, st.pitch, { kit: dress, micro })
+            : obstacle(st.spec, flyOrder, st.isStart, {
+              micro,
+              primary: st.primary,
+              kit: dress,
+              flagSigns: st.flagSigns,
+              flagLeans: st.flagLeans,
+              flagH: st.flagH,
+              flagPoleR: st.flagPoleR,
+            }))));
     const g = made.group;
     const y = height(st.x, st.z) + st.baseY;
     const yaw = st.yaw;
@@ -5351,7 +5816,7 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
           continue;
         }
         const badge = openingBadge(station.flyOrder + 1);
-        badge.position.set(st.spec.clearW * 0.5 + 0.22, ap.centreY, 0);
+        badge.position.set(made.badgeX ?? ((st.spec.openings ? ap.clearW : st.spec.clearW) * 0.5 + 0.22), ap.centreY, 0);
         g.add(badge);
       }
     }
@@ -5426,9 +5891,20 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
       const named = station.apertureIndex == null
         ? null
         : Math.min(made.apertures.length - 1, Math.max(0, station.apertureIndex));
+      /* A letter's hole scores in the frame of the station that flies it: its own corners, turned for the way it is
+       * flown (src/game/trackdoc.js), about its own point, with the height it is at. The mesh's hole, in the
+       * mesh's frame, is only what is lit. */
       const scoring = named == null
         ? made.apertures
-        : [made.apertures[named]];
+        : [station.poly
+          ? {
+            ...made.apertures[named],
+            poly: station.poly,
+            centreY: station.centreY,
+            clearW: station.clearW,
+            clearH: station.clearH,
+          }
+          : made.apertures[named]];
       /*
        * Which openings LIGHT UP when this station is the target. A designed
        * stack names its hole, so exactly one lights and the pilot can see
@@ -5440,7 +5916,8 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
         ? made.apertures.map((_, k) => k)
         : [named];
       gates.push({
-        position: new THREE.Vector3(p.x, y, p.z),
+        /* At the structure, or for a letter at the hole this station flies. */
+        position: new THREE.Vector3(station.poly ? station.x : p.x, y, station.poly ? station.z : p.z),
         heading: station.yaw,
         /* The tilt of the direction of travel. Zero everywhere on the built
          * in circuit, which is why race.js's frame reduces to the old one
@@ -5477,6 +5954,9 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
         aperture: scoring[0],
         apertures: scoring,
         primary: made.primary,
+        /* Where the lit target's glow and pane go on this hole, in the mesh's frame: a letter's holes are not one
+         * above another. Nothing for any other piece. */
+        glowAt: named == null ? null : (made.apertures[named].glowAt ?? null),
         kindName: made.kindName,
         cue: station.cue ?? '',
         trackGlow: station.apertureIndex != null && (st.spec.stack ?? 1) > 1,
@@ -5489,6 +5969,10 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
          * truth. */
         wantW: st.spec.clearW,
         wantH: st.spec.clearH,
+        /* A stack sized opening by opening: each opening is held to its own size. */
+        wantOpenings: st.spec.openings ?? null,
+        /* The opening the shared glow and pane were built for, so they can be sized to the one that is the target. */
+        primaryAperture: made.apertures[made.primary] ?? null,
         flyOrder: station.flyOrder,
         virtual: Boolean(st.virtual),
         poleX: st.poleX,
@@ -5532,11 +6016,17 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
       continue;
     }
     for (const ap of gt.apertures) {
-      if (Math.abs(ap.clearW - gt.wantW) > 0.01 || Math.abs(ap.clearH - gt.wantH) > 0.01) {
+      /* A letter's holes are each their own size: the polygon is what scores, and checkLetter holds it to the pipe. */
+      if (ap.shape === 'poly') {
+        continue;
+      }
+      const wantW = gt.wantOpenings?.[ap.index]?.clearW ?? gt.wantW;
+      const wantH = gt.wantOpenings?.[ap.index]?.clearH ?? gt.wantH;
+      if (Math.abs(ap.clearW - wantW) > 0.01 || Math.abs(ap.clearH - wantH) > 0.01) {
         throw new Error(
           `scene: ${gt.kindName} opening measured ${ap.clearW.toFixed(4)} by `
-          + `${ap.clearH.toFixed(4)} m, wanted ${gt.wantW.toFixed(4)} by `
-          + `${gt.wantH.toFixed(4)} m at gate scale ${GATE_SCALE}, `
+          + `${ap.clearH.toFixed(4)} m, wanted ${wantW.toFixed(4)} by `
+          + `${wantH.toFixed(4)} m at gate scale ${GATE_SCALE}, `
           + 'outside the 10 mm tolerance',
         );
       }
@@ -5568,6 +6058,10 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
    */
   const FOLLOW_RING = 0.42;
   let nextGateIdx = -1;
+  /* The whoop room's breadcrumb trail, built after the colliders are (see
+   * createRaceLine in raceline.js). Null on every other world, and null until
+   * then, which setNextGate reads. */
+  let raceLine = null;
   /* Where the target is, and which way round the pilot is to it. One
    * object, filled in place, read by the frame loop and by the shell's
    * screen mark, so neither of them allocates per frame. */
@@ -5627,16 +6121,37 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
       gt.fillMat.uniforms.uOpacity.value = tier === 'target' ? 0.22 : 0.10;
     }
   }
+  /* The pilot's "Next gate cue" setting. Off paints no target at all: every
+   * gate stays dark and the shell's arrow has nothing to point at, because
+   * aim stays inactive. The race line below still hears the real target, so
+   * that feature is its own. Only drawing is skipped, nothing is added. */
+  let guidanceOn = true;
+  let lastNext = -1;
+  let lastFollow = -1;
+  function setGuidance(on) {
+    if (on === guidanceOn) {
+      return;
+    }
+    guidanceOn = on;
+    setNextGate(lastNext, lastFollow);
+  }
   function setNextGate(i, follow) {
     for (const gt of gates) {
       dressGate(gt, 'dark');
     }
+    lastNext = i;
+    lastFollow = follow;
     nextGateIdx = i;
-    /* follow still arrives from race.js and is deliberately unused: the
-     * owner asked for no markings on anything but the target. The
-     * parameter stays so the callers and the harness readback keep their
-     * shape while the decision is fresh enough to be reversed cheaply. */
-    void follow;
+    /* follow is not drawn on any gate: the owner asked for no markings on
+     * anything but the target. The whoop room's race line, when it is on,
+     * reads it for how far ahead to lay its dots. */
+    if (raceLine) {
+      raceLine.setTarget(i, follow);
+    }
+    if (!guidanceOn) {
+      i = -1;
+      nextGateIdx = -1;
+    }
     const target = i >= 0 && i < gates.length ? gates[i] : null;
     if (!target) {
       aim.active = false;
@@ -5657,11 +6172,32 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
     /* A stacked figure shares one glow across its openings. Put that
      * glow, and the pane, on the hole this station names. */
     if (target.trackGlow && target.aperture) {
-      if (target.glowMesh) {
-        target.glowMesh.position.y = target.aperture.centreY;
-      }
-      if (target.cueGroup) {
-        target.cueGroup.position.y = target.aperture.centreY;
+      if (target.glowAt) {
+        /* A letter's holes are at their own places across the piece as well as up it. */
+        if (target.glowMesh) {
+          target.glowMesh.position.set(target.glowAt[0], target.glowAt[1], 0);
+        }
+        if (target.cueGroup) {
+          target.cueGroup.position.set(target.glowAt[0], target.glowAt[1], 0);
+        }
+      } else {
+        if (target.glowMesh) {
+          target.glowMesh.position.y = target.aperture.centreY;
+        }
+        if (target.cueGroup) {
+          target.cueGroup.position.y = target.aperture.centreY;
+        }
+        /* The shared glow and pane were built for one opening; a stack sized opening by opening is sized to the one
+         * that is the target now. Scale 1 on every stack whose openings are one size, which is every stack that
+         * ever shipped. */
+        const built = target.primaryAperture;
+        const now = target.aperture;
+        if (built && built.clearW > 0 && built.clearH > 0) {
+          const kw = now.clearW / built.clearW;
+          const kh = now.clearH / built.clearH;
+          target.glowMesh?.scale.setScalar(Math.max(now.clearW, now.clearH) / Math.max(built.clearW, built.clearH));
+          target.cueGroup?.scale.set(kw, kh, 1);
+        }
       }
     }
     /*
@@ -6416,7 +6952,11 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
    * the most expensive single thing in this function on a cold cache and has
    * no inside to report from. */
   await report(0.86);
-  renderer.compile(scene, camera);
+  /* Not made here any more: the argument above stands, but a compile has to run against the target the frames are
+   * drawn into, and that is the composer's, which is built from this scene after it. Made here with nothing bound it
+   * linked the sRGB programs, which nothing draws, and left the ones that are drawn to the first frame.
+   * attachComposer (maps/field.js) makes it, through render/warm.js, before buildMap returns, so the world is still
+   * compiled when it loads. */
   progress(1);
 
   /*
@@ -6472,6 +7012,7 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
     sun.position.copy(shadowFocus).addScaledVector(keyDir, 130);
     sun.target.position.copy(shadowFocus);
     sun.target.updateMatrixWorld();
+    shadowRate.step(shadowFocus);
   }
 
   function updateWind(t) {
@@ -6509,6 +7050,14 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
   /* Every collider is in by now, so freeze the flat arrays and build the
    * broadphase grid. Nothing may be added after this. */
   colliders.build();
+
+  /* A whoop room can show a trail of crumbs through the next gates. Nothing
+   * is built, loaded or solved until the setting asks for it. */
+  if (course && course.trackClass === 'micro') {
+    raceLine = createRaceLine({
+      scene, course, colliders, gates,
+    });
+  }
 
   progress(1);
 
@@ -6654,13 +7203,23 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
         real: '2.4 to 2.7, an Australian pavilion verandah at its outer edge',
       },
     },
-    updateShadowFocus, updateWind, setNextGate, targetAim, approachSide,
+    updateShadowFocus, updateWind, setNextGate, setGuidance, targetAim, approachSide,
     graphics: q.id,
     /* Kept as no-ops so the shell has one call shape. The racing line is
      * a planner tool now; the target in the air is the green glow. */
     setRacingLine() {},
     hasRacingLine: false,
     updateRacingLine() { return null; },
+    /* The race line: the whoop room's breadcrumb trail, on or off. A no op in
+     * every world that is not a room. */
+    setRaceLine(on) {
+      if (raceLine) {
+        raceLine.setEnabled(on);
+      }
+    },
+    get raceLine() {
+      return raceLine;
+    },
     /*
      * The contact surface. The third argument is the height the query is made
      * FROM, which the city needs so a quad can fly under the overbridge and
@@ -6727,6 +7286,10 @@ export async function buildFieldScene(shell, onProgress, course = null, quality 
      * them. Present so the shell has one call shape. */
     updateAnim: () => {},
     dispose() {
+      if (raceLine) {
+        raceLine.dispose();
+        raceLine = null;
+      }
       /* The craft and the ghost rig are the session's, not this world's.
        * The shell keeps that register, so this does not have to name them
        * and cannot fall behind an aircraft swap. */

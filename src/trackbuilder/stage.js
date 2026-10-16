@@ -62,21 +62,56 @@
  * existed draws every side, which is what every gate in that module was.
  */
 import * as elementLib from './elements.js';
-import { ELEMENTS, KIND, FRAME_TUBE_OD, isUnbuilt, trackClassOf, virtualApertureDims } from './elements.js';
+import {
+  ELEMENTS, KIND, FRAME_TUBE_OD, isUnbuilt, trackClassOf, virtualApertureDims, isPlain, flagSideOf, flagSideSigns,
+  flagLeanSign, gateFlagHeight, GATE_FLAG_POLE_R,
+} from './elements.js';
 import { PIPE_OD as RACEGOW_PIPE_OD } from './racegow.js';
-import { aperturesOf, elementById, apertureCenter } from './model.js';
+import * as modelLib from './model.js';
+import { aperturesOf, elementById, apertureCenter, logoForDecal, dressOrder } from './model.js';
 import { apertureFrame, apertureCorners, clamp } from './geometry.js';
 import { isRoomType, roomWorldBoxes } from '../props/room.js';
+/* The game's own turf and the game's own way of painting a sponsor on it, for the race field. */
+import {
+  GROUND_TURF, paintGroundLogo, paintGateHeader, paintGateSleeve, paintFlagSailPair, flagMast, flagSailProfile,
+  bannerCanvas, BANNER_SIZE, GATE_BANNER_H,
+} from '../art/banners.js';
 /* A hoop and a hex gate: the run of tubes round the hole, and a pane in its shape. */
 import { frameOutline, paneFan } from '../props/aperture.js';
+/* A letter: its pipe and its holes, by the namespace for the reason above (a letter is newer than the oldest copy a
+ * browser may still hold of any of these files, and a document that has one is read by this module's own copy). */
+import * as apertureLib from '../props/aperture.js';
 
 const ALL_SIDES = { top: true, bottom: true, left: true, right: true };
+
+/* Whether a piece is a letter, and what its pipe is made of: through the namespace, so a copy of elements.js from
+ * before letters read every piece as the gate it always was. */
+function isLetter(el) {
+  return typeof elementLib.isLetterPiece === 'function' && elementLib.isLetterPiece(el)
+    && typeof modelLib.letterLayoutOf === 'function';
+}
 
 function frameSidesOf(el) {
   if (typeof elementLib.frameSidesOf === 'function') {
     return elementLib.frameSidesOf(el);
   }
   return ALL_SIDES;
+}
+
+/* One opening's stretch of an upright of a stack: through the namespace for the reason above, and built when the
+ * copy of elements.js a browser still holds has never heard of it. */
+function uprightIntact(el, side) {
+  if (typeof elementLib.uprightIntact === 'function') {
+    return elementLib.uprightIntact(el, side);
+  }
+  return true;
+}
+
+function poleBuilt(el, side, index) {
+  if (typeof elementLib.poleBuilt === 'function') {
+    return elementLib.poleBuilt(el, side, index);
+  }
+  return true;
 }
 
 /*
@@ -214,6 +249,12 @@ const COL_RIBBON_CORE = 0xff6b5b;
 const COL_RIBBON_SHELL = 0xff3b2a;
 const COL_TEXT = 0xf2e3cb;
 const COL_START_PAD = 0x2a2a2e;
+/* What lies past the mown grass of the race field: dark, and green enough to be bush and not a void. */
+const COL_SURROUND = 0x0e1a10;
+const COL_FIELD_LINE = '#e6efe2';
+/* Mown run off outside the field's boundary, in metres, and a stripe's width: the game's own numbers (PITCH in render/scene.js). */
+const FIELD_MARGIN = 8;
+const FIELD_STRIPE = 5;
 
 /*
  * The pool of light, as a multiple of the track's own radius. Past its edge
@@ -235,14 +276,75 @@ const POOL_RADII = 1.15;
  * SHADOW MAP SIZE. 1024, not 2048. The headless harness runs Chromium on
  * SwiftShader, a software rasteriser, and the shadow pass is drawn once per
  * frame for three hundred frames. 2048 is four times the fill for a
- * difference nobody can see at 512 by 512.
+ * difference nobody can see at 512 by 512. That is the size at 512 and under:
+ * a bigger picture gets a bigger map, see detailOf.
  */
 const SHADOW_MAP = 1024;
 
+/* The two images the scene paints from canvases, at the size they have always
+ * been. The name is four times as wide as it is tall; the pool is square. */
+const NAME_TEXTURE_W = 1024;
+const POOL_TEXTURE = 512;
+
 /*
- * The narrowest a pipe is allowed to be on screen, in pixels. Below about
- * this a thin diagonal cylinder stops being a shape and becomes intermittent
- * aliasing, and 256 palette entries cannot rescue it.
+ * THE REFERENCE EDGE. Every number in this file that is counted in pixels, a
+ * pipe's readable minimum and the ribbon's, was tuned by eye on a picture 512
+ * on a side. A bigger picture is meant to be that picture with more pixels in
+ * it, not a thinner one. Left alone, MIN_PIPE_PX at 2048 is a quarter of the
+ * weight it has at 512, and a full sized course comes out as hairlines that
+ * vanish the moment the file is shown at the size of a screen: that was
+ * measured on the 2025 WA States course before this existed.
+ *
+ * So those minimums are worked out against this edge, or against the
+ * picture's own short edge when that is smaller. At 512 and under the two are
+ * the same number and nothing changes, which is what keeps the 384 by 240
+ * cards and the standard export exactly as they were. Above it a pipe is
+ * drawn as thick in the world as it was at 512 and lands on more pixels.
+ */
+const REFERENCE_EDGE = 512;
+
+/*
+ * WHAT GROWS WITH THE PICTURE, which is every image the scene is made from,
+ * because each was sized for 512. At 2048, before this, the name (a texture
+ * 1024 wide) came out with scan lines through every letter, and the pool of
+ * light (a 512 square gradient laid over a floor many times its width, so
+ * about a hundred texels across the lit part) came out as flat steps with the
+ * ring edges twenty pixels to the stair. At 512 neither could be seen, which
+ * is why nobody needed this.
+ *
+ * The shadow map is the one that depends on the course. On a full sized field
+ * it made no visible difference at 2048, because the floor is nearly black
+ * and the pipe is drawn thick. On the micro living room, where the pipe is its
+ * real 27 mm, a 1024 map drew the shadow of a pipe as a soft smear and the
+ * shadow on the pipe itself as a mottled blotch, and 4096 drew both as clean
+ * edges, so it grows with everything else rather than being argued per track.
+ *
+ * Whole doublings, because a texture or a shadow map is cheapest at a power of
+ * two and a 700 pixel picture taking the next size up is simpler than taking
+ * one between. Capped at 4096 and at what the graphics card says it can hold
+ * (maxTexture, from the renderer), so a small card gets the biggest picture it
+ * can draw instead of a texture that fails to upload.
+ *
+ * Pure arithmetic with no GL in it, so scripts/gif-selftest.js can pin it.
+ * AT 512 AND UNDER NOTHING GROWS: steps is nought and every size is the one
+ * it was before this function existed.
+ */
+export function detailOf(width, height, maxTexture = 4096) {
+  const shortEdge = Math.max(64, Math.min(width, height));
+  const steps = Math.max(0, Math.ceil(Math.log2(shortEdge / REFERENCE_EDGE)));
+  const grow = (base) => Math.max(base, Math.min(base * 2 ** steps, 4096, maxTexture));
+  return {
+    shadowMap: grow(SHADOW_MAP),
+    nameWidth: grow(NAME_TEXTURE_W),
+    poolSize: grow(POOL_TEXTURE),
+  };
+}
+
+/*
+ * The narrowest a pipe is allowed to be on screen, in pixels, on a picture
+ * REFERENCE_EDGE across. Below about this a thin diagonal cylinder stops being
+ * a shape and becomes intermittent aliasing, and 256 palette entries cannot
+ * rescue it.
  */
 const MIN_PIPE_PX = 1.7;
 
@@ -378,9 +480,10 @@ function dim(hex, f) {
 
 /* A radial fall off painted into a texture, which is cheaper and steadier
  * than a light with a distance decay and cannot leak onto the pipes. `frac`
- * is where the pool reaches as a fraction of the texture's half width. */
-function poolTexture(THREE, frac) {
-  const size = 512;
+ * is where the pool reaches as a fraction of the texture's half width. `size`
+ * is the canvas edge: 512 is plenty for a picture 512 across, and detailOf
+ * hands a bigger one to a bigger picture. */
+function poolTexture(THREE, frac, size = POOL_TEXTURE) {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -439,6 +542,103 @@ function fitDistance(THREE, points, aim, eye, fovDeg, aspect) {
 }
 
 /*
+ * HOW A NAME IS SET ON THE PLATE. The plate is four times as wide as it is
+ * tall, and the name used to go on it as one line shrunk until it fitted or
+ * until it hit a floor of 28 pixels, which is where a long name was cut off
+ * at both ends: "WA State Championships 2025 Round 3 Qualifying Heat Final
+ * Series Day Two" came out as "ate Championships ... Series Da". A name
+ * is now broken at its spaces, onto as many as three lines, and set at the
+ * LARGEST size that fits, so nothing is ever cut and a long name is as big
+ * as it can be rather than as small as one line forces.
+ *
+ * ONE LINE IS PREFERRED, but only while it stays large (ONE_LINE_MIN_PX).
+ * A name that fits on one line at 48 pixels or more is set exactly as it
+ * always was, and that is every name up to about thirty letters in the
+ * typefaces this is drawn in; one that would need less is broken, because a
+ * name small enough to squint at is a worse picture than two lines of larger
+ * type. Two lines are preferred to three on the same terms. The first version
+ * of this broke at 72, which turned "WA State Champs 2025" into two lines
+ * and changed the picture of a name that had never been a problem.
+ *
+ * `measure(text, px)` is the width of a string at a size, which is the
+ * canvas's measureText in the page and any function at all in a test: this
+ * is pure so that scripts/gif-selftest.js can pin it. A single word wider
+ * than a line is broken between letters, and if even three lines at the
+ * smallest size cannot hold the name (an eighty character name in a typeface
+ * of very wide letters) the last line ends in an ellipsis. A name is never
+ * cut mid letter and never runs off the plate.
+ */
+const NAME_FILL = 0.92;
+const NAME_LEADING = 1.15;
+const NAME_MAX_PX = 132;
+const NAME_MIN_PX = 28;
+const ONE_LINE_MIN_PX = 48;
+const TWO_LINE_MIN_PX = 44;
+const NAME_MAX_LINES = 3;
+
+function wrapName(measure, text, px, maxWidth) {
+  const lines = [];
+  let line = '';
+  const push = (word) => {
+    const trial = line ? `${line} ${word}` : word;
+    if (measure(trial, px) <= maxWidth || !line) {
+      line = trial;
+      return;
+    }
+    lines.push(line);
+    line = word;
+  };
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (measure(word, px) <= maxWidth) {
+      push(word);
+      continue;
+    }
+    /* A word wider than the plate: between letters, because it has nowhere else to break. */
+    let piece = '';
+    for (const ch of word) {
+      if (piece && measure(piece + ch, px) > maxWidth) {
+        push(piece);
+        lines.push(line);
+        line = '';
+        piece = '';
+      }
+      piece += ch;
+    }
+    if (piece) {
+      push(piece);
+    }
+  }
+  if (line) {
+    lines.push(line);
+  }
+  return lines;
+}
+
+export function fitName(measure, name, maxWidth, maxHeight) {
+  const text = String(name || '').trim() || 'Untitled track';
+  const fits = (lines, px) => lines.length * px * NAME_LEADING <= maxHeight
+    && lines.every((l) => measure(l, px) <= maxWidth);
+  for (let want = 1; want <= NAME_MAX_LINES; want += 1) {
+    const floor = want === 1 ? ONE_LINE_MIN_PX : (want === 2 ? TWO_LINE_MIN_PX : NAME_MIN_PX);
+    for (let px = NAME_MAX_PX; px >= floor; px -= 4) {
+      const lines = wrapName(measure, text, px, maxWidth);
+      if (lines.length <= want && fits(lines, px)) {
+        return { px, lines };
+      }
+    }
+  }
+  /* Nothing fitted at three lines and the smallest size: keep what fits and end on an ellipsis. */
+  const px = NAME_MIN_PX;
+  const lines = wrapName(measure, text, px, maxWidth).slice(0, NAME_MAX_LINES);
+  let last = lines[lines.length - 1];
+  while (last.length > 1 && measure(`${last}\u2026`, px) > maxWidth) {
+    last = last.slice(0, -1);
+  }
+  lines[lines.length - 1] = `${last.trimEnd()}\u2026`;
+  return { px, lines };
+}
+
+/*
  * The track's name, painted into a canvas and laid on the floor.
  *
  * There is no 3D text anywhere in this repository: no FontLoader, no
@@ -446,30 +646,62 @@ function fitDistance(THREE, points, aim, eye, fovDeg, aspect) {
  * plane lying in the floor plane reads in perspective exactly like extruded
  * type does at this size, and it costs a texture rather than a dependency
  * and a typeface licence.
+ *
+ * DRAWN IN 1024 BY 256 UNITS WHATEVER THE TEXTURE'S SIZE. `width` is the
+ * canvas's real width, which detailOf raises for a bigger picture, and the
+ * context is scaled to match, so the layout below (the fit, the centring) is
+ * the same arithmetic at every size and only the pixels under it multiply.
  */
-function nameTexture(THREE, name) {
-  const w = 1024;
-  const h = 256;
+function nameTexture(THREE, name, width = NAME_TEXTURE_W, outline = false) {
+  const w = NAME_TEXTURE_W;
+  const h = w / 4;
+  const k = width / w;
   const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = w * k;
+  canvas.height = h * k;
   const ctx = canvas.getContext('2d');
+  ctx.scale(k, k);
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = `#${COL_TEXT.toString(16).padStart(6, '0')}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  let px = 132;
   const text = String(name || 'Untitled track');
-  for (;;) {
-    ctx.font = `600 ${px}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
-    if (ctx.measureText(text).width <= w * 0.92 || px <= 28) {
-      break;
+  const font = (px) => `600 ${px}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+  const fit = fitName((t, px) => {
+    ctx.font = font(px);
+    return ctx.measureText(t).width;
+  }, text, w * NAME_FILL, h * NAME_FILL);
+  ctx.font = font(fit.px);
+  /* On grass the cream needs an edge of its own, or the lettering is pale on mid green. */
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = fit.px * 0.14;
+  ctx.strokeStyle = 'rgba(10, 20, 12, 0.85)';
+  fit.lines.forEach((line, i) => {
+    const y = h / 2 + (i - (fit.lines.length - 1) / 2) * fit.px * NAME_LEADING;
+    if (outline) {
+      ctx.strokeText(line, w / 2, y);
     }
-    px -= 4;
-  }
-  ctx.fillText(text, w / 2, h / 2);
+    ctx.fillText(line, w / 2, y);
+  });
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  /*
+   * ANISOTROPIC, which the name was not at first, and it was softer than it
+   * needed to be for that even at 512. The plate lies in the floor and the
+   * camera looks down at it 40 degrees, so a texel is about a third narrower
+   * on the screen up and down than it is across. Plain trilinear filtering
+   * picks the blur level from the longer side of that footprint and applies it
+   * both ways, so the letters lose width they did not need to lose. Sixteen
+   * is a request: three clamps it to what the card supports, and a card with
+   * no support draws it as before.
+   *
+   * This is the one thing in this file that changes a 512 picture. With it
+   * switched off a 512 export of the 2025 WA States course is the same file,
+   * byte for byte, as it was before the bigger sizes existed. With it on, the
+   * name is sharper and the 256 colours are shared out a little differently,
+   * so edges elsewhere can move by a shade.
+   */
+  tex.anisotropy = 16;
   return tex;
 }
 
@@ -562,6 +794,267 @@ function shapeOfEl(el) {
   return typeof elementLib.apertureShapeOf === 'function' ? elementLib.apertureShapeOf(el) : 'square';
 }
 
+/*
+ * THE RACE FIELD, for an export that is asked to be set on one: the ground a
+ * five inch track is flown on, seen the way the game paints it, in place of
+ * the black stage and its pool of light.
+ *
+ * WHAT IS THE GAME'S AND NOT NEW HERE. The turf's two greens (GROUND_TURF), the
+ * stripes (a mower's pairs, five metres across, down the long axis), the white
+ * line on the boundary the author drew with eight metres of run off outside it,
+ * and the way a sponsor is painted on it (paintGroundLogo), all as
+ * src/render/scene.js lays them in the world, so the export is a picture of
+ * the field a pilot flies and not a second design of it.
+ *
+ * THE SPONSORS ARE THE DOCUMENT'S GROUND LOGOS, one plane each. The decal
+ * elements the author placed (KIND.DECAL, 'groundLogo'), each wearing the
+ * logo it names, at its place and heading and in its footprint. One plane
+ * per decal and not one canvas stamped over the whole field, because a ten
+ * metre logo on a field a hundred and thirty across is a few dozen pixels of
+ * a canvas that has to cover all of it, and at 2048 it would be the one thing
+ * in the picture that was soft. Each has a canvas of its own, sized to the
+ * picture like the name. A decal with no logo, or whose picture would not
+ * decode, is left out, never outlined: an empty box on the grass is worse
+ * than turf, which is the game's own rule.
+ *
+ * Authored in DOCUMENT coordinates: the field is 0 to width by 0 to depth,
+ * which is how the document holds every position, and the group goes into
+ * the same root as the track. A canvas has its y down and the document's y is
+ * up the field, so a canvas row is counted from the top edge, and a decal's
+ * heading, which is counter clockwise on the field, is the canvas's clockwise.
+ */
+function fieldGroup(THREE, doc, logos, sizes, keep) {
+  const group = new THREE.Group();
+  const W = Math.max(1, doc.field.width);
+  const D = Math.max(1, doc.field.depth);
+  const spanW = W + 2 * FIELD_MARGIN;
+  const spanD = D + 2 * FIELD_MARGIN;
+
+  /* The turf, as pixels per metre chosen so the long side is as wide as this
+   * picture can use: 1024 at the standard size, 4096 at the largest. */
+  const longPx = Math.min(4096, sizes.poolSize * 2);
+  const ppm = longPx / Math.max(spanW, spanD);
+  const cw = Math.max(2, Math.round(spanW * ppm));
+  const ch = Math.max(2, Math.round(spanD * ppm));
+  const cv = document.createElement('canvas');
+  cv.width = cw;
+  cv.height = ch;
+  const ctx = cv.getContext('2d');
+  const stripe = FIELD_STRIPE * ppm;
+  const alongX = W >= D;
+  const span = alongX ? ch : cw;
+  for (let i = 0; i * stripe < span; i += 1) {
+    ctx.fillStyle = i % 2 === 0 ? GROUND_TURF.light : GROUND_TURF.dark;
+    if (alongX) {
+      ctx.fillRect(0, i * stripe, cw, stripe);
+    } else {
+      ctx.fillRect(i * stripe, 0, stripe, ch);
+    }
+  }
+  ctx.strokeStyle = COL_FIELD_LINE;
+  ctx.lineWidth = Math.max(2, 0.3 * ppm);
+  const inset = FIELD_MARGIN * ppm;
+  ctx.strokeRect(inset, inset, cw - 2 * inset, ch - 2 * inset);
+  const turf = keep(new THREE.CanvasTexture(cv));
+  turf.colorSpace = THREE.SRGBColorSpace;
+  turf.anisotropy = 16;
+  const floorGeo = keep(new THREE.PlaneGeometry(spanW, spanD));
+  const floorMat = keep(new THREE.MeshStandardMaterial({ map: turf, roughness: 1, metalness: 0 }));
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.position.set(W / 2, D / 2, 0);
+  floor.receiveShadow = true;
+  group.add(floor);
+
+  /* The sponsors. */
+  const decalPx = Math.min(2048, 512 * (sizes.nameWidth / NAME_TEXTURE_W));
+  for (const el of doc.elements) {
+    if (ELEMENTS[el.type]?.kind !== KIND.DECAL) {
+      continue;
+    }
+    const mark = logoForDecal(doc, el);
+    const image = mark && logos ? logos.get(mark.id) : null;
+    if (!image) {
+      continue;
+    }
+    const w = Math.max(0.1, el.dims.width);
+    const d = Math.max(0.1, el.dims.depth);
+    const long = Math.max(w, d);
+    const dw = Math.max(8, Math.round((w / long) * decalPx));
+    const dh = Math.max(8, Math.round((d / long) * decalPx));
+    const dc = document.createElement('canvas');
+    dc.width = dw;
+    dc.height = dh;
+    paintGroundLogo(dc.getContext('2d'), dw, dh, { logo: image });
+    const tex = keep(new THREE.CanvasTexture(dc));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 16;
+    const geo = keep(new THREE.PlaneGeometry(w, d));
+    /* Paint is over the grass and never fights it for depth: a field a
+     * hundred metres away is shot from far enough that a couple of
+     * centimetres is under the depth buffer's resolution. */
+    const mat = keep(new THREE.MeshStandardMaterial({
+      map: tex, roughness: 1, metalness: 0, transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(el.position.x, el.position.y, 0.03);
+    mesh.rotation.z = el.yaw || 0;
+    mesh.renderOrder = 1;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
+/*
+ * THE FLAG'S TWO PARTS, lofted the way the builder's 3D view lofts them
+ * (sailPlaneGeometry and mastPlaneGeometry in view3d.js), which cannot be
+ * imported: it is the editor's whole preview and needs a page. What IS shared
+ * is everything that decides what a flag looks like, the mast's bend and
+ * taper (flagMast), the sail's outline (flagSailProfile) and its print
+ * (paintFlagSailPair), all in src/art/banners.js. What is copied is the loop
+ * that turns those numbers into triangles, which is the part that cannot drift
+ * into a different flag.
+ *
+ * Both are authored in XY, x out from the mast and y up, and are stood up and
+ * turned to a heading by the caller, as the preview does it.
+ */
+function sailGeometry(THREE, poleR, h) {
+  const { rows: profile } = flagSailProfile(h);
+  const rows = profile.length;
+  const cols = 5;
+  const pos = [];
+  const uvMinusZ = [];
+  const uvPlusZ = [];
+  const idx = [];
+  for (let r = 0; r < rows; r += 1) {
+    const row = profile[r];
+    for (let c = 0; c < cols; c += 1) {
+      const u = c / (cols - 1);
+      pos.push(poleR + row.lx + (row.tx - row.lx) * u, row.ly + (row.ty - row.ly) * u, 0);
+      /* Two sheets so the print reads the right way round from both sides. */
+      uvMinusZ.push(1 - u * 0.5, row.t);
+      uvPlusZ.push(u * 0.5, row.t);
+    }
+  }
+  const n = rows * cols;
+  const back = [];
+  for (let r = 0; r < rows - 1; r += 1) {
+    for (let c = 0; c < cols - 1; c += 1) {
+      const a = r * cols + c;
+      idx.push(a, a + cols, a + 1, a + 1, a + cols, a + cols + 1);
+      back.push(n + a + 1, n + a + cols, n + a, n + a + cols + 1, n + a + cols, n + a + 1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos.concat(pos), 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvMinusZ.concat(uvPlusZ), 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const nrm = geo.getAttribute('normal');
+  for (let i = 0; i < n; i += 1) {
+    nrm.setXYZ(n + i, nrm.getX(i), nrm.getY(i), nrm.getZ(i));
+  }
+  geo.setIndex(idx.concat(back));
+  return geo;
+}
+
+function mastGeometry(THREE, poleR, h) {
+  const { points } = flagMast(h);
+  const radial = 6;
+  const pos = [];
+  const idx = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i];
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    let tx = next.x - prev.x;
+    let ty = next.y - prev.y;
+    const tl = Math.hypot(tx, ty) || 1;
+    tx /= tl;
+    ty /= tl;
+    const r = poleR * p.r;
+    for (let a = 0; a < radial; a += 1) {
+      const th = (a / radial) * Math.PI * 2;
+      pos.push(p.x + -ty * Math.cos(th) * r, p.y + tx * Math.cos(th) * r, Math.sin(th) * r);
+    }
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    for (let a = 0; a < radial; a += 1) {
+      const a0 = i * radial + a;
+      const a1 = i * radial + ((a + 1) % radial);
+      idx.push(a0, a0 + radial, a1, a1, a0 + radial, a1 + radial);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/*
+ * THE DRESS: the printed boards and sails a race field's gates and flags wear,
+ * with the course's sponsors on them. The game dresses them and the builder's
+ * 3D view dresses them (view3d.js, bannerKit), by one rule that lives on the
+ * document (dressOrder in model.js: the flying order, one slot a structure,
+ * dealt round the logos), and this reads the same rule, so gate 7 wears the
+ * mark here that it wears there.
+ *
+ * ONE KIT PER LOGO: a header board, a sleeve and its mirror for the far leg
+ * (a second print and not a negative scale, which would turn the plane inside
+ * out), and a sail in navy and in red. A course with no logos still has the
+ * one kit, painted without a mark, which is what the game does: a bare gate
+ * on that field wears its plain banner, not a different one.
+ *
+ * Painted with the same painters the game and the preview use, so a header
+ * and a sleeve are the sponsor's mark where they have always put it.
+ * `logos` is the Map from a logo's id to its decoded image (loadLogos in
+ * animate.js); a logo that did not decode is a kit with no mark.
+ */
+function dressKit(THREE, doc, logos, keep) {
+  const list = (doc.branding && doc.branding.logos) || [];
+  const n = Math.max(1, list.length);
+  const imageOf = (i) => (list[i] && logos ? logos.get(list[i].id) : null) || null;
+  const paint = (i, size, painter, opts) => {
+    const canvas = bannerCanvas(size[0], size[1]);
+    painter(canvas.getContext('2d'), size[0], size[1], { ...opts, logo: imageOf(i) });
+    const tex = keep(new THREE.CanvasTexture(canvas));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 16;
+    return keep(new THREE.MeshStandardMaterial({
+      map: tex, roughness: 0.9, metalness: 0, side: THREE.FrontSide,
+    }));
+  };
+  const sails = new Map();
+  const sailOf = (i, accent) => {
+    const key = `${i}:${accent}`;
+    if (!sails.has(key)) {
+      sails.set(key, paint(i, BANNER_SIZE.sailSheet, paintFlagSailPair, { accent }));
+    }
+    return sails.get(key);
+  };
+  const dress = [];
+  for (let i = 0; i < n; i += 1) {
+    dress.push({
+      header: paint(i, BANNER_SIZE.header, paintGateHeader, {}),
+      sleeve: paint(i, BANNER_SIZE.sleeve, paintGateSleeve, {}),
+      sleeveFlipped: paint(i, BANNER_SIZE.sleeve, paintGateSleeve, { flip: true }),
+      sails: [sailOf(i, 'navy'), sailOf(i, 'red')],
+    });
+  }
+  /* The run of turn flags alternates navy and red down the lap, round the logos. */
+  const runLength = n % 2 === 0 ? n : n * 2;
+  const run = [];
+  for (let i = 0; i < runLength; i += 1) {
+    run.push(sailOf(i % n, i % 2 === 1 ? 'red' : 'navy'));
+  }
+  return {
+    forGate: (slot) => dress[((Math.round(slot) % n) + n) % n],
+    forFlag: (k) => run[k % run.length],
+  };
+}
+
 export function buildStage(THREE, doc, path, {
   size = 512, width = size, height = size, camera: fixed = null,
   /*
@@ -577,7 +1070,24 @@ export function buildStage(THREE, doc, path, {
    * gets the track instead of the caption. See CARD_GIF in animate.js.
    */
   nameplate = true,
+  /*
+   * THE SIZES OF THE IMAGES THE SCENE IS PAINTED FROM, as detailOf works them
+   * out. The caller that owns the renderer passes its own, with the card's
+   * texture limit in it; a caller with no renderer to ask gets the default,
+   * which is right for any card that can hold a 4096 texture.
+   */
+  detail = null,
+  /*
+   * SET ON A RACE FIELD, with the sponsors on the grass, instead of on the
+   * black stage. `logos` is a Map from a logo's id to a decoded image, which
+   * the caller loads because this is synchronous: see fieldGroup and
+   * loadLogos in animate.js. A track with no logos gets the field and no
+   * sponsors, which is what its field is.
+   */
+  field = false,
+  logos = null,
 } = {}) {
+  const sizes = detail || detailOf(width, height);
   const trash = [];
   const keep = (x) => {
     trash.push(x);
@@ -608,15 +1118,18 @@ export function buildStage(THREE, doc, path, {
   const spanR = estimateRadius(doc, path);
   /* The SHORT edge, because that is the one the frame is fitted to and so
    * the one a pipe's readable minimum has to be measured against. On a
-   * square export the two are the same number, which is what this was. */
+   * square export the two are the same number, which is what this was.
+   * Measured against REFERENCE_EDGE when the picture is bigger than that, so
+   * a minimum of so many pixels is so many pixels of a 512 picture and not of
+   * whatever size this one is drawn at: see REFERENCE_EDGE. */
   const shortEdge = Math.max(64, Math.min(width, height));
-  const worldPerPx = (2.2 * spanR) / shortEdge;
+  const worldPerPx = (2.2 * spanR) / Math.min(shortEdge, REFERENCE_EDGE);
   const minDrawR = (MIN_PIPE_PX * worldPerPx) / 2;
   const tubeR = Math.max(tubeOD / 2, minDrawR);
   const jointR = tubeR * JOINT_SCALE;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(COL_FLOOR);
+  scene.background = new THREE.Color(field ? COL_SURROUND : COL_FLOOR);
 
   /* The one conversion. Document is Z up, Three is Y up. */
   const root = new THREE.Group();
@@ -643,6 +1156,44 @@ export function buildStage(THREE, doc, path, {
 
   const pipes = [];
   const pads = [];
+
+  /*
+   * The dress of a race field's gates and flags, when it is set on one. It goes
+   * in its own group beside the track and not in `statics`, because the camera
+   * is fitted to the pipe and a board standing off the pipe must not move the
+   * frame.
+   */
+  const dress = field && !micro ? dressKit(THREE, doc, logos, keep) : null;
+  const dressGroup = new THREE.Group();
+  track.add(dressGroup);
+  const slots = dress ? dressOrder(doc) : null;
+  const flagNumber = new Map();
+  if (dress) {
+    let k = 0;
+    for (const el of doc.elements) {
+      if (el.type === 'flag') {
+        flagNumber.set(el.id, k);
+        k += 1;
+      }
+    }
+  }
+  /* A mast and its sail, stood up at a point and turned to a heading: the mast joins the pipe, the sail is its own mesh. */
+  const flagAt = (x, y, z, turn, radius, h, sailMat) => {
+    const place = (mesh) => {
+      mesh.rotation.x = Math.PI / 2;
+      mesh.rotation.y = turn;
+      mesh.position.set(x, y, z);
+      mesh.updateMatrix();
+      return mesh;
+    };
+    const mast = mastGeometry(THREE, radius, h);
+    mast.applyMatrix4(place(new THREE.Object3D()).matrix);
+    pipes.push(mast);
+    const sail = new THREE.Mesh(keep(sailGeometry(THREE, radius, h)), sailMat);
+    place(sail);
+    sail.castShadow = true;
+    dressGroup.add(sail);
+  };
 
   /* A pipe standing on the floor gets a fitting and four stubs, which is
    * what the reference's splayed foot is and what a real build uses to stop
@@ -672,6 +1223,28 @@ export function buildStage(THREE, doc, path, {
       return;
     }
     const base = el.position.z;
+    /*
+     * A LETTER: its tubes and its joints, in the plane of the piece, from the layout the room and the world are drawn
+     * from (letterLayoutOf in model.js). Its pipe is its own and thicker than a gate's, and it stands on the ground
+     * on its own feet, so there are no posts and no foot stubs to add.
+     */
+    if (isLetter(el)) {
+      const laid = modelLib.letterLayoutOf(el);
+      const f = apertureFrame(el.yaw, el.pitch);
+      const at = ([x, y]) => ({
+        x: el.position.x + f.widthAxis.x * x,
+        y: el.position.y + f.widthAxis.y * x,
+        z: base + y,
+      });
+      const r = (elementLib.LETTER_TUBE_OD ?? 0.06) / 2;
+      for (const [a, b] of laid.tubes) {
+        pipes.push(pipeGeometry(THREE, at(a), at(b), r));
+      }
+      for (const p of laid.joints) {
+        pipes.push(ballGeometry(THREE, at(p), r * 1.4));
+      }
+      return;
+    }
     /*
      * A HOOP OR A HEX GATE: a run of tubes round the shape, a joint at each corner, and a post and
      * a foot under each of the lowest corners. A tube wholly under the floor is not drawn, as the
@@ -721,9 +1294,13 @@ export function buildStage(THREE, doc, path, {
      */
     const sides = frameSidesOf(el);
     const last = levels.length - 1;
-    const cornerSide = (i) => ((i === 0 || i === 3) ? sides.left : sides.right);
     let lowerTop = null;
     for (const ap of levels) {
+      /* An upright is one stretch per opening on a stack, and a stretch goes on its own (unbuiltPolesOf in
+       * elements.js), so the corner joints, the edges and the legs of THIS opening follow its own stretch. */
+      const leftHere = poleBuilt(el, 'left', ap.index);
+      const rightHere = poleBuilt(el, 'right', ap.index);
+      const cornerSide = (i) => ((i === 0 || i === 3) ? leftHere : rightHere);
       const centre = apertureCenter(el, ap.index);
       /* The bar centrelines, which are the clear opening grown by half a
        * tube on each side. Exactly the rectangle view3d.js lays its boxes
@@ -733,9 +1310,9 @@ export function buildStage(THREE, doc, path, {
       );
       const edgeBuilt = [
         ap.index === 0 ? sides.bottom : true,
-        sides.right,
+        rightHere,
         ap.index === last ? sides.top : true,
-        sides.left,
+        leftHere,
       ];
       for (let i = 0; i < 4; i += 1) {
         if (edgeBuilt[i]) {
@@ -748,11 +1325,16 @@ export function buildStage(THREE, doc, path, {
       /* Corners nought and one are the lower edge of the opening, two and
        * three the upper. A stack shares its verticals, so each level is
        * joined to the one below rather than given legs of its own. */
-      if (lowerTop) {
-        if (sides.left) {
+      /* Two openings of different widths meet along the shared bar, which the wider one's own bar already is: there
+       * is no upright between them to join. */
+      if (lowerTop && Math.abs(ap.clearW - levels[ap.index - 1].clearW) > 1e-9) {
+        /* nothing to join */
+      } else if (lowerTop) {
+        /* The join between two openings belongs to both stretches either side of it, and stands only when both do. */
+        if (leftHere && poleBuilt(el, 'left', ap.index - 1)) {
           pipes.push(pipeGeometry(THREE, lowerTop[0], c[0], tubeR));
         }
-        if (sides.right) {
+        if (rightHere && poleBuilt(el, 'right', ap.index - 1)) {
           pipes.push(pipeGeometry(THREE, lowerTop[1], c[1], tubeR));
         }
       } else {
@@ -778,12 +1360,98 @@ export function buildStage(THREE, doc, path, {
       }
       lowerTop = [c[3], c[2]];
     }
+    dressGate(el, sides);
+  };
+
+  /*
+   * A GATE'S PRINTED DRESS, the way the builder's 3D view hangs it (the block
+   * after "NO PRINTED DRESS ON A RACEGOW GATE" in view3d.js): a header board over
+   * the top rail and a sleeve down each upright, each as two planes back to back
+   * so the print reads the right way round from either side, and flags on the
+   * header's ends for a flagged gate. A tilted gate is carried on a mast and a
+   * letter has no uprights, so neither is dressed. Every measure that goes
+   * round the pipe is taken from the pipe as it is DRAWN (pipeOut), because on
+   * a big field the pipe is drawn thicker than it is and a board that clears the
+   * real pipe would sit inside the drawn one.
+   */
+  const dressGate = (el, sides) => {
+    if (!dress || isLetter(el) || Math.abs(el.pitch) >= Math.PI / 6) {
+      return;
+    }
+    const levels = aperturesOf(el);
+    if (!levels.length) {
+      return;
+    }
+    const top = levels[levels.length - 1];
+    const bottom = levels[0];
+    const f = apertureFrame(el.yaw, el.pitch);
+    const kit = dress.forGate(slots.get(el.id) ?? 0);
+    const pipeOut = Math.max(tubeOD / 2, tubeR);
+    const edge = top.clearW / 2 + tubeOD / 2 + pipeOut;
+    const lift = (tubeOD / 2 + pipeOut) * 2;
+    const sleeveW = isPlain(el) ? 0 : 0.42;
+    const sleeveBottom = bottom.sillH;
+    const sleeveH = top.sillH + top.clearH + lift - sleeveBottom;
+    const basis = new THREE.Matrix4().makeBasis(v3(THREE, f.widthAxis), v3(THREE, f.heightAxis), v3(THREE, f.normal));
+    const quat = new THREE.Quaternion().setFromRotationMatrix(basis);
+    const across = v3(THREE, f.widthAxis);
+    const facing = v3(THREE, f.normal);
+    const base = el.position;
+    const board = (w, h, mat, off, z) => {
+      for (const sn of [-1, 1]) {
+        const face = new THREE.Mesh(keep(new THREE.PlaneGeometry(w, h)), mat);
+        face.quaternion.copy(quat);
+        if (sn < 0) {
+          face.rotateY(Math.PI);
+        }
+        face.position.set(
+          base.x + across.x * off + facing.x * sn * (0.012 + (pipeOut - tubeOD / 2)),
+          base.y + across.y * off + facing.y * sn * (0.012 + (pipeOut - tubeOD / 2)),
+          base.z + z + across.z * off + facing.z * sn * (0.012 + (pipeOut - tubeOD / 2)),
+        );
+        face.castShadow = true;
+        dressGroup.add(face);
+      }
+    };
+    /* A sleeve is one board down an upright, so it hangs only on a stack whose openings are all one width. */
+    if (sleeveW > 0 && levels.every((ap) => Math.abs(ap.clearW - top.clearW) < 1e-9)) {
+      for (const sx of [-1, 1]) {
+        if (uprightIntact(el, sx < 0 ? 'left' : 'right') && sides[sx < 0 ? 'left' : 'right']) {
+          board(sleeveW, sleeveH, sx < 0 ? kit.sleeveFlipped : kit.sleeve, sx * (edge + sleeveW / 2), sleeveBottom + sleeveH / 2);
+        }
+      }
+    }
+    const headerW = 2 * (edge + sleeveW);
+    if (sides.top) {
+      board(headerW, GATE_BANNER_H, kit.header, 0, top.sillH + top.clearH + lift + GATE_BANNER_H / 2 + 0.03);
+    }
+    /* The pennants on a flagged gate's header, standing on the board's top edge and leaning outboard. */
+    const signs = flagSideSigns(flagSideOf(el));
+    const headerTop = top.sillH + top.clearH + lift + GATE_BANNER_H + 0.03;
+    const h = gateFlagHeight(el.dims);
+    const radius = Math.max(GATE_FLAG_POLE_R, tubeR * 0.75);
+    let i = 0;
+    for (const sx of signs) {
+      const lean = flagLeanSign(sx);
+      const turn = -Math.atan2(f.widthAxis.y * lean, f.widthAxis.x * lean);
+      flagAt(
+        base.x + f.widthAxis.x * sx * (headerW / 2), base.y + f.widthAxis.y * sx * (headerW / 2),
+        base.z + headerTop, turn, radius, h, kit.sails[i % kit.sails.length],
+      );
+      i += 1;
+    }
   };
 
   const buildMarker = (el) => {
     const h = el.dims.height ?? 1.5;
     const r = Math.max(el.dims.poleRadius ?? el.dims.baseRadius ?? tubeR, minDrawR);
     const p = el.position;
+    /* A turn flag on a race field is the bent mast and its printed sail, in place of the plain post. */
+    if (dress && el.type === 'flag') {
+      flagAt(p.x, p.y, p.z, -el.yaw, r, h, dress.forFlag(flagNumber.get(el.id) ?? 0));
+      addFoot({ x: p.x, y: p.y, z: p.z });
+      return;
+    }
     pipes.push(pipeGeometry(
       THREE, { x: p.x, y: p.y, z: p.z }, { x: p.x, y: p.y, z: p.z + h }, r,
     ));
@@ -948,22 +1616,30 @@ export function buildStage(THREE, doc, path, {
   }
   const azimuth = theta + AZIMUTH_OFF_AXIS;
 
-  /* The floor. Large enough that its edge is never in shot, and black past
-   * the pool so the track stands on nothing. The pool is sized against the
-   * track, so the two are independent. */
-  const floorSpan = Math.max(doc.field.width, doc.field.depth, radius * 6) * 2;
-  const poolFrac = clamp((radius * POOL_RADII) / (floorSpan / 2), 0.04, 0.95);
-  const floorTex = keep(poolTexture(THREE, poolFrac));
-  const floorGeo = keep(new THREE.PlaneGeometry(floorSpan, floorSpan));
-  const floorMat = keep(new THREE.MeshStandardMaterial({
-    map: floorTex, roughness: 1, metalness: 0,
-  }));
-  const floor = new THREE.Mesh(floorGeo, floorMat);
-  /* Authored in document coordinates like everything else, so the plane is
-   * already in the floor plane and only needs moving under the track. */
-  floor.position.set(centre.x, -centre.z, box.min.y - 0.001);
-  floor.receiveShadow = true;
-  root.add(floor);
+  const floorZ = box.min.y - 0.001;
+  if (field) {
+    /* The race field, in document coordinates, under the track. */
+    const turf = fieldGroup(THREE, doc, logos, sizes, keep);
+    turf.position.z = floorZ;
+    root.add(turf);
+  } else {
+    /* The floor. Large enough that its edge is never in shot, and black past
+     * the pool so the track stands on nothing. The pool is sized against the
+     * track, so the two are independent. */
+    const floorSpan = Math.max(doc.field.width, doc.field.depth, radius * 6) * 2;
+    const poolFrac = clamp((radius * POOL_RADII) / (floorSpan / 2), 0.04, 0.95);
+    const floorTex = keep(poolTexture(THREE, poolFrac, sizes.poolSize));
+    const floorGeo = keep(new THREE.PlaneGeometry(floorSpan, floorSpan));
+    const floorMat = keep(new THREE.MeshStandardMaterial({
+      map: floorTex, roughness: 1, metalness: 0,
+    }));
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    /* Authored in document coordinates like everything else, so the plane is
+     * already in the floor plane and only needs moving under the track. */
+    floor.position.set(centre.x, -centre.z, box.min.y - 0.001);
+    floor.receiveShadow = true;
+    root.add(floor);
+  }
 
   /*
    * THE NAME, laid in the floor plane in front of the track, turned so it
@@ -977,7 +1653,7 @@ export function buildStage(THREE, doc, path, {
    */
   const nameCorners = [];
   if (nameplate) {
-    const nameTex = keep(nameTexture(THREE, doc.name));
+    const nameTex = keep(nameTexture(THREE, doc.name, sizes.nameWidth, field));
     const nameW = radius * 1.1;
     const nameH = nameW * 0.25;
     const nameGeo = keep(new THREE.PlaneGeometry(nameW, nameH));
@@ -1057,16 +1733,25 @@ export function buildStage(THREE, doc, path, {
   );
   /* A document azimuth turns into a Three heading through the same rotation
    * the root group carries: document (x, y, z) is Three (x, z, minus y). */
-  const eye = new THREE.Vector3(
-    Math.cos(azimuth) * Math.cos(ELEVATION),
-    Math.sin(ELEVATION),
-    -Math.sin(azimuth) * Math.cos(ELEVATION),
-  );
-  const dist = Math.max(fitR * 0.5, FIT_MARGIN * fitDistance(
-    THREE, fitPts, aim, eye, FOV_DEG, aspect,
-  ));
-  camera.position.copy(aim).addScaledVector(eye, dist);
-  camera.lookAt(aim);
+  /*
+   * THE CAMERA FROM ONE DIRECTION, framed to hold the whole track. Written as
+   * a function so a still can be shot from further round the track than the
+   * animation's own viewpoint (look, in the return below); the first call is
+   * the viewpoint the animation has always had.
+   */
+  const placeCamera = (az, elev) => {
+    const eye = new THREE.Vector3(
+      Math.cos(az) * Math.cos(elev),
+      Math.sin(elev),
+      -Math.sin(az) * Math.cos(elev),
+    );
+    const dist = Math.max(fitR * 0.5, FIT_MARGIN * fitDistance(
+      THREE, fitPts, aim, eye, FOV_DEG, aspect,
+    ));
+    camera.position.copy(aim).addScaledVector(eye, dist);
+    camera.lookAt(aim);
+  };
+  placeCamera(azimuth, ELEVATION);
   /*
    * A CAMERA THE CALLER SUPPLIES, in document coordinates, overrides the
    * framing above. It exists so an export can be shot from exactly the
@@ -1090,18 +1775,21 @@ export function buildStage(THREE, doc, path, {
    * rather than straight away from the eye. One dim hemisphere so the shaded
    * face is grey rather than black.
    */
-  const keyAz = azimuth + (40 * Math.PI) / 180;
   const keyEl = (60 * Math.PI) / 180;
   const key = new THREE.DirectionalLight(0xffffff, 2.1);
   const keyDist = Math.max(6, fitR * 3);
-  key.position.set(
-    aim.x + Math.cos(keyAz) * Math.cos(keyEl) * keyDist,
-    aim.y + Math.sin(keyEl) * keyDist,
-    aim.z - Math.sin(keyAz) * Math.cos(keyEl) * keyDist,
-  );
+  const throwKey = (az) => {
+    const keyAz = az + (40 * Math.PI) / 180;
+    key.position.set(
+      aim.x + Math.cos(keyAz) * Math.cos(keyEl) * keyDist,
+      aim.y + Math.sin(keyEl) * keyDist,
+      aim.z - Math.sin(keyAz) * Math.cos(keyEl) * keyDist,
+    );
+  };
+  throwKey(azimuth);
   key.target.position.copy(aim);
   key.castShadow = true;
-  key.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+  key.shadow.mapSize.set(sizes.shadowMap, sizes.shadowMap);
   key.shadow.camera.near = 0.1;
   key.shadow.camera.far = keyDist * 2.4;
   const half = fitR * 1.4;
@@ -1113,7 +1801,12 @@ export function buildStage(THREE, doc, path, {
   key.shadow.normalBias = tubeR;
   scene.add(key);
   scene.add(key.target);
-  scene.add(new THREE.HemisphereLight(0xaeb6c0, 0x08080c, 0.24));
+  /* The stage is lit to leave its shadows nearly black on a black floor. Grass
+   * lit that way is a dark green with black shadows, so a field gets a sky and
+   * a ground to bounce off, which is what the game's hemisphere is. */
+  scene.add(field
+    ? new THREE.HemisphereLight(0xdfeadf, 0x2c4a2a, 0.85)
+    : new THREE.HemisphereLight(0xaeb6c0, 0x08080c, 0.24));
 
   /*
    * THE PANE. One quad, moved, rather than one per gate lit in turn. Its
@@ -1157,7 +1850,7 @@ export function buildStage(THREE, doc, path, {
     (MIN_RIBBON_PX * worldPerPx) / 2,
   );
   const coreMat = keep(new THREE.MeshBasicMaterial({
-    color: COL_RIBBON_CORE, vertexColors: true,
+    color: COL_RIBBON_CORE, vertexColors: true, transparent: field, depthWrite: !field,
   }));
   const shellMat = keep(new THREE.MeshBasicMaterial({
     color: COL_RIBBON_SHELL,
@@ -1239,7 +1932,7 @@ export function buildStage(THREE, doc, path, {
     return pts;
   };
 
-  const setTube = (mesh, pts, radius) => {
+  const setTube = (mesh, pts, radius, fadeOut = false, { uniform = false, maxSegs = 220 } = {}) => {
     if (mesh.geometry) {
       mesh.geometry.dispose();
     }
@@ -1250,7 +1943,7 @@ export function buildStage(THREE, doc, path, {
     }
     mesh.visible = true;
     const curve = new THREE.CatmullRomCurve3(pts.map((p) => v3(THREE, p)));
-    const segs = Math.max(8, Math.min(220, pts.length * 2));
+    const segs = Math.max(8, Math.min(maxSegs, pts.length * 2));
     const geo = new THREE.TubeGeometry(curve, segs, radius, RIBBON_RADIAL_SEGMENTS, false);
     /*
      * The taper is a vertex colour rather than a shrinking radius. A cone
@@ -1261,16 +1954,26 @@ export function buildStage(THREE, doc, path, {
     const rings = segs + 1;
     const perRing = RIBBON_RADIAL_SEGMENTS + 1;
     const count = geo.getAttribute('position').count;
-    const colors = new Float32Array(count * 3);
+    /*
+     * On the black stage the taper is black, and black on black is nothing.
+     * On grass it is a black streak at the tail of the line, so a field
+     * fades the tail OUT instead: full colour with a falling alpha, which
+     * needs a four component colour and a material that is transparent.
+     */
+    const parts = fadeOut ? 4 : 3;
+    const colors = new Float32Array(count * parts);
     for (let i = 0; i < count; i += 1) {
       const ring = Math.min(rings - 1, Math.floor(i / perRing));
       const t = rings > 1 ? ring / (rings - 1) : 1;
-      const f = t * t;
-      colors[i * 3] = f;
-      colors[i * 3 + 1] = f;
-      colors[i * 3 + 2] = f;
+      const f = uniform ? 1 : t * t;
+      colors[i * parts] = fadeOut ? 1 : f;
+      colors[i * parts + 1] = fadeOut ? 1 : f;
+      colors[i * parts + 2] = fadeOut ? 1 : f;
+      if (fadeOut) {
+        colors[i * parts + 3] = f;
+      }
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, parts));
     mesh.geometry = geo;
   };
 
@@ -1306,7 +2009,10 @@ export function buildStage(THREE, doc, path, {
       const ap = levels[idx];
       const centre = apertureCenter(el, idx);
       const f = apertureFrame(el.yaw, el.pitch);
-      const fan = paneFan(shape, ap.clearW, ap.clearH);
+      /* A letter's hole is a polygon about its own point, which is the centre above. */
+      const fan = ap.shape === 'poly' && typeof apertureLib.paneOfPolygon === 'function'
+        ? apertureLib.paneOfPolygon(ap.poly, 1, 1)
+        : paneFan(shape, ap.clearW, ap.clearH);
       const pos = shapedPane.geometry.getAttribute('position');
       for (let i = 0; i < fan.position.length / 3; i += 1) {
         const x = fan.position[3 * i];
@@ -1345,7 +2051,7 @@ export function buildStage(THREE, doc, path, {
      */
     const s = total > 0 ? ((i % frames) / frames) * total : 0;
     const pts = windowPoints(s);
-    setTube(core, pts, ribbonR);
+    setTube(core, pts, ribbonR, field);
     setTube(shell, pts, ribbonR * RIBBON_SHELL_SCALE);
     const headIdx = sampleAt(s);
     setPane(paneKnotIndex(path, samples[headIdx].segment));
@@ -1353,10 +2059,44 @@ export function buildStage(THREE, doc, path, {
 
   setFrame(0, 1);
 
+  /*
+   * A STILL OF THE WHOLE LAP, for the export bundle's pictures. `on` draws the
+   * entire racing line as one even ribbon, with no pane and no tapering tail,
+   * and off hides the ribbon and the pane so what is left is the pipe. The
+   * animation never calls it, so a frame of the animation is what it was.
+   * More segments than the animation's tail gets, because the tail is a few
+   * metres of line and this is the whole lap.
+   */
+  const setRoute = (on) => {
+    if (!on) {
+      core.visible = false;
+      shell.visible = false;
+      pane.visible = false;
+      if (shapedPane) { shapedPane.visible = false; }
+      return;
+    }
+    const pts = samples.map((sm) => sm.pos);
+    setTube(core, pts, ribbonR, field, { uniform: true, maxSegs: 1600 });
+    setTube(shell, pts, ribbonR * RIBBON_SHELL_SCALE, false, { uniform: true, maxSegs: 1600 });
+    pane.visible = false;
+    if (shapedPane) { shapedPane.visible = false; }
+  };
+
+  /* The camera from another side, framed to hold the track. Azimuth and
+   * elevation are in the document's frame: azimuth counter clockwise from
+   * east, as the animation's own is. */
+  const look = (az, elev) => {
+    placeCamera(az, elev);
+    throwKey(az);
+  };
+
   return {
     scene,
     camera,
     setFrame,
+    setRoute,
+    look,
+    azimuth,
     bbox: framedBox,
     dispose() {
       for (const t of trash) {

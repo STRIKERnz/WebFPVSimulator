@@ -36,7 +36,7 @@
 /* FT and IN come from src/units.js, shared with src/game/track.js. The
  * builder must not import the game, so the constants they both need live in
  * a leaf module rather than being typed out twice. */
-import { FT, IN, FRAME_TUBE_OD, GATE_SCALE } from '../units.js';
+import { FT, IN, FRAME_TUBE_OD, GATE_SCALE, LETTER_TUBE_OD } from '../units.js';
 import {
   GATE_OPENING_DEFAULT, GATE_OPENING_MAX, GATE_SPACING_NOMINAL,
   ELEVATED_SILL_MIN, PIPE_OD, POLE_FROM_GATE_MIN, ROOM_WIDTH, ROOM_DEPTH, GRID as MICRO_GRID,
@@ -52,9 +52,14 @@ import { ROOM_SIZES } from '../props/room.js';
 /* What an opening is when it is not a square, and the height a regular hexagon has over its
  * width, again in the one place the shape is written down. */
 import { shapeOf, HEX_HEIGHT_RATIO } from '../props/aperture.js';
+/* The capital letters as pipe, with the holes in them: what a letter piece is made of, in the one place it is
+ * written down. Pure, and imports only the aperture arithmetic above. */
+import {
+  LETTER_DEFAULT, dimsForLetterSize, letterDefaults, letterOf, letterSizeOf, openingCount,
+} from '../props/letters.js';
 
 /* Re-exported because this module's consumers already read it from here. */
-export { FRAME_TUBE_OD };
+export { FRAME_TUBE_OD, LETTER_TUBE_OD };
 
 /*
  * THE TWO TRACK CLASSES.
@@ -401,7 +406,7 @@ export function isUnbuilt(el) {
  * builds one (src/render/scene.js obstacle): two uprights from the ground to
  * the top rail, a member over the top opening, and a member under the
  * lowest opening when it is off the ground. 'left' and 'right' are those
- * two uprights, the whole height of a stack; 'top' is the member over the
+ * two uprights, the whole height of a stack unless a stretch is taken alone (unbuiltPolesOf below); 'top' is the member over the
  * top opening and 'bottom' the one under the lowest. A member BETWEEN two
  * openings of a stack holds both of them up and is not one of the four.
  *
@@ -457,10 +462,67 @@ export function frameSidesOf(el) {
   };
 }
 
-/* True when some side has been taken away one at a time. A gap in the
- * lattice answers false: it has its own flag and its own code path. */
+/* True when some side has been taken away one at a time, or one opening's stretch of an upright
+ * has. A gap in the lattice answers false: it has its own flag and its own code path. */
 export function hasMissingSides(el) {
-  return !isUnbuilt(el) && unbuiltSidesOf(el).length > 0;
+  return !isUnbuilt(el) && (unbuiltSidesOf(el).length > 0 || unbuiltPolesOf(el).length > 0);
+}
+
+/*
+ * ONE OPENING'S STRETCH OF AN UPRIGHT, in a stack.
+ *
+ * The owner's words, 2026-10-04: with a double or triple stacked gate, deleting a vertical side "should only
+ * remove that gates pole not the entire vertical pole for the entire 2 or 3 gates". So on a stack the
+ * uprights are not one pipe each but one stretch per opening, and a stretch can go on its own.
+ *
+ * `unbuiltPoles` is a list of "side:index" strings, side being left or right as everywhere here and index
+ * the opening from the bottom, 0 first. It is the finer spelling of `unbuiltSides`, which still takes the
+ * whole upright away and wins over it: a stretch whose whole upright is already gone is not written. When
+ * every stretch of one upright has gone the upright is gone, and that is written the old way, so a document
+ * says one thing one way. Only a stack of square openings has it; the key is written only when it is not
+ * empty, so every gate that exists is the JSON it was.
+ */
+export const POLE_SIDES = ['left', 'right'];
+
+export function poleKey(side, index) {
+  return `${side}:${index}`;
+}
+
+/* The stretches taken away, cleaned against this piece: a stack, a known side, an opening it has, each once, and
+ * nothing the whole upright already covers. Ordered by side then opening. */
+export function unbuiltPolesOf(el) {
+  if (!el || ELEMENTS[el.type]?.kind !== KIND.APERTURE || isUnbuilt(el) || isLetterPiece(el)
+    || apertureShapeOf(el) !== 'square' || !Array.isArray(el.unbuiltPoles)) {
+    return [];
+  }
+  const count = apertureLevels(el.dims).length;
+  if (count < 2) {
+    return [];
+  }
+  const whole = normalizeUnbuiltSides(el.unbuiltSides);
+  const out = [];
+  for (const side of POLE_SIDES) {
+    if (whole.includes(side)) {
+      continue;
+    }
+    for (let i = 0; i < count; i += 1) {
+      if (el.unbuiltPoles.includes(poleKey(side, i))) {
+        out.push(poleKey(side, i));
+      }
+    }
+  }
+  return out;
+}
+
+/* Whether a whole upright is there, every stretch of it. The printed sleeve hangs on this and not on a stretch: it is
+ * one board the height of the stack, so an upright with a stretch gone has no sleeve. */
+export function uprightIntact(el, side) {
+  return frameSidesOf(el)[side] && !unbuiltPolesOf(el).some((k) => k.startsWith(`${side}:`));
+}
+
+/* Whether one opening's stretch of one upright is built. A whole upright that is gone takes every stretch with it. */
+export function poleBuilt(el, side, index) {
+  return frameSidesOf(el)[side] && !unbuiltPolesOf(el).includes(poleKey(side, index));
 }
 
 /*
@@ -772,6 +834,42 @@ export const ELEMENTS = {
       levels: 1, sillH: 0,
       clearW: GATE_OPENING_DEFAULT, clearH: GATE_OPENING_DEFAULT * HEX_HEIGHT_RATIO,
       levelPitch: GATE_SPACING_NOMINAL,
+    },
+  },
+  /*
+   * A CAPITAL LETTER OF PIPE, WITH THE GAPS IN IT TO FLY THROUGH. The WA State Champs have a W on the course
+   * and its gate is the gap between the two Vs; a letter is that in general, every capital from A to Z
+   * (src/props/letters.js draws them), each with one to three holes that score. Which letter it is is the
+   * element's own `letter`, a word of one capital, and the shape of the holes is the letter's, so the document
+   * holds no polygon to get wrong.
+   *
+   * IT KEEPS THE FIVE NUMBERS OF EVERY OPENING. clearW and clearH are the size of its PRIMARY hole measured
+   * axis to axis, and the whole letter is drawn round that hole in the proportions of the design, so the
+   * envelope, the rules, the cards and the board's plan, which read those two numbers and nothing else, read a
+   * letter as they read a gate. `levels` is how many holes the letter has (the reader sets it from the letter),
+   * `sillH` is zero because a letter stands on the ground, and `levelPitch` means nothing and is kept so that
+   * what reads it finds a number. The defaults here are the default letter's.
+   *
+   * A FIVE INCH RACE PIECE: not on the whoop palette and not on a map. Upright (its pitch is zero), and its pipe
+   * is the gate's pipe.
+   */
+  letter: {
+    id: 'letter',
+    label: 'Letter',
+    /* No key of its own: the free ones on the five inch palette are an asset's on a map (the self test pins that the
+     * race palettes' keys are what they were), so the chip is empty and the tool is a click. */
+    key: '',
+    group: 'track',
+    kind: KIND.APERTURE,
+    shape: 'letter',
+    note: 'A capital letter built of pipe, with the gaps in it to fly through: every letter from A to Z. Pick the letter under the tool. A W is the gap between its two Vs; an A has its counter and the space under the bar. Each gap is a gate of its own in the flying order.',
+    pitch: 0,
+    dims: {
+      levels: openingCount(LETTER_DEFAULT),
+      sillH: 0,
+      clearW: letterDefaults(LETTER_DEFAULT).clearW,
+      clearH: letterDefaults(LETTER_DEFAULT).clearH,
+      levelPitch: levelPitchFor(letterDefaults(LETTER_DEFAULT).clearH),
     },
   },
   barrier: {
@@ -1321,11 +1419,15 @@ export function presetHeight(preset, shape = 'square') {
  * ladder resized to championship is still a three level ladder.
  */
 export function applyGatePreset(dims, preset, shape = 'square') {
-  if (!dims || !preset) {
+  /* A letter is not sized by a gate's preset: its two numbers are its primary hole's, and a standard gate's would make
+   * a W the size of a gate. Its own size is set by width and height (letterDimsForSize). */
+  if (!dims || !preset || shape === 'letter') {
     return dims;
   }
   dims.clearW = preset.clearW;
   dims.clearH = presetHeight(preset, shape);
+  /* A standard size is every opening of the stack at that size, so an opening that was set apart goes back with it. */
+  delete dims.openings;
   /*
    * A RACEGOW STACK'S PITCH IS A RULE, NOT A CONSEQUENCE.
    *
@@ -1352,7 +1454,7 @@ export function applyGatePreset(dims, preset, shape = 'square') {
  * draws. It is written out rather than derived from Object.keys so a future
  * reorder is one obvious edit. */
 export const PALETTE_ORDER = [
-  'gate', 'flaggedGate', 'doubleStack', 'flaggedDoubleStack', 'ladder', 'tower', 'diveGate', 'barrier', 'flag', 'cone', 'waypoint',
+  'gate', 'flaggedGate', 'doubleStack', 'flaggedDoubleStack', 'ladder', 'tower', 'diveGate', 'letter', 'barrier', 'flag', 'cone', 'waypoint',
 ];
 
 /*
@@ -1573,6 +1675,15 @@ export function labelOf(type, cls = TRACK_CLASS_DEFAULT) {
 }
 
 /*
+ * WHAT A PIECE IS CALLED WHEN ITS AUTHOR HAS NOT NAMED IT: its type's label, and an opening with no frame says so,
+ * because a gate in the strip that is not a gate to look at is the one a pilot asks about.
+ */
+export function pieceLabel(el, cls = TRACK_CLASS_DEFAULT) {
+  const base = labelOf(el.type, cls);
+  return isUnbuilt(el) ? `Invisible ${base.toLowerCase()}` : base;
+}
+
+/*
  * THE WHOOP CANVAS'S TOOLS THAT ARE NOT PIECES. A row of gates is RaceGOW's Side
  * by Side Gates, dragged out along the floor, the ruler measures between two
  * points, and Fly order adds a pass through the piece that is clicked. None is an
@@ -1627,6 +1738,14 @@ export const WHOOP_TOOLS = [
  */
 export const FIVE_INCH_PIECES = [
   {
+    id: 'invisibleGate',
+    label: 'Invisible gate',
+    /* I for invisible, which is free: E and Q turn, X reverses, V is the view and P the line. */
+    key: 'I',
+    after: 'gate',
+    note: 'A target with nothing built round it: an opening you fly through and score like a gate, lit when it is the next one, with no pipe, no flag and nothing to hit. It is an ordinary gate with its frame taken away, so it is sized, turned, copied and flown in order like one, and any gate or letter can be made invisible the same way, or have its frame put back. Use it to put a target where a structure has a gap that no gate of its own frames.',
+  },
+  {
     id: 'wall',
     label: 'Wall',
     key: 'K',
@@ -1671,6 +1790,27 @@ export const FIVE_INCH_PIECES = [
   },
 ];
 
+/*
+ * THE WHOOP CANVAS'S PIECES THAT ARE MADE OF PIECES: the invisible gate, which is the same piece as the five inch
+ * canvas's (an ordinary gate with `unbuilt` set, so the document holds nothing new and a track written on either
+ * canvas reads on the other). It stands on the palette after the gate, as it does on the five inch one, and takes
+ * the whoop room's gate: a RaceGOW 28 inch opening, 19 in the Whoop preset, whichever the canvas defaults to.
+ */
+export const WHOOP_PIECES = [
+  {
+    id: 'invisibleGate',
+    label: 'Invisible gate',
+    key: 'I',
+    after: 'gate',
+    note: 'A target with nothing built round it: an opening you fly through and score like a gate, lit when it is the next one, with no pipe and nothing to hit. It is an ordinary gate with its frame taken away, so it is sized, turned, copied and flown in order like one, and any gate can be made invisible the same way, or have its frame put back. Use it to put a target where the room has a gap that no gate of its own frames.',
+  },
+];
+
+/* The pieces made of pieces a class's palette carries, which is where the invisible gate is on both. */
+export function partPiecesFor(cls) {
+  return cls === 'micro' ? WHOOP_PIECES : FIVE_INCH_PIECES;
+}
+
 export const FIVE_INCH_TOOLS = [
   {
     id: 'route',
@@ -1709,13 +1849,13 @@ export function toolByKey(letter, cls = 'micro', mode = 'race') {
   if (!up || mode === 'freestyle') {
     return undefined;
   }
-  const list = cls === 'micro' ? WHOOP_TOOLS : [...FIVE_INCH_PIECES, ...FIVE_INCH_TOOLS];
+  const list = cls === 'micro' ? [...WHOOP_PIECES, ...WHOOP_TOOLS] : [...FIVE_INCH_PIECES, ...FIVE_INCH_TOOLS];
   return list.find((t) => t.key === up);
 }
 
-/* Whether an id is one of the 5 inch pieces made of pieces. */
+/* Whether an id is one of the pieces made of pieces, on either canvas. */
 export function isFiveInchPiece(id) {
-  return FIVE_INCH_PIECES.some((p) => p.id === id);
+  return FIVE_INCH_PIECES.some((p) => p.id === id) || WHOOP_PIECES.some((p) => p.id === id);
 }
 
 /* Convenience: every element definition in palette order, extras last. */
@@ -1827,18 +1967,115 @@ export function apertureShapeOf(what) {
   return shapeOf(ELEMENTS[type]?.shape);
 }
 
+/* Whether a piece, or the name of a type, is a letter. */
+export function isLetterPiece(what) {
+  return (typeof what === 'string' ? what : what?.type) === 'letter';
+}
+
+/* The letter a piece is: its own, or the default when it has none or has one this build does not draw. */
+export function letterOfPiece(el) {
+  return letterOf(el?.letter);
+}
+
+/*
+ * THE DIMS OF A LETTER. For a letter that is new they are its defaults; for one that is being changed into another
+ * (`from` is the piece as it is) they keep the author's scale: a W stretched to half as wide again as it is drawn is
+ * an A stretched the same way, which is what turning a letter into another one should leave you with. `levels` is
+ * the new letter's hole count, and the pitch is the one a stack of the new size would have.
+ */
+export function letterDimsFor(letter, from = null) {
+  const next = letterOf(letter);
+  const base = letterDefaults(next);
+  let kx = 1;
+  let ky = 1;
+  if (from && from.dims && Number.isFinite(from.dims.clearW) && Number.isFinite(from.dims.clearH)) {
+    const was = letterDefaults(letterOf(from.letter));
+    kx = from.dims.clearW / was.clearW;
+    ky = from.dims.clearH / was.clearH;
+  }
+  const clearW = base.clearW * kx;
+  const clearH = base.clearH * ky;
+  return {
+    levels: openingCount(next), sillH: 0, clearW, clearH, levelPitch: levelPitchFor(clearH),
+  };
+}
+
+/* How big the letter stands, pipe and all: { width, height } in metres, for the card and the height limits. */
+export function letterExtent(el) {
+  return letterSizeOf(letterOfPiece(el), el.dims.clearW, el.dims.clearH, LETTER_TUBE_OD);
+}
+
+/* The primary hole's size that makes a letter this wide and this tall, which is what an author asking for a
+ * letter's size is asking for. */
+export function letterDimsForSize(el, width, height) {
+  return dimsForLetterSize(letterOfPiece(el), width, height, LETTER_TUBE_OD);
+}
+
+/*
+ * EACH OPENING OF A STACK CAN BE ITS OWN SIZE. `dims.openings` is an optional list, one entry per opening from the
+ * bottom, each `{ clearW?, clearH? }`: the key that is there is that opening's own size, the key that is not is the
+ * stack's (`dims.clearW`, `dims.clearH`), so a piece with no list, which is every piece that has ever been saved,
+ * is read exactly as it always was. Only a stack of square openings has one: a hoop, a hex gate and a letter have
+ * one size each.
+ *
+ * What a size that is not a length is, is no size: it is dropped and the opening takes the stack's, so no reader is
+ * ever handed a NaN for a height (a piece whose height was not a number once left the 3D camera framing nothing).
+ * Returns null when no opening differs from the stack, so one state has one spelling.
+ */
+export function openingSizesOf(dims, count = null) {
+  const raw = dims?.openings;
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  const n = count ?? Math.max(1, Math.round(dims.levels));
+  /* One opening is the stack's own size: there is nothing to set apart. */
+  if (n < 2) {
+    return null;
+  }
+  const out = [];
+  let any = false;
+  for (let i = 0; i < n; i += 1) {
+    const o = raw[i] && typeof raw[i] === 'object' ? raw[i] : {};
+    const one = {};
+    for (const key of ['clearW', 'clearH']) {
+      const v = typeof o[key] === 'number' ? o[key] : Number.NaN;
+      if (Number.isFinite(v) && v > 0 && Math.abs(v - dims[key]) > 1e-9) {
+        one[key] = v;
+        any = true;
+      }
+    }
+    out.push(one);
+  }
+  return any ? out : null;
+}
+
 export function apertureLevels(dims) {
   const out = [];
   const n = Math.max(1, Math.round(dims.levels));
+  const sizes = openingSizesOf(dims, n);
+  /* The old arithmetic, untouched, for every piece whose openings are all the stack's size. */
+  if (!sizes) {
+    for (let i = 0; i < n; i += 1) {
+      const sill = dims.sillH + i * dims.levelPitch;
+      out.push({
+        index: i,
+        sillH: sill,
+        centerH: sill + dims.clearH / 2,
+        clearW: dims.clearW,
+        clearH: dims.clearH,
+      });
+    }
+    return out;
+  }
+  /* The openings are different heights, so the pitch can no longer be one number: each sill sits one member above
+   * the opening below it, which is the gap the stack was authored with (its pitch less its clear height). */
+  const gap = Number.isFinite(dims.levelPitch - dims.clearH) ? dims.levelPitch - dims.clearH : FRAME_TUBE_OD;
+  let sill = dims.sillH;
   for (let i = 0; i < n; i += 1) {
-    const sill = dims.sillH + i * dims.levelPitch;
-    out.push({
-      index: i,
-      sillH: sill,
-      centerH: sill + dims.clearH / 2,
-      clearW: dims.clearW,
-      clearH: dims.clearH,
-    });
+    const clearW = sizes[i].clearW ?? dims.clearW;
+    const clearH = sizes[i].clearH ?? dims.clearH;
+    out.push({ index: i, sillH: sill, centerH: sill + clearH / 2, clearW, clearH });
+    sill += clearH + gap;
   }
   return out;
 }
@@ -1846,6 +2083,10 @@ export function apertureLevels(dims) {
 /* Overall height of an element, for the 3D view and for the height drag
  * limits. Aperture elements are as tall as their top opening plus a tube. */
 export function elementHeight(def, dims, style = null, tilt = 0) {
+  if (def.kind === KIND.APERTURE && def.id === 'letter') {
+    /* A letter is as tall as it is drawn, which is the letter's doing and not its top hole's: `style` is the letter. */
+    return letterSizeOf(letterOf(style), dims.clearW, dims.clearH, LETTER_TUBE_OD).height;
+  }
   if (def.kind === KIND.APERTURE) {
     const levels = apertureLevels(dims);
     const top = levels[levels.length - 1];
@@ -1868,8 +2109,12 @@ export function elementHeight(def, dims, style = null, tilt = 0) {
     /* `tilt` is tiltOf(el): stood on end, an asset is as tall as it was long. */
     return approxHeight(def.id, dims, style ?? propStyleOf({ type: def.id }), tilt);
   }
-  if (def.kind === KIND.ROAD) {
-    /* Paint. */
+  if (def.kind === KIND.ROAD || def.kind === KIND.DECAL) {
+    /* Paint. A ground logo has a footprint and no height: it used to fall to
+     * the last line, which reads `textHeight`, a label's size and not a
+     * decal's, so topOf was NaN and a track carrying one framed its 3D camera
+     * on NaN: an empty sky and every tag piled in the corner, with nothing in
+     * the console because NaN is not an error. */
     return 0;
   }
   if (def.kind === KIND.VEHICLE) {

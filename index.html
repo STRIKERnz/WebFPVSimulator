@@ -266,38 +266,12 @@
       @keyframes launch-blink {
         50% { opacity: 0.2; }
       }
-      /* The crosshairs: Settings, HUD, Crosshairs. A zero sized box pinned
-         at the centre of the canvas, the camera's axis, and each piece
-         placed from that point, so no shape depends on the window's size.
-         The pieces are the OSD's cream with its one pixel ink edge, the
-         same reading as the numbers. The shape class says which pieces
-         draw: Wings the two long arms and the dot, Cross the four short
-         arms round an open centre, Dot the dot. See syncCrosshair in
-         src/ui/ui.js. */
-      .osd-cross {
-        position: absolute; left: 50%; top: 50%; width: 0; height: 0;
-        pointer-events: none;
+      /* The FPS readout, top left, in the OSD's cream with its ink edge. */
+      .osd-fps {
+        position: absolute; left: 12px; top: 8px; pointer-events: none;
+        color: var(--cream); font: 600 13px/1 ui-monospace, Menlo, Consolas, monospace;
+        text-shadow: 0 0 2px var(--osd-ink), 0 1px 3px rgba(0, 0, 0, 0.6);
       }
-      .osd-cross.is-off { display: none; }
-      .osd-cross i {
-        position: absolute; display: none;
-        background: var(--cream);
-        box-shadow: 0 0 0 1px var(--osd-ink), 0 1px 3px rgba(0, 0, 0, 0.5);
-      }
-      .osd-cross .xh-l, .osd-cross .xh-r { height: 2px; top: -1px; }
-      .osd-cross .xh-t, .osd-cross .xh-b { width: 2px; left: -1px; }
-      .osd-cross .xh-dot { width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; }
-      .osd-cross.is-wings .xh-l, .osd-cross.is-wings .xh-r { display: block; width: 13px; }
-      .osd-cross.is-wings .xh-l { right: 6px; }
-      .osd-cross.is-wings .xh-r { left: 6px; }
-      .osd-cross.is-wings .xh-dot { display: block; }
-      .osd-cross.is-cross .xh-l, .osd-cross.is-cross .xh-r { display: block; width: 8px; }
-      .osd-cross.is-cross .xh-t, .osd-cross.is-cross .xh-b { display: block; height: 8px; }
-      .osd-cross.is-cross .xh-l { right: 4px; }
-      .osd-cross.is-cross .xh-r { left: 4px; }
-      .osd-cross.is-cross .xh-t { bottom: 4px; }
-      .osd-cross.is-cross .xh-b { top: 4px; }
-      .osd-cross.is-dot .xh-dot { display: block; width: 6px; height: 6px; left: -3px; top: -3px; }
 
       /* FREESTYLE SCORE, down the left. See src/ui/scorehud.js for why it
          is here and not anywhere else: the top centre, both bottom corners
@@ -1365,6 +1339,92 @@
       }
       .osd-air-hint-btn:focus-visible { outline: 1px solid var(--cream); outline-offset: 2px; }
       /*
+       * THE INVITATION TO HELP TUNE FLIGHT FEEL (src/ui/tuneinvite.js) is the
+       * Weight card's make in the Weight card's place, so everything above
+       * and the short screen rule below apply to it. It has two buttons: the
+       * Yes is the filled pill and the No is outlined, the way the tuning
+       * group's Reset to stock is, so the eye goes to the one that does
+       * something. New classes only.
+       */
+      .osd-invite-actions { display: flex; flex-wrap: wrap; gap: 0 8px; }
+      .osd-air-hint-btn.osd-invite-no {
+        background: transparent; color: var(--amber);
+        box-shadow: inset 0 0 0 1px rgba(255, 212, 92, 0.42);
+      }
+      /*
+       * TWO THINGS THE WEIGHT CARD GETS AWAY WITH AND THIS ONE CANNOT, found by
+       * resizing a window under a card that was up (scripts/tuneinvite-check.js,
+       * scenarios H and I).
+       *
+       * NARROWER. The Weight card's 320 is as wide as the gap between the two
+       * plates on a laptop, and the block is not centred in that gap (the left
+       * plate's caption is the wider), so a card of that width put its edge
+       * over a plate at 1280 wide, and over both at 1024 and 800, where the
+       * slider shrinks and the gap with it. The card is held to the width of
+       * the block it hangs on, which is the gap less the two margins the row
+       * keeps, and never past 300. The 28 is the card's own side padding,
+       * which max-width does not count. The touch rule below is later in the
+       * sheet and equal in weight, so on glass the card is still the wide,
+       * short one.
+       *
+       * ALWAYS ABOVE. The short screen rule below hangs the Weight card under
+       * its slider, which is right for a phone and off the bottom of the
+       * screen on a desktop window under 560 px tall: the card was never seen
+       * and was still counted as asked, three times. Above, the card clears
+       * the clock and the banner on every window measured down to 400 px.
+       */
+      .osd-air-hint.osd-invite-hint {
+        max-width: min(calc(100% - 28px), 300px);
+        top: auto; bottom: calc(100% + 10px);
+      }
+      .osd-air-hint.osd-invite-hint::after {
+        top: auto; bottom: -5px;
+        box-shadow: inset -1px -1px 0 0 rgba(255, 212, 92, 0.42);
+      }
+      /*
+       * FLIGHT FEEL TUNING'S GROUP, under the Weight slider in the same
+       * block, and only while the mode is on (paintAir sets hidden). The two
+       * rows are built from the Weight slider's own classes, so everything
+       * above applies to them without a copy: the fade in the air, the
+       * amber thumb, the slate caption at stock, the dim under the pause.
+       * Only what is new is written here, and only as new classes: the
+       * .osd-air* names are a contract across the deploy cache seam.
+       *
+       * Its card is the Weight card's, hung above the block the same way.
+       * It is never shown at the same time as that one (setAirSlider), so
+       * the two share a place without sharing a pixel.
+       */
+      .osd-tune {
+        display: flex; flex-direction: column; align-items: center; gap: 2px;
+      }
+      .osd-tune[hidden] { display: none; }
+      .osd-tune-item {
+        display: flex; flex-direction: column; align-items: center; gap: 2px;
+      }
+      .osd-tune-item[hidden] { display: none; }
+      /* Outlined, not filled: the filled amber pill is the card's Got it,
+         and this is a control that stays on the glass for as long as the
+         quad is down. Faded with the rest in the air. */
+      .osd-tune-reset {
+        margin-top: 3px; padding: 3px 10px; font-size: 11px;
+        background: transparent; color: var(--amber);
+        box-shadow: inset 0 0 0 1px rgba(255, 212, 92, 0.42);
+        transition: opacity 0.25s ease, visibility 0s linear 0s;
+      }
+      .osd-air.is-aloft .osd-tune-reset {
+        opacity: 0; visibility: hidden;
+        transition: opacity 0.8s ease 0.6s, visibility 0s linear 1.4s;
+      }
+      /* Two classes, so the short screen rule below (one class, later in the
+         sheet) cannot hang this card under a block that is now taller than
+         the room beneath it. On a screen that short the card is not raised
+         at all: see tuneCardRoom in src/ui/ui.js, which uses the same 560. */
+      .osd-air-hint.osd-tune-hint { top: auto; bottom: calc(100% + 10px); }
+      .osd-air-hint.osd-tune-hint::after {
+        top: auto; bottom: -5px;
+        box-shadow: inset -1px -1px 0 0 rgba(255, 212, 92, 0.42);
+      }
+      /*
        * SHORT SCREEN: THE CARD HANGS BELOW THE SLIDER INSTEAD.
        *
        * Measured on an 844 by 390 landscape phone with the thumb sticks up.
@@ -1593,7 +1653,7 @@
        * key, shown and out of reach. So it is put away there, on every
        * device, and the row is the one control on that screen.
        */
-      .osd.dim .osd-air-row, .osd.dim .osd-air-cap { visibility: hidden; }
+      .osd.dim .osd-air-row, .osd.dim .osd-air-cap, .osd.dim .osd-tune-reset { visibility: hidden; }
       /* Portrait is the hinted-away state, but it still has to be tidy:
          the plates go back to the single size, because two doubled plates
          are wider than the screen. The two lines ride just above the
@@ -2780,6 +2840,85 @@
       a.patreon:hover { box-shadow: inset 0 0 0 1px #FF424D; color: var(--cream); }
       a.patreon[hidden] { display: none; }
       .screen-title a.patreon { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.65); }
+
+      /* ---- SUPPORT PROMPT ----------------------------------------------
+         Soft support prompt shown at good moments (new PB, 20 min session,
+         map publish). Dismissible, at most once a week. ------------------- */
+      /* On the body, never in a screen: a screen is pointer-events none and
+         its children inherit it, which made every button on the prompt a
+         hole to the page behind (src/share/supportprompt.js). The builder's
+         page carries a copy of these rules for its own prompt. */
+      .support-prompt {
+        position: fixed; z-index: 1000; pointer-events: auto;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        max-width: 420px; width: calc(100% - 40px);
+        padding: 24px 48px 24px 24px;
+        border-radius: 6px;
+        background: rgba(16, 22, 17, 0.95);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(244, 236, 214, 0.2);
+        backdrop-filter: blur(8px);
+      }
+      .support-prompt-message {
+        margin: 0 0 20px 0;
+        font: 400 14px/1.5 var(--ui-font);
+        color: var(--cream);
+      }
+      .support-prompt-actions {
+        display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+      }
+      .support-prompt-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        height: 36px; padding: 0 16px;
+        border: 0; border-radius: 3px;
+        font: 600 13px/1 var(--ui-font); letter-spacing: 0.02em;
+        text-decoration: none; white-space: nowrap;
+        cursor: pointer; transition: all 0.15s ease;
+        background: rgba(244, 236, 214, 0.1);
+        box-shadow: inset 0 0 0 1px rgba(244, 236, 214, 0.2);
+        color: var(--cream);
+      }
+      .support-prompt-btn:hover {
+        background: rgba(244, 236, 214, 0.15);
+        box-shadow: inset 0 0 0 1px rgba(244, 236, 214, 0.3);
+      }
+      .support-prompt-btn-primary {
+        background: #FF424D;
+        box-shadow: none;
+        color: var(--deep);
+      }
+      .support-prompt-btn-primary:hover {
+        background: #ff5a63;
+        box-shadow: 0 2px 8px rgba(255, 66, 77, 0.3);
+      }
+      .support-prompt-btn-text {
+        display: inline-flex; align-items: center;
+        height: 36px; padding: 0 12px;
+        background: none; border: 0;
+        font: 600 13px/1 var(--ui-font); letter-spacing: 0.02em;
+        color: var(--slate);
+        cursor: pointer; white-space: nowrap;
+      }
+      .support-prompt-btn-text:hover {
+        color: var(--cream);
+      }
+      .support-prompt-close {
+        position: absolute; top: 12px; right: 12px;
+        width: 32px; height: 32px;
+        display: flex; align-items: center; justify-content: center;
+        background: none; border: 0;
+        font: 600 24px/1 var(--ui-font);
+        color: var(--slate);
+        cursor: pointer; border-radius: 3px;
+      }
+      .support-prompt-close:hover {
+        background: rgba(244, 236, 214, 0.1);
+        color: var(--cream);
+      }
+      .support-prompt-close:focus-visible {
+        outline: 2px solid var(--cream); outline-offset: 2px;
+      }
+
       .frame-legend { display: flex; align-items: center; gap: 16px; flex-wrap: nowrap; overflow: hidden; }
       .frame-legend i, .frame-legend .legend-act {
         display: flex; align-items: center; gap: 6px;
@@ -4924,6 +5063,40 @@
          beside it, as in every other room, rather than under it. */
       .screen-credits .menu-stage {
         margin: 6px auto 18px;
+      }
+      /* SIX ROWS ON A PHONE ON ITS SIDE, here too. About has six rows since
+         the battery row came (1415c94), and at 844 by 390 the list ran 30 px
+         under the command bar, Back half under it on arrival (lint:shell's
+         fold). The rows keep their 44 px targets and the title keeps its
+         size; what gives is the air around them: the page's top margin, the
+         rule under the title (Paused has none either, and squeezed it sat on
+         the panel's edge), the gap to the panel and the panel's own padding,
+         38 px in all. The owner's choice of 2026-10-06, "Make it fit", over
+         a budget that let the list hang. */
+      @media (max-height: 520px) {
+        .screen-credits { padding-top: 14px; }
+        .screen-credits h2::after { display: none; }
+        .screen-credits .menu-stage { margin-top: 0; }
+        .screen-credits .menu { padding-top: 4px; padding-bottom: 4px; }
+      }
+      /* SEVEN ROWS, A WIDE PHONE ON ITS SIDE. The Instagram row made it
+         seven, and at 44 px each they no longer fit a window 390 px tall
+         however tight the air is, and a 360 px one is 38 px short. The rows
+         keep their 44 px targets and go two to a line, so the list is four
+         lines tall: Partners, Support / Buy Mat a battery, Instagram / FPV
+         wiki, Report a bug / Back. Row order in the DOM is unchanged, so
+         the keys still walk it in the same order. */
+      @media (max-height: 520px) and (min-width: 600px) {
+        .screen-credits .menu { display: grid; grid-template-columns: 1fr 1fr; }
+      }
+      /* And a shorter phone on its side, 360 px tall, a common Android
+         size, where the steps above still left Back 15 px under the bar.
+         The title is in the top bar's band there, clear of its crumb on the
+         left. */
+      @media (max-height: 380px) {
+        .screen-credits { padding-top: 6px; }
+        .screen-credits h2 { margin-bottom: 2px; }
+        .screen-credits .menu { padding-top: 2px; padding-bottom: 2px; }
       }
 
       .screen-modal { background: rgba(12, 18, 14, 0.72); }

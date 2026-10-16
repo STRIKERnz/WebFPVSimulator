@@ -303,13 +303,13 @@ export const MATERIALS = {
    * receives shadow, for the reason trees.js gives at length: a ramp only
    * shapes direct light, and a shadowed deep green blob goes to ink. */
   stGroveWood: { c: PAL.trunkDark, tint: 0x6f5a80 },
-  stGrove0: { c: 0x8cb884, tint: 0x5b6f8c, noReceive: true },
-  stGrove1: { c: 0x5f9470, tint: 0x5b6f8c, noReceive: true },
-  stGrove2: { c: PAL.cedar, tint: 0x5b6f8c, noReceive: true },
+  stGrove0: { c: 0x8cb884, tint: 0x5b6f8c, noReceive: true, foliage: true },
+  stGrove1: { c: 0x5f9470, tint: 0x5b6f8c, noReceive: true, foliage: true },
+  stGrove2: { c: PAL.cedar, tint: 0x5b6f8c, noReceive: true, foliage: true },
   stCedarWood: { c: PAL.cedarBark, tint: 0x6f5a80 },
-  stCedar0: { c: PAL.cedarLit, tint: 0x59657f, noReceive: true },
-  stCedar1: { c: PAL.cedar, tint: 0x59657f, noReceive: true },
-  stCedar2: { c: PAL.cedarDeep, tint: 0x59657f, noReceive: true },
+  stCedar0: { c: PAL.cedarLit, tint: 0x59657f, noReceive: true, foliage: true },
+  stCedar1: { c: PAL.cedar, tint: 0x59657f, noReceive: true, foliage: true },
+  stCedar2: { c: PAL.cedarDeep, tint: 0x59657f, noReceive: true, foliage: true },
   /* The utility pole: the town's concrete, and its near black hardware. */
   stPole: { c: 0xd6d2d8, tint: 0x6a6288 },
   stPoleDark: { c: PAL.black, bands: 2, tint: 0x4b4560 },
@@ -1248,6 +1248,18 @@ function billboardSpec(el) {
   return { W, H, lift, legR, legs, legX, legTop, rails, ups, lamps };
 }
 
+/*
+ * The face of a billboard: where the advert is hung, in the board's own
+ * frame (the face looks along +x, its width runs along z), and how big it
+ * is. billboardDraw hangs the advert here and src/maps/built/logosurface.js
+ * frames a sponsor's mark over it, so both read the same numbers.
+ */
+export function billboardFace(el) {
+  const s = billboardSpec(el);
+  const fw = 0.13;
+  return { x: BB_T + 0.004, y: s.lift + s.H / 2, z: 0, w: s.W - 2 * fw, h: s.H - 2 * fw };
+}
+
 export function billboardLayout(el) {
   const s = billboardSpec(el);
   const P = new Parts();
@@ -1715,13 +1727,15 @@ export function carDraw(el, parts, K) {
  * (K.leaf), and seven sided whorls; laid out with this module's own sine
  * and square root, so the solids are the same bits in every engine.
  *
- * Every blob holds a solid sphere of the drawn icosahedron's inradius
- * (0.7947 of its smaller radius, taken as 0.78), and every whorl the
- * largest sphere it holds and a capsule up its axis inside the slant. A
- * pilot who clips a canopy is where the picture says they are, and never
- * meets leaves that are not drawn; the outermost tips of a blob or a
- * whorl's skirt are drawn and not solid, which is the side to be wrong on
- * for leaves.
+ * Every blob holds a solid sphere of the twenty faced icosahedron's
+ * inradius (0.7947 of its smaller radius, taken as 0.78); the blob is drawn
+ * at eighty faces now (see roundBlob in kit.js), whose inradius is 0.86 of
+ * the same radius, so the solid is still inside it. Every whorl holds the
+ * largest sphere that fits in it and a capsule up its axis inside the
+ * slant. A pilot who clips a canopy is where the picture says they are,
+ * and never meets leaves that are not drawn; the outermost tips of a blob
+ * or a whorl's skirt are drawn and not solid, which is the side to be
+ * wrong on for leaves.
  * ------------------------------------------------------------------ */
 
 /* (1 - k / n) ^ 0.82 for n = 5 and 6: the cedar's taper, as literals,

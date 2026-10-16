@@ -14,7 +14,10 @@
  * the machine happens to have, so a byte comparison of a rendered animation
  * would fail honestly on a different computer and teach nobody anything.
  * This file checks the container and the compression, which are arithmetic
- * and must be identical everywhere.
+ * and must be identical everywhere, and the arithmetic round the picture's
+ * size: what grows with it (detailOf), the limits the exporter holds, the
+ * file name. None of that needs a GPU, and the exporter's refusals fire
+ * before it asks for one, so they are checked here too.
  *
  * This file is part of WebFPVSimulator.
  *
@@ -32,7 +35,10 @@
  * along with WebFPVSimulator. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { buildPalette, GifEncoder } from '../src/trackbuilder/gif.js';
+import { buildPalette, GifEncoder, PaletteHistogram } from '../src/trackbuilder/gif.js';
+import { detailOf, fitName } from '../src/trackbuilder/stage.js';
+import { exportTrackGif, MAX_EDGE, MIN_EDGE } from '../src/trackbuilder/animate.js';
+import { ANIMATION_EDGE, animationFilename } from '../src/trackbuilder/storage.js';
 
 let passed = 0;
 let failed = 0;
@@ -529,6 +535,229 @@ console.log('gif encoder selftest');
     if (few[i * 3] || few[i * 3 + 1] || few[i * 3 + 2]) { nonEmpty += 1; }
   }
   check('median cut: honours the colour ceiling', nonEmpty <= 4, String(nonEmpty));
+}
+
+/*
+ * ---- A palette fed one frame at a time is the palette of the frames ----
+ *
+ * The animation used to keep a sixteenth of its frames and hand the list to
+ * buildPalette, which at 2048 square was over 600 MB. It now feeds each frame
+ * to a PaletteHistogram and lets it go. buildPalette is built on the same
+ * class, so comparing the two routes with each other proves little. What the
+ * animation actually relies on is that the palette depends on the PIXELS and
+ * not on how they were cut into frames, so this feeds the same pixels as one
+ * big frame and as three of different sizes, and counts a frame small enough
+ * to count by hand. The three are not one size on purpose: a test that gave
+ * the histogram equal frames would not catch a version that started to mind.
+ */
+{
+  const frameOf = (w, h, seed) => {
+    const rgba = new Uint8Array(w * h * 4);
+    let s = seed;
+    for (let i = 0; i < w * h; i += 1) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      const r = (s >> 16) & 0xff;
+      /* A dark floor most of the time and a saturated colour some of it, the
+       * shape of the real thing, with a little noise so no two bins agree. */
+      const lit = (s >> 8) % 7 === 0;
+      rgba[i * 4] = lit ? 255 - (r >> 3) : r >> 4;
+      rgba[i * 4 + 1] = lit ? 60 + (r >> 4) : r >> 4;
+      rgba[i * 4 + 2] = lit ? 40 + (r >> 5) : (r >> 4) + 2;
+      rgba[i * 4 + 3] = 255;
+    }
+    return rgba;
+  };
+  const frames = [frameOf(40, 30, 1), frameOf(64, 64, 2), frameOf(17, 99, 3)];
+  const histogram = new PaletteHistogram();
+  for (const f of frames) {
+    histogram.add(f);
+  }
+  const streamed = histogram.palette({ colors: 256 });
+
+  /* The same pixels, in one frame. */
+  const joined = new Uint8Array(frames.reduce((n, f) => n + f.length, 0));
+  let at = 0;
+  for (const f of frames) {
+    joined.set(f, at);
+    at += f.length;
+  }
+  check('palette: the same pixels in one frame or in three give one palette',
+    sameBytes(buildPalette([joined], { colors: 256 }), streamed));
+  check('palette: and the list route gives it too',
+    sameBytes(buildPalette(frames, { colors: 256 }), streamed));
+  check('palette: asking the same histogram twice gives the same answer',
+    sameBytes(histogram.palette({ colors: 256 }), streamed));
+
+  /* Two red pixels and a blue one, which can be counted by hand: every pixel
+   * once, and the true sum of each channel, whatever bins they landed in. */
+  const total = (arr) => arr.reduce((a, b) => a + b, 0);
+  const known = new PaletteHistogram();
+  known.add(new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255]));
+  check('palette: the histogram counts every pixel once',
+    total(known.count) === 3, String(total(known.count)));
+  check('palette: and keeps the true sum of each channel',
+    total(known.sumR) === 510 && total(known.sumG) === 0 && total(known.sumB) === 255,
+    `${total(known.sumR)} ${total(known.sumG)} ${total(known.sumB)}`);
+  known.add(new Uint8Array([10, 20, 30, 255]));
+  check('palette: a second frame adds to the first and does not replace it',
+    total(known.count) === 4 && total(known.sumR) === 520 && total(known.sumG) === 20,
+    `${total(known.count)} ${total(known.sumR)} ${total(known.sumG)}`);
+}
+
+/*
+ * ---- What grows with the picture ----
+ *
+ * detailOf is the whole of the rule that makes a bigger export the same
+ * picture with more pixels in it, and the one part of it that can be pinned
+ * without a GPU. The line that matters most is the first: at 512 and under
+ * every size is the one it was before the bigger exports existed, which is
+ * what keeps the standard export and the board's 384 by 240 cards as they
+ * were.
+ */
+{
+  const was = { shadowMap: 1024, nameWidth: 1024, poolSize: 512 };
+  const show = (d) => JSON.stringify(d);
+  check('detail: 512 is every size it always was',
+    show(detailOf(512, 512)) === show(was), show(detailOf(512, 512)));
+  check('detail: the card tile, 384 by 240, is too',
+    show(detailOf(384, 240)) === show(was), show(detailOf(384, 240)));
+  check('detail: anything smaller is too',
+    show(detailOf(16, 16)) === show(was) && show(detailOf(200, 1000)) === show(was));
+  check('detail: 1024 doubles all three',
+    show(detailOf(1024, 1024)) === show({ shadowMap: 2048, nameWidth: 2048, poolSize: 1024 }),
+    show(detailOf(1024, 1024)));
+  check('detail: 2048 quadruples them',
+    show(detailOf(2048, 2048)) === show({ shadowMap: 4096, nameWidth: 4096, poolSize: 2048 }),
+    show(detailOf(2048, 2048)));
+  check('detail: a size between takes the next doubling up',
+    show(detailOf(700, 700)) === show(detailOf(1024, 1024)));
+  check('detail: the SHORT edge decides, as it does for the framing',
+    show(detailOf(2048, 1024)) === show(detailOf(1024, 1024)));
+  check('detail: nothing goes past 4096, however big the picture',
+    show(detailOf(8192, 8192, 16384)) === show({ shadowMap: 4096, nameWidth: 4096, poolSize: 4096 }),
+    show(detailOf(8192, 8192, 16384)));
+  check('detail: a card that holds only 2048 gets 2048',
+    show(detailOf(2048, 2048, 2048)) === show({ shadowMap: 2048, nameWidth: 2048, poolSize: 2048 }),
+    show(detailOf(2048, 2048, 2048)));
+  check('detail: and a card that holds less than the standard sizes is never given less than they are',
+    show(detailOf(2048, 2048, 256)) === show(was), show(detailOf(2048, 2048, 256)));
+}
+
+/*
+ * ---- How a name is set on the plate ----
+ *
+ * A long name used to be shrunk to a floor of 28 pixels on one line and then
+ * cut off at both ends. fitName breaks it at its spaces onto up to three
+ * lines at the largest size that fits. The measuring function here is a
+ * fixed 0.6 em a letter, which is not any real typeface and does not need to
+ * be: what is held is the rule, that nothing is ever wider or taller than the
+ * plate, that one line is kept while it stays large, and that the names that
+ * were never a problem come out as they always did.
+ */
+{
+  const measure = (t, px) => t.length * px * 0.6;
+  const W = 1024 * 0.92;
+  const H = 256 * 0.92;
+  const inside = (r) => r.lines.every((l) => measure(l, r.px) <= W) && r.lines.length * r.px * 1.15 <= H;
+  const short = fitName(measure, 'Hibari Yard', W, H);
+  check('name: a short one is one line at the biggest size', short.lines.length === 1 && short.px === 132 && inside(short), JSON.stringify(short));
+  const usual = fitName(measure, 'WA State Champs 2025', W, H);
+  check('name: one that fits at a good size stays on one line', usual.lines.length === 1 && usual.px >= 48 && inside(usual), JSON.stringify(usual));
+  const names = [
+    'WA State Champs 2025 Round 1',
+    'WA State Championships 2025 Round 3 Qualifying Heat',
+    'WA State Championships 2025 Round 3 Qualifying Heat Final Series Day Two',
+    'A'.repeat(80),
+    'WWWW '.repeat(16).trim(),
+    'x'.repeat(200),
+    '   ',
+    '',
+  ];
+  for (const n of names) {
+    const r = fitName(measure, n, W, H);
+    check(`name: ${JSON.stringify(n.slice(0, 24))} (${n.length} letters) never runs off the plate`,
+      r.lines.length >= 1 && r.lines.length <= 3 && inside(r), JSON.stringify(r));
+  }
+  const long = fitName(measure, 'WA State Championships 2025 Round 3 Qualifying Heat Final Series Day Two', W, H);
+  check('name: a long one is broken at its spaces, whole words, in order',
+    long.lines.length >= 2 && long.lines.join(' ') === 'WA State Championships 2025 Round 3 Qualifying Heat Final Series Day Two', JSON.stringify(long.lines));
+  check('name: and is not set at the old 28 pixel floor', long.px > 40, String(long.px));
+  const huge = fitName(measure, 'x'.repeat(200), W, H);
+  check('name: one that cannot fit at all ends in an ellipsis rather than being cut', huge.lines[huge.lines.length - 1].endsWith('\u2026'), JSON.stringify(huge.lines));
+  check('name: an empty one is named for what it is', fitName(measure, '', W, H).lines.join('') === 'Untitled track');
+}
+
+/*
+ * ---- The exporter's limits ----
+ *
+ * These fire before anything that needs a browser, so they can be checked
+ * here: a picture outside the limits is refused with a sentence that names
+ * them, and a stop that was asked for before the render began is honoured as
+ * an AbortError, which is the name the builder's box looks for. What cannot
+ * be checked without a GPU is that the limit itself is accepted all the way
+ * through, so this checks only that the size sentence is not what refuses it.
+ */
+{
+  const outcome = async (promise) => {
+    try {
+      await promise;
+      return null;
+    } catch (e) {
+      return e;
+    }
+  };
+  check('limits: the smallest is 16 and the largest is 2048, which the builder and the script share',
+    MIN_EDGE === 16 && MAX_EDGE === 2048, `${MIN_EDGE} and ${MAX_EDGE}`);
+  for (const [name, opts] of [
+    ['one over the largest', { size: MAX_EDGE + 1 }],
+    ['one under the smallest', { size: MIN_EDGE - 1 }],
+    ['a size that is not a whole number', { size: 512.5 }],
+    ['a width that is too big in a rectangle', { width: 4096, height: 240 }],
+    ['not a number at all', { size: Number.NaN }],
+  ]) {
+    // eslint-disable-next-line no-await-in-loop
+    const e = await outcome(exportTrackGif({}, opts));
+    check(`limits: ${name} is refused with a sentence naming the range`,
+      Boolean(e) && e.message.includes(String(MAX_EDGE)) && e.message.includes('pixels on a side'),
+      e ? e.message : 'accepted');
+  }
+  const atTheLimit = await outcome(exportTrackGif({}, { size: MAX_EDGE }));
+  check('limits: the largest size is not refused for its size',
+    Boolean(atTheLimit) && !atTheLimit.message.includes('pixels on a side'),
+    atTheLimit ? atTheLimit.message : 'resolved');
+  const asked = new AbortController();
+  asked.abort();
+  const stopped = await outcome(exportTrackGif({}, { signal: asked.signal }));
+  check('limits: a stop asked for before the render began is an AbortError, before any work',
+    Boolean(stopped) && stopped.name === 'AbortError', stopped ? `${stopped.name}: ${stopped.message}` : 'not stopped');
+}
+
+/*
+ * ---- The file name says the size, unless it is the usual one ----
+ *
+ * The standard animation keeps the name it has always had, which is also what
+ * scripts/trackgif.js writes by default. Any other size carries its edge, so
+ * two exports of one track saved side by side are told apart by their names
+ * and not by the browser's "(1)".
+ */
+{
+  const doc = { name: 'WA State Champs 2025' };
+  check('file name: the usual size is the bare name',
+    animationFilename(doc) === 'wa-state-champs-2025.gif' && animationFilename(doc, ANIMATION_EDGE) === 'wa-state-champs-2025.gif',
+    animationFilename(doc));
+  check('file name: the usual size is 512',
+    ANIMATION_EDGE === 512);
+  check('file name: another size carries its edge',
+    animationFilename(doc, 1024) === 'wa-state-champs-2025-1024px.gif'
+      && animationFilename(doc, 2048) === 'wa-state-champs-2025-2048px.gif',
+    `${animationFilename(doc, 1024)} ${animationFilename(doc, 2048)}`);
+  check('file name: one set on the race field says so, at any size',
+    animationFilename(doc, ANIMATION_EDGE, true) === 'wa-state-champs-2025-field.gif'
+      && animationFilename(doc, 2048, true) === 'wa-state-champs-2025-2048px-field.gif'
+      && animationFilename(doc, 1024, false) === 'wa-state-champs-2025-1024px.gif',
+    `${animationFilename(doc, ANIMATION_EDGE, true)} ${animationFilename(doc, 2048, true)}`);
+  check('file name: an unnamed track still gets a name at any size',
+    animationFilename({}, 2048) === 'track-2048px.gif' && animationFilename({}) === 'track.gif');
 }
 
 /* ---- Refusals ---- */

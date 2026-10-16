@@ -136,17 +136,19 @@ a bigger one, in front of the paint and at least 15 degrees off it, looking
 at it, a clear line), and keeps the stamp in `src/share/stamps.js`
 under `key`.
 
-### `marks` is where the partners' marks are painted
+### `marks` is where the partners' and patrons' marks are painted
 
 Every freestyle map also carries one mark for each partner in
-`src/partners/roster.js`, painted by `src/art/partnermark.js` as a sign in
-the partner's own artwork. `marks` is a list of them, in the roster's
-order, each the `egg` shape with the partner's slug:
+`src/partners/roster.js` and up to 3 patrons from `PATRON_MAP_BRANDS`,
+painted by `src/art/partnermark.js` as signs. `marks` is a list of them,
+partners first in roster order then patrons, each the `egg` shape with the
+partner's or patron's slug:
 
-    marks = [{ slug, key, p, n, up, w, h }, ...]
+    marks = [{ slug, key, p, n, up, w, h, findable }, ...]
 
-    slug  the partner, as the roster names them
-    key   the found stamp's key: the map's `egg` key, '#' and the slug
+    slug      the partner or patron, as the roster names them
+    key       the found stamp's key: the map's `egg` key, '#' and the slug
+    findable  false for patrons (no stamps, achievements or found panel), omitted or true for partners
 
 They are paint like the STF mark, found by the same `seesMark`, and
 finding one is an achievement: a callout with the partner's name, a stamp,
@@ -158,6 +160,38 @@ on the practice field's tap wall, front and back. A built map's are chosen
 by `built/egg.js` after the STF mark's, one wall each and never the STF
 mark's, by the same rules with three more (rules 8 to 10 there). A map
 that paints none leaves `marks` out or empty.
+
+Which patrons a map shows is `src/partners/patrons.js`: all of them up to
+three, otherwise a pick seeded by the map's key. The town's patron marks
+are three panels on three solid walls, `PATRON_SPOTS` in `city/places/index.js`,
+read off the live town and not off the buildings' constants (the walls they
+were first written for are thinner than the paint needs behind it), and
+`npm run check:town-patrons` asks the live town about every one of them,
+point by point, on every run.
+
+### `stickers` is where a built map's findable stickers are stuck
+
+A ground logo can be a sticker: a `crop` that names its piece of the logo
+picture, and an `achievement` that names what finding it is called
+(`cropOf` and `achievementOf` in `src/trackbuilder/model.js`, and the
+document schema in `src/trackbuilder/schema.md`). Every sticker cut from
+one sheet is drawn as one mesh on the sheet itself (`stickerSheet` in
+`built/ground.js`), so a map of a hundred stickers costs two draw calls
+and one texture rather than a hundred of each. Those with an achievement
+are listed:
+
+    stickers = [{ id, name, achievement, key, p, n, up, w, h, sheet, crop }, ...]
+
+    id, name     the decal's own, the name being whose sticker it is
+    achievement  the callout's word
+    key          the found stamp's key: the map's `egg` key, '#sticker:' and the id
+    p, n, up     the `egg` shape, world metres
+    sheet        { image }: the decoded sheet, null until it decodes
+    crop         the piece of the sheet, for the found panel's picture
+
+Found by the same `seesMark` as a partner's mark, once in a browser rather
+than once a run, and nothing goes to the board (`findStickers` in
+`src/main.js`). The town has none and leaves it out.
 
 ### Renderer state belongs to the map
 

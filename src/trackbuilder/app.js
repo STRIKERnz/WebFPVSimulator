@@ -31,16 +31,18 @@
  */
 
 import {
-  ELEMENTS, GATE_PRESETS, KIND, apertureShapeOf, applyGatePreset, elementByKey, elementHeight, isFiveInchPiece, labelOf, toolByKey, trackClassOf, docModeOf,
-  lowestBase,
+  ELEMENTS, GATE_PRESETS, KIND, apertureShapeOf, applyGatePreset, elementByKey, elementHeight, isFiveInchPiece, isLetterPiece, labelOf, letterDimsForSize,
+  letterExtent, levelPitchFor, toolByKey, trackClassOf, docModeOf, lowestBase,
 } from './elements.js';
+import { LETTER_DEFAULT, letterOf } from '../props/letters.js';
 import { styleOf as propStyleOf, tiltOf } from '../props/types.js';
 import {
   createTrack, createElement, deepClone, deserialize, duplicateTrack,
   elementById, kindOf, normalize, startPadsOf, touch,
-  aperturesOf, toPlain, logosOf, brandingBytes, newLogoId, dressOrder, setSideBuilt,
-  LOGO_SLOTS, BRANDING_MAX_CHARS, expandGroups,
+  aperturesOf, toPlain, logosOf, brandingBytes, newLogoId, dressOrder, setSideBuilt, setPoleBuilt,
+  LOGO_SLOTS, BRANDING_MAX_CHARS, expandGroups, letterLayoutOf, setLetter,
 } from './model.js';
+import { showSupportPrompt } from '../share/supportprompt.js';
 import { applyAutoFaces, clearOverride, flipFace, setYaw } from './faces.js';
 import {
   addToSequence, addNextLevel, bendLineAt, clampSequenceToApertures, moveInSequence,
@@ -54,9 +56,9 @@ import {
   replaceWith, rowPlan, snapTurn, turnGroups, turnStepFor,
 } from './snap.js';
 import {
-  addSpiral, flyOver, placeBarHurdle, placeHurdle, placeUpGate, placeWall, removeSpiral, reverseWall, roundFlagOf, setFlags, setWallFlags,
-  setHurdleAngle, setHurdleLine, setHurdleSize,
-  setWallSize, setWallWeave, wallOf,
+  addSpiral, canBecomeLetter, canBeInvisible, flyOver, placeBarHurdle, placeHurdle, placeInvisibleGate, placeUpGate, placeWall,
+  removeSpiral, reverseWall, roundFlagOf, setFlags, setInvisible, setWallFlags, setHurdleAngle, setHurdleLine, setHurdleSize,
+  setWallSize, setWallWeave, turnIntoGate, turnIntoLetter, wallOf,
 } from './parts.js';
 import { cloneElements, anyCloneable } from './clone.js';
 import {
@@ -76,6 +78,7 @@ import { vehicleStart } from '../maps/built/traffic.js';
 import { History } from './history.js';
 import { docFromQuery, trackLink } from './sharelink.js';
 import { buildSheet, sheetHtml, CORNERS } from './buildsheet.js';
+import { bundleFilename } from './bundle.js';
 import { importFpvEvents, looksLikeFpvEvents, reportLines } from './importfpv.js';
 /* The road tool: every rule about nodes and where a car goes is in here,
  * pure, and this file only applies them as edits. */
@@ -84,7 +87,7 @@ import {
   vehiclePlace, absNodes, OPEN_MIN, LOOP_MIN,
 } from './roadtool.js';
 import {
-  animationFilename, deleteTrack, downloadBlob, downloadTrack, keepDisplaced, listTracks, pictureFilename,
+  ANIMATION_EDGE, animationFilename, deleteTrack, downloadBlob, downloadTrack, keepDisplaced, listTracks, pictureFilename,
   loadTrack, makeAutosaver, readAutosave, readFileText, saveTrack, shipMaps, shipTracks, trackExists, writeAutosave,
   savedTrack, restoreTrack, librarySize,
 } from './storage.js';
@@ -114,10 +117,11 @@ import { RAD, wrapAngle } from './geometry.js';
 import { isRoomType } from '../props/room.js';
 import {
   boardOrigin, boardPageUrl, fetchMapDocument, publishMap, publishTrack,
-  partsTheBoardDoesNotKnow, unknownPartsSentence,
   adoptShareFromLocation, TRACK_TAGS, TRACK_TAGS_MAX, tagLabel, usableTags, tagsForClass,
   fetchTrackList, fetchTrackDocument,
+  adminSignIn, adminVerify, fetchTrackOfficial, setTrackOfficial,
 } from '../share/board.js';
+import { clearAdminSession, readAdminSession } from '../share/admin.js';
 import { sendCardAnimation } from '../share/cardgif.js';
 import { sendShareCard } from '../share/card.js';
 import { BOARD_WINDOW, SIM_WINDOW, claimWindowName } from '../share/windows.js';
@@ -125,16 +129,18 @@ import { patreonAnchor } from '../share/patreon.js';
 import { nameRules, readPilotName, writePilotName } from '../share/pilot.js';
 import {
   clearShareImport, readBuilderIntent, readEditKey, readMapListing, readShareImport,
-  setActiveTrackClass, takeBuilderIntent, writeMapListing,
+  setActiveTrackClass, takeBuilderIntent, writeBind, writeMapListing,
 } from '../share/session.js';
 import {
   bindOwnedCanvas,
+  boardHolding,
   courseChip,
   flyCanvasWithoutListing,
   forkDocument,
   inspectCourse,
   isEmptyCanvas,
   layoutFingerprint,
+  officialBlocksOpen,
   publishedTags,
   rememberPublish,
   suggestRemixName,
@@ -249,6 +255,31 @@ function readSquare() {
 function rememberSquare(on) {
   try {
     localStorage.setItem(SQUARE_KEY, on ? '1' : '0');
+  } catch (e) {
+    /* Private mode. It is as it was for this visit. */
+  }
+}
+
+/*
+ * THE LETTER THE LETTER TOOL LAYS: the one the author last picked, kept like Square is, because a track with a W
+ * and an A on it is built by laying the one and then the other, and a tool that forgot between visits would
+ * start every session at A. A way of working and not a fact about the track, so it is the author's own and is in
+ * the builder's key, not in the document.
+ */
+export const LETTER_KEY = 'webfpv.trackbuilder.letter.v1';
+
+function readLetter() {
+  try {
+    const v = localStorage.getItem(LETTER_KEY);
+    return v ? letterOf(v) : LETTER_DEFAULT;
+  } catch (e) {
+    return LETTER_DEFAULT;
+  }
+}
+
+function rememberLetter(letter) {
+  try {
+    localStorage.setItem(LETTER_KEY, letter);
   } catch (e) {
     /* Private mode. It is as it was for this visit. */
   }
@@ -513,6 +544,16 @@ function localDrift(seated, incoming) {
 }
 
 /*
+ * Whether a question to the board is worth sending: not when the device says
+ * it is offline, where the answer is already known to be none. The builder has
+ * to keep working on a pilot's own tracks with no connection, so every check
+ * that is only a courtesy (is this track official) is skipped there.
+ */
+function boardMayBeAsked() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+/*
  * A MAP GOES ON THE BOARD NOW. Publish did nothing on a map while the
  * board knew only race tracks (FREESTYLE-MAPS-PLAN.md, section 13, which
  * left it out of that plan). The owner asked for published maps on the
@@ -530,6 +571,77 @@ const SIDE_WORDS = {
   left: 'That upright',
   right: 'That upright',
 };
+
+/*
+ * THE SIZES THE ANIMATION CAN BE DRAWN AT, which the Export animation box
+ * offers as a choice. Standard is what it has always been and stays first and
+ * the default, because it is the one that posts anywhere. The other two are
+ * for a file that will be looked at closely, on a big screen or in print, where
+ * Standard comes out soft: a bigger one is the same picture with more pixels in
+ * it (see detailOf in stage.js), so the choice is sharpness against file size
+ * and time, and the notes say what each costs.
+ *
+ * The edges are held to MAX_EDGE in animate.js, which refuses anything above
+ * it with a sentence, so a size added here that is too big is told, not quiet.
+ * It is not imported for the check: the exporter and Three.js are loaded when
+ * somebody asks for an animation and not before (exportAnimation).
+ *
+ * WHAT THE NOTES SAY WAS MEASURED, on 2026-10-04, and they say it as ratios
+ * because the ratios held across two very different tracks and the sizes in
+ * megabytes do not. The 2025 WA States course, a 600 frame lap, which is the
+ * longest the exporter makes, came to 0.92, 2.44 and 6.27 MB at 512, 1024 and
+ * 2048: two and a half times the file for the first step and seven times for
+ * both. The micro living room, a 48 frame lap, came to 0.11, 0.28 and 0.76 MB,
+ * which is the same two and a half and the same seven. Time went three times
+ * for the first step and about twelve times for both, on both tracks (65, 201
+ * and 746 seconds; 4.9, 16.3 and 58.2), on the software renderer the harness
+ * uses, so a machine with a real graphics card is faster and the ratio is the
+ * part to trust. The only figure in megabytes the notes give is the 6 MB of a
+ * long lap at the top.
+ */
+const ANIMATION_SIZES = [
+  {
+    edge: ANIMATION_EDGE,
+    label: 'Standard',
+    note: 'The usual size, around 1 to 2 MB, which posts anywhere. About a minute.',
+  },
+  {
+    edge: 1024,
+    label: 'High',
+    note: 'Four times the pixels, so lines and lettering stay sharp on a big screen. '
+      + 'The file is about two and a half times the size of Standard, and it takes '
+      + 'about three times as long.',
+  },
+  {
+    edge: 2048,
+    label: 'Very high',
+    note: 'Sixteen times the pixels of Standard, for a poster or a projector. The file is '
+      + 'about seven times the size, around 6 MB for a long lap, which is more than some '
+      + 'chats take, and it takes roughly a dozen times as long. It wants a computer with a '
+      + 'good graphics card, and a phone or a small tablet may not manage it.',
+  },
+];
+
+/*
+ * THE SETTINGS OF AN ANIMATION, for a five inch track. The stage is the black
+ * floor and pool of light every animation has had. The field is the same
+ * picture on striped grass with the sponsors' logos painted on it where the
+ * author put them, which is stage.js's race field. A track with no logos gets
+ * the field and no sponsors, which is what its field is.
+ */
+const ANIMATION_SETTINGS = [
+  {
+    id: 'stage',
+    label: 'Black stage',
+    note: 'The track on a black floor, as it has always been shot.',
+  },
+  {
+    id: 'field',
+    label: 'Race field, sponsors on the grass',
+    note: 'The track on striped grass, the way the game shows it, with the sponsors\' logos '
+      + 'painted where you put them, the gates and flags wearing them too, and no name on it. The file is bigger, because the grass is not black.',
+  },
+];
 
 export class App {
   constructor(nodes) {
@@ -565,6 +677,8 @@ export class App {
     this.square = readSquare();
     /* FIVE INCH TRACK ONLY. Whether the card's Round the flag spirals down a whole turn first or just goes round. */
     this.spiralDown = true;
+    /* FIVE INCH TRACK ONLY. Which letter the Letter tool lays: see LETTER_KEY. */
+    this.letterTool = readLetter();
     /* WHOOP CANVAS ONLY. Whether a drag that starts on the racing line bends
      * it into a waypoint. Off by default: the line runs through the middle of
      * every gate, so with it able to take a press, a click in a gate's opening
@@ -613,6 +727,9 @@ export class App {
     /* Run once when the open dialog closes, however it closes. The chooser
      * uses it to point at the switch in the bar. See closeModal. */
     this.afterModal = null;
+    /* The CommunityGow community this tab is making a round for, if any:
+     * see attachCommunity. Before restore(), which draws the bar. */
+    this.community = null;
     this.restore();
     this.pathVisible = this.buildsIn3D();
     /* The palette is the RESTORED document's class, not the default. Panels
@@ -643,6 +760,9 @@ export class App {
     this.view3d.frameTrack();
     this.refresh();
     this.syncViewToCanvas();
+    /* The canvas restore() reopened on may hold a track that was made
+     * official while this browser was away. */
+    this.guardOfficial();
     if (asking) {
       this.openChooser();
     }
@@ -720,88 +840,305 @@ export class App {
       if (!share || !share.document) {
         return;
       }
-      const owned = Boolean(readEditKey(share.id));
-      const fromBoard = Boolean(params.get('share'));
-      const wantRemix = (intent && intent.kind === 'remix') || (!owned && fromBoard);
-      const wantEdit = owned && (fromBoard || (intent && intent.kind === 'edit'));
-      if (!wantRemix && !wantEdit) {
-        return;
-      }
-      const incoming = normalize(share.document).doc;
-      /* What the incoming track replaces is whatever its OWN seat holds,
-       * which is the canvas on screen only when the two are the same kind:
-       * a room from a board link opened on a five inch lands in the whoop
-       * seat, and asking about the five inch track on screen asked about
-       * the one thing that was not going to change. */
-      const seated = this.seatedFor(incoming);
-      if (wantEdit) {
-        const load = () => {
-          /* The seat may hold this same track with edits the board has not
-           * had: the Publish button calls that drift and offers to send it.
-           * Opening the board's version must not drop them, so they are
-           * kept in Load as a copy under a new id (never under the board's
-           * id, which would be two documents behind one edit key). */
-          let local = '';
-          if (!isEmptyCanvas(seated) && seated.id === incoming.id && localDrift(seated, incoming)) {
-            const copy = duplicateTrack(seated, `${seated.name} (local changes)`);
-            if (!saveTrack(copy)) {
-              this.toast(`Nothing was opened: "${seated.name}" has changes the board does not, and they could not be kept because local storage is unavailable or full. Export it first.`);
-              return;
-            }
-            local = `Your local changes are in Load as "${copy.name}".`;
-          }
-          this.loadDocument(incoming, [`Editing "${incoming.name}" on the board.`, local].filter(Boolean).join(' '));
-        };
-        if (!isEmptyCanvas(seated) && seated.id !== incoming.id) {
-          this.confirm(
-            ...this.replaceWords(seated, incoming, 'This published track', [
-              'Replace the track on the canvas?',
-              'Your current canvas will be replaced with this published track. Save it first if you still need it.',
-            ]),
-            load,
-          );
-        } else {
-          load();
-        }
-        return;
-      }
-      const { copy, commit } = forkDocument(incoming, {
-        sourceId: share.id,
-        sourceName: share.name || incoming.name,
-        sourceAuthor: share.author || '',
-        board: share.board || boardOrigin(),
-      });
+      await this.openShared(share, intent, Boolean(params.get('share')));
+    } finally {
+      this.syncBoardIdentity();
+    }
+  }
+
+  /*
+   * WHAT A BOARD LINK, OR THE SIMULATOR'S EDIT AND REMIX, ASKED FOR, DONE.
+   *
+   * Split from adoptIncomingShare so that the dialog an official track stops
+   * at can run it again once the pilot has signed in as an admin: the link is
+   * out of the address and the intent has been taken by then, so what they
+   * asked for is handed in rather than read again.
+   */
+  async openShared(share, intent, fromBoard) {
+    const owned = Boolean(readEditKey(share.id));
+    const remixAsked = Boolean(intent && intent.kind === 'remix');
+    /* A share seat left behind by a flight is not a request to open anything. */
+    if (!(fromBoard || remixAsked || (owned && intent && intent.kind === 'edit'))) {
+      return;
+    }
+    const origin = share.board || boardOrigin();
+    /*
+     * AN OFFICIAL TRACK DOES NOT OPEN FOR ANYBODY BUT AN ADMIN.
+     *
+     * Not as the publisher's own track in place, not as a copy, not from a
+     * link and not from the simulator's Edit or Remix: the owner's rule of
+     * 2026-10-04, after the first build opened one for the browser that
+     * published it. It can still be flown, which is the simulator's door and
+     * not this one. Asked of the board, which is the only thing that knows;
+     * a shipped track is not on the board and is not asked about, and a
+     * board that cannot be reached answers null, which is "not official" here
+     * because the board's own lock refuses the publish whatever this does.
+     */
+    const official = !share.stock && boardMayBeAsked() && (await fetchTrackOfficial(share.id, origin)) === true;
+    const admin = official && await this.adminSignedIn(origin);
+    if (official && !admin) {
+      this.explainOfficial(share.name || share.document.name, { retry: () => this.openShared(share, intent, fromBoard) });
+      return;
+    }
+    /*
+     * AN ADMIN OPENS AN OFFICIAL TRACK TO EDIT IT, NOT TO COPY IT.
+     *
+     * Everyone else gets a remix of somebody's track, which is right: it
+     * is theirs to make their own version of. An official track is the
+     * board's own and an admin is the one person who may change it, so for
+     * them the link opens it in place and Publish updates the original.
+     * Only while the board says it is official, so a signed in admin
+     * opening an ordinary track still gets the copy everybody gets, and
+     * only when they did not ask for a remix by name.
+     */
+    const adminEdit = admin && !owned && fromBoard && !remixAsked;
+    const wantEdit = adminEdit || (owned && (fromBoard || (intent && intent.kind === 'edit')));
+    const incoming = normalize(share.document).doc;
+    /* What the incoming track replaces is whatever its OWN seat holds,
+     * which is the canvas on screen only when the two are the same kind:
+     * a room from a board link opened on a five inch lands in the whoop
+     * seat, and asking about the five inch track on screen asked about
+     * the one thing that was not going to change. */
+    const seated = this.seatedFor(incoming);
+    if (wantEdit) {
       const load = () => {
-        /* The other canvas's document is kept FIRST, because it can fail
-         * (storage full), and then nothing may happen: loadDocument would
-         * refuse, but only after the bind below was committed. The keep
-         * is handed to loadDocument rather than asked for twice. */
-        const keep = canvasOf(copy) !== canvasOf(this.doc) ? this.keepSeat(copy) : null;
-        if (keep && !keep.ok) {
-          this.toast(keep.said);
-          return;
+        /* The seat may hold this same track with edits the board has not
+         * had: the Publish button calls that drift and offers to send it.
+         * Opening the board's version must not drop them, so they are
+         * kept in Load as a copy under a new id (never under the board's
+         * id, which would be two documents behind one edit key). */
+        let local = '';
+        if (!isEmptyCanvas(seated) && seated.id === incoming.id && localDrift(seated, incoming)) {
+          const copy = duplicateTrack(seated, `${seated.name} (local changes)`);
+          if (!saveTrack(copy)) {
+            this.toast(`Nothing was opened: "${seated.name}" has changes the board does not, and they could not be kept because local storage is unavailable or full. Export it first.`);
+            return;
+          }
+          local = `Your local changes are in Load as "${copy.name}".`;
         }
-        /* Committed HERE, not in forkDocument: the confirm below can be
-         * declined, and a bind for a copy the author never opened is a
-         * course this browser claims to own and has never seen. */
-        commit();
-        clearShareImport();
-        this.loadDocument(copy, `This is your copy of "${share.name || incoming.name}". Publish it under a new name to put it on the board.`, keep);
+        if (adminEdit) {
+          /* The bind is what inspectCourse reads in place of an edit key.
+           * Written here, after the confirm below can no longer decline. */
+          writeBind(incoming.id, {
+            board: share.board || boardOrigin(),
+            author: share.author || '',
+            nameOnBoard: share.name || incoming.name,
+            layoutFingerprint: layoutFingerprint(incoming),
+            owned: false,
+            adminEdit: true,
+          });
+        }
+        const editing = adminEdit
+          ? `Editing the official track "${incoming.name}" as an admin. Update the board puts your changes live.`
+          : `Editing "${incoming.name}" on the board.`;
+        this.loadDocument(incoming, [editing, local].filter(Boolean).join(' '));
       };
-      if (!isEmptyCanvas(seated) && seated.id !== share.id) {
+      if (!isEmptyCanvas(seated) && seated.id !== incoming.id) {
         this.confirm(
-          ...this.replaceWords(seated, incoming, `A copy of "${share.name || incoming.name}"`, [
-            `Open a copy of "${share.name || incoming.name}"?`,
-            'The track on your canvas will be replaced. Save it first if you still need it.',
+          ...this.replaceWords(seated, incoming, 'This published track', [
+            'Replace the track on the canvas?',
+            'Your current canvas will be replaced with this published track. Save it first if you still need it.',
           ]),
           load,
         );
       } else {
         load();
       }
-    } finally {
-      this.syncBoardIdentity();
+      return;
     }
+    const { copy, commit } = forkDocument(incoming, {
+      sourceId: share.id,
+      sourceName: share.name || incoming.name,
+      sourceAuthor: share.author || '',
+      board: share.board || boardOrigin(),
+    });
+    const load = () => {
+      /* The other canvas's document is kept FIRST, because it can fail
+       * (storage full), and then nothing may happen: loadDocument would
+       * refuse, but only after the bind below was committed. The keep
+       * is handed to loadDocument rather than asked for twice. */
+      const keep = canvasOf(copy) !== canvasOf(this.doc) ? this.keepSeat(copy) : null;
+      if (keep && !keep.ok) {
+        this.toast(keep.said);
+        return;
+      }
+      /* Committed HERE, not in forkDocument: the confirm below can be
+       * declined, and a bind for a copy the author never opened is a
+       * course this browser claims to own and has never seen. */
+      commit();
+      clearShareImport();
+      this.loadDocument(copy, `This is your copy of "${share.name || incoming.name}". Publish it under a new name to put it on the board.`, keep);
+    };
+    if (!isEmptyCanvas(seated) && seated.id !== share.id) {
+      this.confirm(
+        ...this.replaceWords(seated, incoming, `A copy of "${share.name || incoming.name}"`, [
+          `Open a copy of "${share.name || incoming.name}"?`,
+          'The track on your canvas will be replaced. Save it first if you still need it.',
+        ]),
+        load,
+      );
+    } else {
+      load();
+    }
+  }
+
+  /*
+   * MAY THIS PILOT ADD LOGOS OR STICKERS. Only a signed in board admin may:
+   * the sponsor logos dialog's Add, Replace and Paint, and the Ground logo
+   * tool, which is the sticker on the field. Reads the remembered admin
+   * session and asks the board nothing, so a button never waits on a request.
+   * The boards that took a logo before this rule keep what they hold: nothing
+   * already placed is stripped, and Remove stays open to everybody.
+   */
+  canBrand() {
+    return !!readAdminSession(boardOrigin());
+  }
+
+  /* The sentence a pilot who may not brand is told, in the toast and the dialog. */
+  brandingClosed() {
+    return 'Only a board admin can add logos or stickers. Sign in under Admin in the menu.';
+  }
+
+  /*
+   * IS THIS TAB SIGNED IN AS A BOARD ADMIN, as the board sees it.
+   *
+   * The board answers, so a token this clock still likes but the board has
+   * dropped (a changed password, a removed address) is found out here, by a
+   * request, and cleared, rather than at the moment somebody presses Update
+   * and is refused. Anything that goes wrong reads as "no": the cost of a
+   * wrong no is a closed door where an admin wanted the original, which the
+   * Admin dialog and a second try put right.
+   *
+   * Used where the answer decides what gets built, as it does for an admin's
+   * edit in place. The doors that only ask whether a track may open read the
+   * remembered session and no more (officialBlocksOpen in ../share/listing.js):
+   * a request there would sign an admin out every time their connection
+   * stumbled while they opened their own track.
+   */
+  async adminSignedIn(origin) {
+    if (!readAdminSession(origin)) {
+      return false;
+    }
+    const who = await adminVerify(origin);
+    if (who === null) {
+      clearAdminSession();
+      this.updateTopBar();
+      return false;
+    }
+    return true;
+  }
+
+  /*
+   * MAY THIS DOCUMENT OPEN HERE: the rule for official tracks (see
+   * openShared) at every door that hands the builder a document it did not
+   * just make, which is Load, an import and a link that carries the track.
+   *
+   * It asks the board only when something says the board might know the
+   * track: this browser published it, or opened it as an admin's edit
+   * (boardHolding), or the document came from outside, where nothing can be
+   * said (`external`). A track that was never published, a shipped one and
+   * anything opened offline go straight through with no request and no
+   * wait. When the track is official and this tab is not an admin, the
+   * pilot is told why (explainOfficial) and the answer is false.
+   */
+  async mayOpen(doc, { external = false, retry = null } = {}) {
+    const origin = boardHolding(doc.id) || (external ? boardOrigin() : '');
+    if (!origin || !boardMayBeAsked()) {
+      return true;
+    }
+    if (!(await officialBlocksOpen(doc.id, origin))) {
+      return true;
+    }
+    this.explainOfficial(doc.name, { retry });
+    return false;
+  }
+
+  /*
+   * "THAT ONE IS OFFICIAL": what a pilot who is not an admin is told when a
+   * track on its way into the builder turns out to be official. A dialog and
+   * not a toast, because it is the answer to a press and it has to be read:
+   * the track did not open, and why, and what is still theirs.
+   *
+   * `retry` runs if the pilot turns out to be an admin and signs in from
+   * here, so the door they were stopped at opens without their going back
+   * to find it. `note` is for the canvas that held one when the builder
+   * reopened (guardOfficial), which says where its changes went.
+   */
+  explainOfficial(name, { retry = null, note = '' } = {}) {
+    const body = document.createElement('div');
+    const why = document.createElement('p');
+    why.className = 'tb-help';
+    why.textContent = `"${name}" is an official track. Only a board admin can open an official track in the builder, so it cannot be changed or copied here.`;
+    body.append(why);
+    if (note) {
+      const kept = document.createElement('p');
+      kept.className = 'tb-help';
+      kept.textContent = note;
+      body.append(kept);
+    }
+    const still = document.createElement('p');
+    still.className = 'tb-help';
+    still.textContent = 'Everybody can still fly it and post a time on Tracks and times. To make a track of your own, start a new one.';
+    body.append(still);
+    const admin = document.createElement('button');
+    admin.type = 'button';
+    admin.className = 'tb-btn';
+    admin.textContent = 'Board admin? Sign in';
+    admin.addEventListener('click', () => this.openAdmin(retry));
+    body.append(admin);
+    return this.modal('Official track', body);
+  }
+
+  /*
+   * AN OFFICIAL TRACK THAT CAME BACK WITHOUT BEING ASKED FOR: the canvas this
+   * browser reopened on, or the one a canvas switch returned to. Those are
+   * installed at once, because a canvas cannot wait for a request, so the
+   * board is asked afterwards and an official track is taken off the canvas
+   * when it answers. A track nobody here published is not asked about.
+   *
+   * Nothing is lost to it. What this browser holds of the track that the
+   * board's version does not (localDrift, the test adoptIncomingShare keeps
+   * local edits by) goes into Load as a copy under a new id first, and when
+   * the board's version cannot be had there is assumed to be something to
+   * keep. If the copy cannot be kept the canvas is left as it is and the pilot
+   * is told to export, because a rule that costs somebody their work is worse
+   * than the rule not holding for one more session. The board's own lock does
+   * not depend on this: Publish is refused for anybody but an admin whatever
+   * is on the canvas.
+   */
+  async guardOfficial() {
+    const held = this.doc;
+    const origin = boardHolding(held.id);
+    if (!origin || !boardMayBeAsked()) {
+      return;
+    }
+    if (!(await officialBlocksOpen(held.id, origin))) {
+      return;
+    }
+    let theirs = null;
+    try {
+      const payload = await fetchTrackDocument(held.id, origin);
+      theirs = normalize(payload.document || payload).doc;
+    } catch (e) {
+      /* The board answered a moment ago and not now. Keep what is here. */
+    }
+    /* The pilot opened something else while the board was answering. */
+    const doc = this.doc;
+    if (doc.id !== held.id) {
+      return;
+    }
+    let note = '';
+    if (!theirs || localDrift(doc, theirs)) {
+      const copy = duplicateTrack(doc, `${doc.name} (local changes)`);
+      if (!saveTrack(copy)) {
+        this.toast(`"${doc.name}" is an official track and cannot stay open here, but it has changes the board does not and they could not be kept, because local storage is unavailable or full. Export it from More first.`);
+        return;
+      }
+      note = `What you had changed since you published it is in Load as "${copy.name}".`;
+    }
+    this.loadDocument(createTrack(undefined, trackClassOf(doc)), '', { ok: true, said: '' });
+    /* Named as the board has it, which is not what a local rename made it. */
+    this.explainOfficial((theirs && theirs.name) || doc.name, { note });
   }
 
   /*
@@ -1239,7 +1576,7 @@ export class App {
       }
       return made;
     }
-    const opening = kindOf(el) === KIND.APERTURE ? apertureAt(this.doc, elementId, point ? point.z : 0) : 0;
+    const opening = kindOf(el) === KIND.APERTURE ? apertureAt(this.doc, elementId, point ? point.z : 0, point) : 0;
     return this.flyPieceAgain(elementId, opening);
   }
 
@@ -1288,7 +1625,8 @@ export class App {
     }
     const el = elementById(this.doc, p.id);
     if (this.selection.size !== 1 || !this.selection.has(p.id) || !el
-      || (el.unbuiltSides ?? []).includes(p.side) || el.unbuilt === true) {
+      || (el.unbuiltSides ?? []).includes(p.side) || el.unbuilt === true
+      || (p.index !== null && p.index !== undefined && (el.unbuiltPoles ?? []).includes(`${p.side}:${p.index}`))) {
       this.pickedSide = null;
       this.view3d.markDirty();
     }
@@ -1314,6 +1652,17 @@ export class App {
         return { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2, z: 0 };
       }
     }
+    if (isLetterPiece(el)) {
+      /* The middle of the letter, halfway up it: a letter stands on the middle of its primary hole, which is not
+       * where a W or an N is, and it is the letter that is being looked at. */
+      const laid = letterLayoutOf(el);
+      const mid = (laid.left + laid.right) / 2;
+      return {
+        x: el.position.x - Math.sin(el.yaw) * mid,
+        y: el.position.y + Math.cos(el.yaw) * mid,
+        z: el.position.z + laid.height / 2,
+      };
+    }
     return el.position;
   }
 
@@ -1323,8 +1672,13 @@ export class App {
    * click on a gate selects the gate, as it always has, so Delete after one
    * click still removes the gate.
    */
-  pickSide(id, side) {
-    this.pickedSide = side ? { id, side } : null;
+  pickSide(id, side, level = null) {
+    /* An upright of a stack is picked one opening's stretch at a time (unbuiltPolesOf in elements.js); a bar, or an
+     * upright of a single gate, has no stretch to name. */
+    const el = elementById(this.doc, id);
+    const stretch = (side === 'left' || side === 'right') && level !== null && el && aperturesOf(el).length > 1
+      && !isLetterPiece(el) && apertureShapeOf(el) === 'square' ? level : null;
+    this.pickedSide = side ? { id, side, index: stretch } : null;
     this.view3d.markDirty();
     this.requestDraw();
     if (side) {
@@ -1350,13 +1704,25 @@ export class App {
     this.keepPickedSide();
   }
 
+  /* One opening's stretch of one upright of a stack: the inspector's finer toggle and Delete on a picked stretch. */
+  setFramePole(id, side, index, built) {
+    this.edit(built ? 'put an upright back' : 'take an upright away', (d) => {
+      setPoleBuilt(d, id, side, index, built);
+    });
+    this.keepPickedSide();
+  }
+
   removePickedSide() {
     const p = this.pickedSide;
     this.pickedSide = null;
     if (!p || !elementById(this.doc, p.id)) {
       return;
     }
-    this.setFrameSide(p.id, p.side, false);
+    if (p.index !== null && p.index !== undefined) {
+      this.setFramePole(p.id, p.side, p.index, false);
+    } else {
+      this.setFrameSide(p.id, p.side, false);
+    }
     this.toast(`${SIDE_WORDS[p.side]} taken away. The opening still scores. Put it back under Frame in the inspector, or undo.`);
   }
 
@@ -1524,6 +1890,10 @@ export class App {
   }
 
   arm(typeId) {
+    if (ELEMENTS[typeId]?.kind === KIND.DECAL && !this.canBrand()) {
+      this.toast(this.brandingClosed());
+      return;
+    }
     this.armed = this.armed === typeId ? null : typeId;
     /* A road half laid is put away with the tool that was laying it. */
     if (this.armed !== 'road') {
@@ -1538,6 +1908,9 @@ export class App {
     this.requestDraw();
     if (this.armed === 'ruler' && this.mode === '2d') {
       this.sayOnce('ruler in 2d', 'The ruler measures in 3D, at an angle or from the top. Press V, or 3D on the bar.');
+    }
+    if (this.armed === 'letter') {
+      this.sayOnce('arm letter', `Pick the letter under the tool, then click the ${wordsFor(this.doc).place}. Each gap in it is a gate to fly through: a W has the one between its two Vs, a B has two.`);
     }
     if (this.armed === 'road') {
       this.sayOnce('arm road', 'Click to lay the road’s nodes: it bends through them the way a car can drive. Click the first node to close a loop, press Enter or double click to finish it open, Escape to stop.');
@@ -1569,6 +1942,10 @@ export class App {
    * paint the second one.
    */
   armGroundLogo(logoId) {
+    if (!this.canBrand()) {
+      this.toast(this.brandingClosed());
+      return;
+    }
     this.armed = 'groundLogo';
     this.armedLogoId = typeof logoId === 'string' ? logoId : '';
     this.panels.renderPalette();
@@ -1903,6 +2280,12 @@ export class App {
       return;
     }
     const def = ELEMENTS[type];
+    /* Refused here as well as at arm(), so a tool armed before the admin signed out places nothing. */
+    if (def.kind === KIND.DECAL && !this.canBrand()) {
+      this.disarm();
+      this.toast(this.brandingClosed());
+      return;
+    }
     const freestyle = docModeOf(this.doc) === 'freestyle';
 
     /* Exactly one set of start pads per track. A second press moves the
@@ -1959,7 +2342,7 @@ export class App {
       /* The rule for where it faces, the flying order it joins and the figure
        * a stack is flown in are one function in snap.js, so the self test
        * runs the same code this does. */
-      const element = placeOnTrack(d, type, world, { square: this.square && !this.isWhoopRace() });
+      const element = placeOnTrack(d, type, world, { square: this.square && !this.isWhoopRace(), letter: this.letterTool });
       /* The logo the Sponsor logos dialog armed this with, if it armed it.
        * createElement has already put the course's first logo on a decal, so
        * this only overrides, and only for a logo that is still on the
@@ -1974,7 +2357,7 @@ export class App {
     if (newId) {
       this.setSelection([newId]);
       const placed = elementById(this.doc, newId);
-      if (placed && aperturesOf(placed).length > 1) {
+      if (placed && aperturesOf(placed).length > 1 && !isLetterPiece(placed)) {
         if (!this.pathVisible) {
           this.togglePath();
         }
@@ -2165,9 +2548,16 @@ export class App {
       this.edit('place a launch gate', (d) => { made = placeLaunchGate(d, world, { square: this.square }); });
     } else if (type === 'upGate') {
       this.edit('place an up gate', (d) => { made = placeUpGate(d, world, { square: this.square }); });
+    } else if (type === 'invisibleGate') {
+      this.edit('place an invisible gate', (d) => { made = placeInvisibleGate(d, world, { square: this.square && !this.isWhoopRace() }); });
     }
     if (made) {
       this.setSelection([made.id]);
+      /* An invisible gate is a gate, and a complex element is made of many of them: it stays in hand, as a gate does. */
+      if (type === 'invisibleGate') {
+        this.sayOnce('invisible laid', 'An invisible gate scores and lights like any gate and has nothing built round it. It is lit in the room only while it is the next one. Size, turn and fly it like a gate, and Frame on its card puts the pipe back.');
+        return;
+      }
       /* One of these is what a person lays at a time, and what they do next is read its card: the tool is put
        * away, which is what shows the card. A gate stays armed, because ten gates are ten clicks. */
       this.disarm();
@@ -2266,6 +2656,96 @@ export class App {
 
   reverseWallOf(id) {
     this.edit('reverse the wall', (d) => { reverseWall(d, id); });
+  }
+
+  /* ---------------- letters, and gates with no frame ---------------- */
+
+  /* The letter the Letter tool lays, picked on the palette: kept for the next visit (LETTER_KEY). The ghost is the one
+   * in hand, so it is cleared and the pointer's next move draws the new one. */
+  setLetterTool(letter) {
+    this.letterTool = letterOf(letter);
+    rememberLetter(this.letterTool);
+    this.panels.renderLetterOptions();
+    this.clearGhost();
+    this.requestDraw();
+  }
+
+  /*
+   * THE SELECTED PIECE AS ANOTHER LETTER, in place, one undo step: a letter is changed with setLetter (model.js
+   * says what stays), and a gate that is already on the track is made a letter with turnIntoLetter (parts.js says
+   * what stays), which is how a track that was drawn with gates is edited into one with a W.
+   */
+  setPieceLetter(id, letter) {
+    const element = elementById(this.doc, id);
+    if (!element) {
+      return;
+    }
+    const next = letterOf(letter);
+    if (isLetterPiece(element)) {
+      this.edit(`letter ${next}`, (d) => { setLetter(d, id, next); });
+      return;
+    }
+    if (!canBecomeLetter(this.doc, element)) {
+      return;
+    }
+    this.edit(`make it a letter ${next}`, (d) => { turnIntoLetter(d, id, next); });
+    /* It is the letter the author is laying now, so the next one placed is the same. */
+    this.letterTool = next;
+    rememberLetter(next);
+    this.panels.renderLetterOptions();
+    this.toast(`That gate is a ${next} now, in the same place and the same place in the flying order. Letter on its card changes it to another, and Make it a gate puts it back.`);
+  }
+
+  /* A letter as a plain gate again, standing where its primary hole was and as big as it was. */
+  makeLetterAGate(id) {
+    this.edit('make it a gate', (d) => { turnIntoGate(d, id); });
+  }
+
+  /*
+   * A LETTER'S SIZE, as the author thinks of it: how wide and how tall it stands with its pipe. The document keeps
+   * the size of its primary hole (the two numbers every opening has) and the rest follows, so this turns a width
+   * and a height into those two. Either may be left alone; a size that is not a size is not taken.
+   */
+  setLetterSize(id, patch) {
+    const element = elementById(this.doc, id);
+    if (!element || !isLetterPiece(element)) {
+      return;
+    }
+    const now = letterExtent(element);
+    const width = Number.isFinite(patch.width) ? patch.width : now.width;
+    const height = Number.isFinite(patch.height) ? patch.height : now.height;
+    if (!(width > 0) || !(height > 0)) {
+      return;
+    }
+    const dims = letterDimsForSize(element, width, height);
+    if (!(dims.clearW > 0) || !(dims.clearH > 0)) {
+      this.toast('That is smaller than the letter\u2019s own pipe, so there would be no gap left to fly through.');
+      return;
+    }
+    this.edit('letter size', (d) => {
+      const live = elementById(d, id);
+      if (live) {
+        live.dims.clearW = Math.round(dims.clearW * 1e6) / 1e6;
+        live.dims.clearH = Math.round(dims.clearH * 1e6) / 1e6;
+        live.dims.levelPitch = levelPitchFor(live.dims.clearH);
+      }
+    });
+  }
+
+  /*
+   * A GATE, OR A LETTER, WITH NO FRAME: an invisible gate, or the frame put back. One undo step, and what is
+   * selected stays so. See setInvisible in parts.js for what goes with the frame.
+   */
+  setPieceInvisible(id, on) {
+    const element = elementById(this.doc, id);
+    if (!element || !canBeInvisible(element)) {
+      return;
+    }
+    const hadFlags = on && (element.type === 'flaggedGate' || element.type === 'flaggedDoubleStack');
+    this.edit(on ? 'make it invisible' : 'put the frame back', (d) => { setInvisible(d, id, on); });
+    if (hadFlags) {
+      this.toast('The flag went with the frame: a pennant on a mast round nothing would hang in the air.');
+    }
   }
 
   /*
@@ -2406,7 +2886,18 @@ export class App {
     if (!this.selection.size) {
       return;
     }
-    const ids = [...this.selection];
+    let ids = [...this.selection];
+    /* A copied sticker is an added sticker. */
+    if (!this.canBrand()) {
+      const keep = ids.filter((id) => kindOf(elementById(this.doc, id)) !== KIND.DECAL);
+      if (keep.length !== ids.length) {
+        this.toast(this.brandingClosed());
+      }
+      ids = keep;
+      if (!ids.length) {
+        return;
+      }
+    }
     let made = [];
     /* The room is every canvas's now, so what picks the copy is the document and not the view: a map's is
      * cloneElements', and it puts a car's copy on along its own road. */
@@ -2685,10 +3176,17 @@ export class App {
       return;
     }
     let reach = 0;
+    /* How big the biggest letter in the selection stands, which the camera has to stand off by: a W is five metres
+     * across, and a gate is not. */
+    let span = 0;
     for (const id of this.selection) {
       const e = elementById(this.doc, id);
       if (e) {
         reach = Math.max(reach, Math.hypot(e.position.x - c.x, e.position.y - c.y));
+        if (isLetterPiece(e)) {
+          const size = letterExtent(e);
+          span = Math.max(span, size.width, size.height);
+        }
       }
     }
     this.view2d.centerOn(c);
@@ -2709,7 +3207,7 @@ export class App {
       }
       this.view3d.focusDoc({ x: c.x, y: c.y, z: Math.min(high, 30) * 0.4 }, Math.max(reach * 2.6, high * 1.8) + 10);
     } else {
-      this.view3d.focusDoc(c, Math.max(1.4, reach * 3 + 1.2));
+      this.view3d.focusDoc(c, Math.max(1.4, reach * 3 + 1.2, span * 1.7 + 1.5));
     }
     this.requestDraw();
   }
@@ -3449,14 +3947,30 @@ export class App {
       open.type = 'button';
       open.className = 'tb-btn';
       open.textContent = 'Open';
-      open.addEventListener('click', () => {
+      open.addEventListener('click', async () => {
         const found = loadTrack(t.id);
+        const said = found ? `Opened "${found.doc.name}".` : '';
+        /* A track this browser put on the board may have been made official
+         * since, and an official track opens for nobody but an admin. The
+         * board is asked only for those (mayOpen), so every other row opens
+         * as it always did, offline included. */
+        if (found && boardHolding(found.doc.id)) {
+          open.disabled = true;
+          open.textContent = 'Opening';
+          if (!(await this.mayOpen(found.doc, { retry: () => this.openIncoming(found.doc, said) }))) {
+            return;
+          }
+          /* The list was closed while the board answered: they moved on. */
+          if (!open.isConnected) {
+            return;
+          }
+        }
         this.closeModal();
         /* Through openIncoming, which keeps what the canvas held in Load
          * first: Open went straight to loadDocument, and on the same canvas
          * that wrote over work nobody had saved with nothing kept or said. */
         if (found) {
-          this.openIncoming(found.doc, `Opened "${found.doc.name}".`);
+          this.openIncoming(found.doc, said);
         }
       });
       /* No Delete on a shipped track. There is nothing to delete: it is
@@ -3557,7 +4071,8 @@ export class App {
       status.textContent = `The board has no five inch tracks yet. ${fromNothing}`;
       return;
     }
-    status.textContent = `${tracks.length} five inch track${tracks.length === 1 ? '' : 's'}, most flown first.`;
+    const closed = tracks.filter((t) => t.official && !readAdminSession(t.board || origin)).length;
+    status.textContent = `${tracks.length} five inch track${tracks.length === 1 ? '' : 's'}, most flown first.${closed ? ' Official ones can be flown, and only a board admin can open them here.' : ''}`;
     tracks.sort((a, b) => (b.times - a.times) || (b.gates - a.gates) || a.name.localeCompare(b.name));
     for (const t of tracks) {
       const row = document.createElement('div');
@@ -3570,7 +4085,7 @@ export class App {
       const meta = document.createElement('div');
       meta.className = 'tb-load-meta';
       const by = t.designer || t.author;
-      meta.textContent = [by ? `by ${by}` : '', `${t.gates} gate${t.gates === 1 ? '' : 's'}`, t.times ? `${t.times} time${t.times === 1 ? '' : 's'} posted` : 'no times yet']
+      meta.textContent = [by ? `by ${by}` : '', `${t.gates} gate${t.gates === 1 ? '' : 's'}`, t.times ? `${t.times} time${t.times === 1 ? '' : 's'} posted` : 'no times yet', t.official ? 'official' : '']
         .filter(Boolean).join(' · ');
       name.append(title, meta);
       const open = document.createElement('button');
@@ -3578,6 +4093,14 @@ export class App {
       open.className = 'tb-btn';
       open.textContent = 'Open a copy';
       open.title = `Your own copy of "${t.name}", to change and publish under your name`;
+      /* An official track opens for nobody but an admin (see openShared), and
+       * the list already says which are official, so the row says so and has
+       * no button to press where a press could only be refused. */
+      if (t.official && !readAdminSession(t.board || origin)) {
+        open.disabled = true;
+        open.textContent = 'Official';
+        open.title = `"${t.name}" is an official track. Everybody can fly it, and only a board admin can open it in the builder.`;
+      }
       open.addEventListener('click', async () => {
         open.disabled = true;
         open.textContent = 'Opening';
@@ -3698,41 +4221,519 @@ export class App {
     help.className = 'tb-help';
     /* No duration named any more, because there is no one duration: the
      * quad flies a steady pace and a longer lap simply takes longer to go
-     * round. See LAP_SPEED in stage.js. */
-    help.textContent = 'One lap of the racing line, 512 by 512, looping, flown at the '
-      + 'same pace whatever the track, so a longer lap is a longer clip. '
-      + 'It comes out around 1 to 2 MB, which posts anywhere. Rendering takes a minute '
-      + 'or so and this tab has to stay open while it does.';
+     * round. See LAP_SPEED in stage.js. No size named either, because the
+     * pilot chooses it just below. */
+    help.textContent = 'One lap of the racing line, looping, flown at the same pace '
+      + 'whatever the track, so a longer lap is a longer clip. This tab has to stay '
+      + 'open while it renders, and closing this box stops it.';
+    body.append(help);
+
+    /*
+     * THE SIZE. A select, with what the choice costs said underneath and tied
+     * to it for a screen reader, because the three are not equally good
+     * things to ask for: the biggest is a file too heavy to paste into a chat
+     * and minutes of waiting, and somebody who has never seen either should
+     * read that before pressing the button and not after.
+     */
+    const sizeField = document.createElement('div');
+    sizeField.className = 'tb-field';
+    const sizeLabel = document.createElement('label');
+    sizeLabel.className = 'tb-field-label';
+    sizeLabel.textContent = 'Size';
+    const sizePick = document.createElement('select');
+    sizePick.id = 'tb-animation-size';
+    sizeLabel.htmlFor = sizePick.id;
+    for (const s of ANIMATION_SIZES) {
+      const o = document.createElement('option');
+      o.value = String(s.edge);
+      o.textContent = `${s.label}, ${s.edge} by ${s.edge}`;
+      sizePick.append(o);
+    }
+    sizeField.append(sizeLabel, sizePick);
+    const sizeNote = document.createElement('p');
+    sizeNote.className = 'tb-help';
+    sizeNote.id = 'tb-animation-size-note';
+    sizePick.setAttribute('aria-describedby', sizeNote.id);
+    const saySize = () => {
+      const s = ANIMATION_SIZES.find((x) => String(x.edge) === sizePick.value) || ANIMATION_SIZES[0];
+      sizeNote.textContent = s.note;
+    };
+    sizePick.addEventListener('change', saySize);
+    saySize();
+    body.append(sizeField, sizeNote);
+
+    /*
+     * THE SETTING: the black stage the animation has always been shot on, or
+     * the track on a race field, striped grass with the course's sponsors
+     * painted on it as they are in the game. For a five inch track only: a
+     * whoop track is flown in a room, which this does not draw, so there is
+     * nothing to choose and the control is not there.
+     *
+     * The field is what the bigger sizes are for, so choosing High or Very high
+     * puts it on, until the pilot has chosen for themselves; after that their
+     * choice stands whatever size they pick. Standard keeps the stage unless
+     * asked, because that is the file it has always been.
+     */
+    const setHere = trackClassOf(this.doc) !== 'micro';
+    let settingTouched = false;
+    const settingPick = document.createElement('select');
+    settingPick.id = 'tb-animation-setting';
+    const settingNote = document.createElement('p');
+    settingNote.className = 'tb-help';
+    settingNote.id = 'tb-animation-setting-note';
+    if (setHere) {
+      const settingField = document.createElement('div');
+      settingField.className = 'tb-field';
+      const settingLabel = document.createElement('label');
+      settingLabel.className = 'tb-field-label';
+      settingLabel.textContent = 'Setting';
+      settingLabel.htmlFor = settingPick.id;
+      for (const s of ANIMATION_SETTINGS) {
+        const o = document.createElement('option');
+        o.value = s.id;
+        o.textContent = s.label;
+        settingPick.append(o);
+      }
+      settingPick.setAttribute('aria-describedby', settingNote.id);
+      settingField.append(settingLabel, settingPick);
+      const saySetting = () => {
+        const s = ANIMATION_SETTINGS.find((x) => x.id === settingPick.value) || ANIMATION_SETTINGS[0];
+        settingNote.textContent = s.note;
+      };
+      settingPick.addEventListener('change', () => {
+        settingTouched = true;
+        saySetting();
+      });
+      sizePick.addEventListener('change', () => {
+        if (!settingTouched) {
+          settingPick.value = Number(sizePick.value) > ANIMATION_EDGE ? 'field' : 'stage';
+          saySetting();
+        }
+      });
+      saySetting();
+      body.append(settingField, settingNote);
+    }
+
+    /* No live region on this one, as before: it changes on every frame, and a
+     * screen reader reading out each of six hundred is not help. */
     const status = document.createElement('p');
     status.className = 'tb-help';
-    body.append(help, status);
+    body.append(status);
+
+    /* Closing the box stops the render. See afterModal below. */
+    const stop = new AbortController();
 
     const go = document.createElement('button');
     go.type = 'button';
     go.className = 'tb-btn tb-primary';
     go.textContent = 'Render the animation';
     go.addEventListener('click', async () => {
+      const edge = Number(sizePick.value);
+      const field = setHere && settingPick.value === 'field';
       go.disabled = true;
+      /* Not changeable mid render: the file is the size it was asked for. */
+      sizePick.disabled = true;
+      settingPick.disabled = true;
       status.textContent = 'Loading the renderer.';
       try {
         const { exportTrackGif } = await import('./animate.js');
         const bytes = await exportTrackGif(this.doc, {
+          size: edge,
+          field,
+          signal: stop.signal,
           onProgress: (done, total) => {
             status.textContent = `Frame ${done} of ${total}.`;
           },
         });
-        downloadBlob(bytes, animationFilename(this.doc), 'image/gif');
+        const file = animationFilename(this.doc, edge, field);
+        downloadBlob(bytes, file, 'image/gif');
         const mb = (bytes.length / 1e6).toFixed(2);
-        status.textContent = `Done. ${mb} MB, saved as ${animationFilename(this.doc)}.`;
+        status.textContent = `Done. ${mb} MB, saved as ${file}.`;
         go.textContent = 'Render it again';
-        go.disabled = false;
       } catch (e) {
+        /* The box was closed, which is the answer and not a failure, and
+         * there is no box left to say anything in. */
+        if (e && e.name === 'AbortError') {
+          return;
+        }
         status.textContent = e && e.message ? e.message : String(e);
+      } finally {
         go.disabled = false;
+        sizePick.disabled = false;
+        settingPick.disabled = false;
       }
     });
     body.append(go);
     this.modal('Export animation', body);
+    /* Set after modal(), which clears it for the dialog it replaces. A render
+     * left running behind a closed box would finish minutes later and save a
+     * file nobody was expecting. */
+    this.afterModal = () => stop.abort();
+  }
+
+  /*
+   * THE BUNDLE: a track as one zip, for somebody else's program and somebody
+   * else's living room. bundle.json for a machine, instructions.html for a
+   * person, track.json for the builder and the simulator, a map, six views of
+   * the room (each with the line and without it) and a lap animation. The
+   * format is in BUNDLE-FORMAT.md.
+   *
+   * Everything but the pictures needs no graphics card and is instant, so the
+   * dialog lets the pictures be switched off, and the animation is offered at
+   * the small size by default. Closing the box stops the work at the next
+   * picture, like the animation's own.
+   */
+  async exportBundle() {
+    if (!this.isWhoopRace()) {
+      return;
+    }
+    if (this.nameInput && this.nameInput.value) {
+      this.doc.name = this.nameInput.value.trim() || 'Untitled track';
+    }
+    if (this.doc.sequence.length < 2) {
+      this.toast('A bundle needs a lap: put at least two elements in the flying order.');
+      return;
+    }
+    const body = document.createElement('div');
+    const help = document.createElement('p');
+    help.className = 'tb-help';
+    help.textContent = 'One zip holding this track as a file a program can read, a page to build it from, '
+      + 'a map, views of the room with the racing line and without it, and one lap as an animation. '
+      + 'This tab has to stay open while it is made, and closing this box stops it.';
+    body.append(help);
+
+    const field = (label, id, options, note) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'tb-field';
+      const l = document.createElement('label');
+      l.className = 'tb-field-label';
+      l.textContent = label;
+      const pick = document.createElement('select');
+      pick.id = id;
+      l.htmlFor = id;
+      for (const [value, text] of options) {
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = text;
+        pick.append(o);
+      }
+      const n = document.createElement('p');
+      n.className = 'tb-help';
+      n.id = `${id}-note`;
+      n.textContent = note;
+      pick.setAttribute('aria-describedby', n.id);
+      wrap.append(l, pick);
+      body.append(wrap, n);
+      return pick;
+    };
+    const gifPick = field('Lap animation', 'tb-bundle-gif', [
+      ['card', 'Small, 384 by 240'],
+      ['large', 'Larger, 640 by 400'],
+      ['none', 'None'],
+    ], 'Small is a few seconds and a file of a few hundred kilobytes. None is the quickest and is the one to pick on a slow computer: everything else is made at once.');
+    const stillPick = field('Views of the room', 'tb-bundle-stills', [
+      ['yes', 'Six pictures'],
+      ['no', 'None'],
+    ], 'Three corners of the room, each with the racing line and without it. A fraction of a second.');
+
+    const status = document.createElement('p');
+    status.className = 'tb-help';
+    body.append(status);
+    const stop = new AbortController();
+
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'tb-btn tb-primary';
+    go.textContent = 'Make the bundle';
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      gifPick.disabled = true;
+      stillPick.disabled = true;
+      status.textContent = 'Starting.';
+      try {
+        const { makeBundle } = await import('./bundlemaker.js');
+        const made = await makeBundle(this.doc, {
+          gif: gifPick.value,
+          stills: stillPick.value === 'yes',
+          signal: stop.signal,
+          onStatus: (t) => { status.textContent = t; },
+        });
+        const file = bundleFilename(this.doc);
+        downloadBlob(made.bytes, file, 'application/zip');
+        const kb = Math.round(made.bytes.length / 1024);
+        const left = made.skipped.length ? ` Left out, because this computer could not draw it: ${made.skipped.join(', ')}.` : '';
+        status.textContent = `Done. ${made.files} files, ${kb} KB, saved as ${file}.${left}`;
+        go.textContent = 'Make it again';
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          return;
+        }
+        status.textContent = e && e.message ? e.message : String(e);
+      } finally {
+        go.disabled = false;
+        gifPick.disabled = false;
+        stillPick.disabled = false;
+      }
+    });
+    body.append(go);
+    body.append(this.communityOffer(() => stop.abort()));
+    this.modal('Export bundle', body);
+    this.afterModal = () => stop.abort();
+  }
+
+  /*
+   * COMMUNITYGOW, FROM THE EXPORT DIALOG. The same bundle, sent to a club's
+   * page as its next round instead of saved as a file. A tab the community's
+   * page opened already knows which community (attachCommunity); any other
+   * takes the organiser link, pasted, which is the one thing an organiser is
+   * told to keep. Either way the sending is sendToCommunity's.
+   */
+  communityOffer(stopExport) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tb-field';
+    const head = document.createElement('p');
+    head.className = 'tb-help';
+    if (this.community) {
+      head.textContent = `Or send it to ${this.community.name || this.community.slug} as its next round, ready to fly in the simulator.`;
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'tb-btn';
+      send.textContent = `Send to ${this.community.name || this.community.slug}`;
+      send.addEventListener('click', () => {
+        stopExport();
+        this.sendToCommunity();
+      });
+      wrap.append(head, send);
+      return wrap;
+    }
+    head.textContent = 'Running a CommunityGow community? Paste your organiser link to send this track to it as the next round.';
+    const id = 'tb-bundle-organiser';
+    const label = document.createElement('label');
+    label.className = 'tb-field-label';
+    label.htmlFor = id;
+    label.textContent = 'Organiser link';
+    const input = document.createElement('input');
+    input.id = id;
+    input.type = 'url';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = 'https://webfpv.org/board/CommunityGow/...#key=...';
+    const note = document.createElement('p');
+    note.className = 'tb-help';
+    note.setAttribute('aria-live', 'polite');
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'tb-btn';
+    use.textContent = 'Send to that community';
+    use.addEventListener('click', async () => {
+      const { parseOrganiserLink, rememberCommunity } = await import('./community.js');
+      const found = parseOrganiserLink(input.value);
+      if (!found) {
+        input.setAttribute('aria-invalid', 'true');
+        note.textContent = /CommunityGow/i.test(input.value) && !/#key=/.test(input.value)
+          ? 'That is the community\u2019s page but not the organiser link: the organiser link ends in #key= and something after it.'
+          : 'That is not an organiser link. It looks like https://webfpv.org/board/CommunityGow/your-club#key=...';
+        return;
+      }
+      input.removeAttribute('aria-invalid');
+      stopExport();
+      await this.attachCommunity(rememberCommunity(found));
+      this.sendToCommunity();
+    });
+    wrap.append(head, label, input, use, note);
+    return wrap;
+  }
+
+  /*
+   * A COMMUNITY FOR THIS TAB, from the address the community's page opened it
+   * with (start.js takes it before anything else reads the address) or from a
+   * pasted organiser link. It shows the strip under the bar and asks the
+   * board for the community's name and which round is next, without waiting:
+   * the strip says the address until the board answers.
+   */
+  async attachCommunity(c) {
+    if (!c) {
+      return;
+    }
+    this.community = { ...c, next: 0 };
+    this.drawCommunity();
+    try {
+      const { fetchCommunity } = await import('./community.js');
+      const about = await fetchCommunity(c);
+      if (this.community && this.community.slug === c.slug) {
+        this.community = { ...this.community, name: about.name, next: about.next };
+        this.drawCommunity();
+      }
+    } catch (e) {
+      if (this.community && this.community.slug === c.slug) {
+        this.community.problem = e && e.message ? e.message : String(e);
+        this.drawCommunity();
+      }
+    }
+  }
+
+  detachCommunity() {
+    this.community = null;
+    import('./community.js').then((m) => m.forgetCommunity()).catch(() => {});
+    this.drawCommunity();
+  }
+
+  /* The strip: which round, for whom, and the button. Cheap enough for every
+   * updateTopBar, which is how it follows the track from whoop to not. */
+  drawCommunity(whoop = this.isWhoopRace()) {
+    const node = this.communityNode || (this.communityNode = document.getElementById('tb-community'));
+    if (!node) {
+      return;
+    }
+    const c = this.community;
+    node.hidden = !c;
+    if (!c) {
+      node.textContent = '';
+      return;
+    }
+    const name = c.name || c.slug;
+    const ready = whoop && this.doc.sequence.length >= 2;
+    const said = document.createElement('p');
+    const lead = document.createElement('strong');
+    lead.textContent = c.next ? `Round ${c.next} for ${name}.` : `A round for ${name}.`;
+    const help = document.createElement('span');
+    help.className = 'tb-help';
+    help.textContent = c.problem
+      ? c.problem
+      : !whoop
+        ? 'Community rounds are whoop race tracks. Open one from Load, a RaceGOW track or your own, or start a whoop track.'
+        : !ready
+          ? 'Set a flying order of at least two gates, then send it.'
+          : 'Load a RaceGOW track or build your own. When it is ready, send it: it lands on the community\u2019s page, ready to fly in the simulator.';
+    said.append(lead, ' ', help);
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'tb-btn tb-primary';
+    send.textContent = `Send to ${name}`;
+    send.disabled = !ready;
+    send.addEventListener('click', () => this.sendToCommunity());
+    const leave = document.createElement('button');
+    leave.type = 'button';
+    leave.className = 'tb-btn';
+    leave.textContent = 'Not now';
+    leave.title = 'Stop making a round in this tab. The community\u2019s page can open it again.';
+    leave.addEventListener('click', () => this.detachCommunity());
+    node.replaceChildren(said, send, leave);
+  }
+
+  /*
+   * THE ROUND, MADE AND SENT. The bundle is the one Export bundle makes, at
+   * the settings that suit a page other people open on their phones: the six
+   * views and the small lap animation, which also keeps it inside the
+   * board's 4 MB. The board puts the track up as it takes the round, so the
+   * last line here can say it is ready to fly.
+   */
+  async sendToCommunity() {
+    const c = this.community;
+    if (!c) {
+      return;
+    }
+    if (!this.isWhoopRace()) {
+      this.toast('Community rounds are whoop race tracks. Open one first.');
+      return;
+    }
+    if (this.nameInput && this.nameInput.value) {
+      this.doc.name = this.nameInput.value.trim() || 'Untitled track';
+    }
+    if (this.doc.sequence.length < 2) {
+      this.toast('A round needs a lap: put at least two elements in the flying order.');
+      return;
+    }
+    const name = c.name || c.slug;
+    const body = document.createElement('div');
+    const help = document.createElement('p');
+    help.className = 'tb-help';
+    help.textContent = `${c.next ? `Round ${c.next}` : 'The next round'} of ${name} will be this track. `
+      + 'This tab draws its map, views and lap animation first, which takes a few seconds, then the board '
+      + 'puts it on the community\u2019s page and in the simulator for everyone there.';
+    const wrap = document.createElement('div');
+    wrap.className = 'tb-field';
+    const label = document.createElement('label');
+    label.className = 'tb-field-label';
+    label.htmlFor = 'tb-round-title';
+    label.textContent = 'Round title';
+    const title = document.createElement('input');
+    title.id = 'tb-round-title';
+    title.type = 'text';
+    title.maxLength = 80;
+    title.value = this.doc.name || '';
+    wrap.append(label, title);
+    const status = document.createElement('p');
+    status.className = 'tb-help';
+    status.setAttribute('aria-live', 'polite');
+    body.append(help, wrap, status);
+    const stop = new AbortController();
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'tb-btn tb-primary';
+    go.textContent = c.next ? `Send round ${c.next}` : 'Send the round';
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      title.disabled = true;
+      status.textContent = 'Starting.';
+      try {
+        const [{ makeBundle }, { sendRound }] = await Promise.all([import('./bundlemaker.js'), import('./community.js')]);
+        const made = await makeBundle(this.doc, {
+          gif: 'card',
+          stills: true,
+          signal: stop.signal,
+          onStatus: (t) => { status.textContent = t; },
+        });
+        status.textContent = `Sending ${Math.round(made.bytes.length / 1024)} KB to ${name}.`;
+        /* No signal on the send: closing the box cannot take back a round
+         * the board has already added (the rule src/share/board.js keeps for
+         * every write), so the send finishes and the strip learns the next
+         * round's number either way, and a second Send is a new round on
+         * purpose rather than a duplicate by accident. */
+        const sent = await sendRound(c, { bytes: made.bytes, title: title.value.trim() });
+        this.community = { ...c, name: sent.name, next: sent.n + 1, problem: '' };
+        this.drawCommunity();
+        if (stop.signal.aborted) {
+          return;
+        }
+        status.textContent = sent.track
+          ? `Round ${sent.n} is live on ${sent.name}, and in the simulator.`
+          : `Round ${sent.n} is live on ${sent.name}. The board could not put its track in the simulator, so the page has no Fly button for it.`;
+        help.textContent = 'Everyone in the community sees it on its page, where one press flies it in the simulator. Share the round\u2019s link in your group chat.';
+        if (shown && shown.close) {
+          shown.close.textContent = 'Close';
+        }
+        const open = document.createElement('a');
+        open.className = 'tb-btn tb-primary';
+        open.href = sent.url;
+        open.target = 'webfpv-community';
+        open.rel = 'noopener';
+        open.textContent = `Open round ${sent.n}`;
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'tb-btn';
+        copy.textContent = 'Copy its link';
+        copy.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(sent.url);
+            copy.textContent = 'Copied';
+          } catch (err) {
+            copy.textContent = sent.url;
+          }
+        });
+        go.replaceWith(open, copy);
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          return;
+        }
+        status.textContent = e && e.message ? e.message : String(e);
+        go.disabled = false;
+        title.disabled = false;
+      }
+    });
+    const shown = this.modal(`Send to ${name}`, body, [], { primary: go });
+    this.afterModal = () => stop.abort();
+    title.focus({ preventScroll: true });
   }
 
   /*
@@ -3813,17 +4814,6 @@ export class App {
     }
     if (!this.doc.sequence.length) {
       this.toast('A published track needs at least one gate in the flying order.');
-      return;
-    }
-    /* A table, a chair or a banner is not something the board knows yet. Said here,
-     * in a dialog that stays until it is read, because the sentence is longer than a
-     * toast is up for, and before the author has typed a name for nothing. */
-    const unknown = partsTheBoardDoesNotKnow(this.doc);
-    if (unknown.length) {
-      const say = document.createElement('p');
-      say.className = 'tb-help';
-      say.textContent = unknownPartsSentence(unknown);
-      this.modal('Not on the board yet', say);
       return;
     }
     this.autosaver.flush();
@@ -4083,8 +5073,191 @@ export class App {
         this.toast(`Could not publish: ${e.message || e}`);
       }
     });
+    /*
+     * OFFICIAL TRACKS.
+     *
+     * Asked of the board, which is the only thing that knows, once the
+     * dialog is up. If the track is official and this tab is not an admin,
+     * Update is switched off here with the reason, because the board would
+     * refuse it (OFFICIAL_LOCKED in its src/store.js) and a button that
+     * cannot work is a worse thing to offer than a sentence. That is a
+     * courtesy: the lock is the board's, and a build that skipped this
+     * would simply be told no.
+     *
+     * An admin gets the switch itself: Mark official, or take the mark off.
+     * Only for a track already on the board, because the mark is on the
+     * board's row for it.
+     *
+     * If the board cannot be reached the dialog is left exactly as it was,
+     * and the answer comes back from the publish itself if it matters.
+     */
+    if (owned) {
+      const origin = boardOrigin();
+      const admin = readAdminSession(origin);
+      const note = document.createElement('p');
+      note.className = 'tb-help';
+      note.setAttribute('role', 'status');
+      body.append(note);
+      let toggle = null;
+      if (admin) {
+        toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'tb-btn';
+        toggle.disabled = true;
+        toggle.textContent = 'Checking whether it is official';
+        body.append(toggle);
+      }
+      const show = (official) => {
+        if (official && !admin) {
+          send.disabled = true;
+          note.textContent = 'This is an official track, so only a board admin can change it.';
+        } else if (official) {
+          note.textContent = 'This is an official track. You are signed in as an admin, so updating it goes through, and nobody else can.';
+        } else {
+          note.textContent = '';
+        }
+        if (toggle) {
+          toggle.disabled = false;
+          toggle.textContent = official ? 'Remove the official mark' : 'Mark this track official';
+          toggle.onclick = async () => {
+            toggle.disabled = true;
+            try {
+              const done = await setTrackOfficial({ id: this.doc.id, official: !official, origin });
+              show(Boolean(done.official));
+              this.toast(done.official
+                ? `"${this.doc.name}" is official. Only admins can change it now.`
+                : `"${this.doc.name}" is no longer official.`);
+            } catch (e) {
+              toggle.disabled = false;
+              if (e && e.status === 403) {
+                clearAdminSession();
+                this.updateTopBar();
+                note.textContent = 'The board no longer accepts this admin sign in. Sign in again from More.';
+              } else {
+                note.textContent = (e && e.message) || 'The board could not be asked.';
+              }
+            }
+          };
+        }
+      };
+      fetchTrackOfficial(this.doc.id, origin).then((official) => {
+        if (official === null) {
+          if (toggle) {
+            toggle.textContent = 'Could not reach the board to check';
+          }
+          return;
+        }
+        show(official);
+      });
+    }
+
     const shown = this.modal(owned ? 'Update this track' : (remix ? 'Publish as yours' : 'Publish this track'), body, [], { primary: send });
     nameAsk.start();
+  }
+
+  /*
+   * ADMIN, IN ONE DIALOG: sign in, or see who is signed in and sign out.
+   *
+   * What signing in unlocks is the board's to decide and the board enforces
+   * it on its own side. This dialog only gets the token (see ../share/admin.js
+   * for where it lives). An admin can mark a track official, which locks it
+   * against everybody else, and can still edit official tracks, which the
+   * board refuses to anybody who is not one. Nothing here changes what any
+   * other pilot can do, so there is no warning to read before signing in.
+   *
+   * One message for every wrong answer, as the board's own sign in gives
+   * one, so this dialog cannot be used to ask which addresses are admins.
+   *
+   * `then` is what the pilot was doing when they were stopped at an official
+   * track (explainOfficial): it runs once, after a sign in that worked, and
+   * never after Cancel or a wrong answer.
+   */
+  openAdmin(then = null) {
+    const origin = boardOrigin();
+    const body = document.createElement('div');
+    const session = readAdminSession(origin);
+    const status = document.createElement('p');
+    status.className = 'tb-help';
+    status.setAttribute('role', 'status');
+    if (session) {
+      const who = document.createElement('p');
+      who.className = 'tb-help';
+      const until = session.expiresUtc ? Date.parse(session.expiresUtc) : NaN;
+      const when = Number.isNaN(until)
+        ? 'Closing this tab ends it.'
+        : `It runs out at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, and closing this tab ends it sooner.`;
+      who.textContent = `Signed in to the board as ${session.email || 'an admin'}. ${when} Publish has a Mark official button for any track that is on the board, and an official track opens here to edit in place, which it does for nobody else.`;
+      body.append(who);
+      const out = document.createElement('button');
+      out.type = 'button';
+      out.className = 'tb-btn';
+      out.textContent = 'Sign out';
+      out.addEventListener('click', () => {
+        clearAdminSession();
+        this.closeModal();
+        this.toast('Signed out of the board admin.');
+        this.updateTopBar();
+      });
+      this.modal('Board admin', body, [], { primary: out });
+      return;
+    }
+    const help = document.createElement('p');
+    help.className = 'tb-help';
+    help.textContent = 'For the people who run the board. An admin can mark a track official. After that only admins can open it in the builder or change it, and everybody can still fly it and post a time. Everyone else keeps publishing and flying as they always have.';
+    body.append(help);
+    const field = (labelText, type, autocomplete) => {
+      const row = document.createElement('div');
+      row.className = 'tb-field';
+      const label = document.createElement('label');
+      label.className = 'tb-field-label';
+      label.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = type;
+      input.autocomplete = autocomplete;
+      input.id = `tb-admin-${type}`;
+      label.htmlFor = input.id;
+      row.append(label, input);
+      body.append(row);
+      return input;
+    };
+    const email = field('Email', 'email', 'username');
+    const password = field('Password', 'password', 'current-password');
+    body.append(status);
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'tb-btn tb-primary';
+    go.textContent = 'Sign in';
+    const submit = async () => {
+      if (!email.value.trim() || !password.value) {
+        status.textContent = 'Type the email and the password.';
+        return;
+      }
+      go.disabled = true;
+      status.textContent = 'Checking.';
+      try {
+        const done = await adminSignIn({ email: email.value.trim(), password: password.value, origin });
+        this.closeModal();
+        this.toast(`Signed in to the board as ${done.email}.`);
+        this.updateTopBar();
+        if (then) {
+          then();
+        }
+      } catch (e) {
+        go.disabled = false;
+        password.value = '';
+        status.textContent = e && e.message ? e.message : 'The board could not be asked.';
+        password.focus();
+      }
+    };
+    go.addEventListener('click', submit);
+    password.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    });
+    this.modal('Board admin', body, [], { primary: go });
+    email.focus();
   }
 
   /*
@@ -4272,6 +5445,20 @@ export class App {
           ? `This id was already on the board, so it went up as a new map, "${posted.name}".`
           : `${verb} as "${posted.name}".`;
         this.toast(`${verb} "${posted.name}" on the board.`);
+        /* Show support prompt after publishing a map (not updating). The
+         * shell's Support prompts switch is read by supportprompt.js itself:
+         * this read this.readSettings and this.openSettings, which the
+         * builder never had, so it ignored the switch. There is no Settings
+         * button here, because there is no settings room to open. */
+        if (!posted.updated) {
+          setTimeout(() => {
+            try {
+              showSupportPrompt('publish');
+            } catch (promptError) {
+              console.warn('support prompt', promptError);
+            }
+          }, 1500); /* Delay to let the toast show first */
+        }
         /* The board drops a map's share card on every republish, because
          * this is the only thing that republishes one, and it draws the
          * new card here. See publishMapUnlocked in the board's store.js. */
@@ -4350,6 +5537,19 @@ export class App {
       ? `Up to five sponsors\u2019 logos, painted on the ${w.ground} wherever you put them: press Paint on the ${w.ground} under one, then click the ${w.place}. They travel inside the map file, so a map you send somebody arrives with its branding on.`
       : `Up to five sponsors\u2019 logos. They are dealt out round the gates in flying order, so each sponsor gets a share of the boards, the upright banners and the flags, spread down the lap rather than bunched at the start. Any of them can also be painted on the ${w.ground}: press Paint on the ${w.ground} under it, then click the ${w.place}. They travel inside the track file, so a track you send somebody arrives with its branding on.`;
     body.append(help);
+    /* Everybody can open the dialog and take a logo off; adding one is the admin's. */
+    const mayBrand = this.canBrand();
+    if (!mayBrand) {
+      const closed = document.createElement('p');
+      closed.className = 'tb-help';
+      closed.textContent = this.brandingClosed();
+      const signIn = document.createElement('button');
+      signIn.type = 'button';
+      signIn.className = 'tb-btn';
+      signIn.textContent = 'Board admin? Sign in';
+      signIn.addEventListener('click', () => this.openAdmin());
+      body.append(closed, signIn);
+    }
 
     const list = document.createElement('div');
     body.append(list);
@@ -4419,7 +5619,7 @@ export class App {
             ? (map ? `Empty. Add a logo here, then paint it on the ${w.ground}.` : 'Empty. Add a logo here and the gates start sharing it.')
             : 'Empty.';
           slot.append(note);
-          if (i === logos.length) {
+          if (i === logos.length && mayBrand) {
             const add = document.createElement('button');
             add.type = 'button';
             add.className = 'tb-btn';
@@ -4493,7 +5693,7 @@ export class App {
           redraw();
           this.toast(`Logo removed. Any ${w.ground} painted with it now shows nothing until you pick another.`);
         });
-        btns.append(swap, paint, drop);
+        btns.append(...(mayBrand ? [swap, paint] : []), drop);
         slot.append(btns);
       }
 
@@ -4527,6 +5727,11 @@ export class App {
     file.addEventListener('change', async () => {
       const chosen = file.files[0];
       const slot = target;
+      if (!this.canBrand()) {
+        file.value = '';
+        target = -1;
+        return;
+      }
       file.value = '';
       target = -1;
       if (!chosen || slot < 0) {
@@ -4568,7 +5773,7 @@ export class App {
       return;
     }
     try {
-      this.importText(await readFileText(file));
+      await this.importText(await readFileText(file));
     } catch (e) {
       this.toast(`Could not read the file: ${e.message}`);
     }
@@ -4582,7 +5787,7 @@ export class App {
    * said in a dialog after it opens, because a converted track that silently lost
    * a banner is worse than one that says so.
    */
-  importText(text) {
+  async importText(text) {
     if (!text || !String(text).trim()) {
       this.toast('There is nothing there to import.');
       return;
@@ -4603,9 +5808,16 @@ export class App {
       this.toast(`Could not import: ${error}`);
       return;
     }
-    this.openIncoming(doc, repairs.length
+    const said = repairs.length
       ? `Imported "${doc.name}" with ${repairs.length} repair${repairs.length === 1 ? '' : 's'}: ${repairs[0]}`
-      : `Imported "${doc.name}".`);
+      : `Imported "${doc.name}".`;
+    /* A file keeps the id the track was published under, so an export of one
+     * that has since been made official is still that track, and opens for
+     * nobody but an admin. Asked of the board (mayOpen), and skipped when this
+     * device is offline. */
+    if (await this.mayOpen(doc, { external: true, retry: () => this.openIncoming(doc, said) })) {
+      this.openIncoming(doc, said);
+    }
   }
 
   /* The import dialog: choose a file, or paste the text of one. */
@@ -4871,6 +6083,8 @@ export class App {
      * start again. */
     const undo = arriving ? '' : ' Undo starts again here, and';
     this.loadDocument(doc, `${what}${undo || ''}${undo ? ' the' : ' The'} simulator will fly ${w.flies}${want === 'freestyle' ? ' on this map' : ''}.`);
+    /* The other canvas's seat may hold a track that was made official since. */
+    this.guardOfficial();
   }
 
   /*
@@ -5147,6 +6361,8 @@ export class App {
       ['sheet', 'Build sheet', () => this.openSheet(), 'A page to print: where every piece stands, measured from a corner, and what pipe and fittings to buy', ''],
       ['picture', 'Picture', () => this.savePicture(), 'Save a picture of the room as it is on the screen, numbers and all', ''],
       ['animation', 'Export animation', () => this.exportAnimation(), 'Write a looping .gif of one lap', ''],
+      ['bundle', 'Export bundle', () => this.exportBundle(), 'A zip for another program and for building from: the track as data, a page of instructions, a map, views of the room and a lap animation', ''],
+      ['admin', 'Admin', () => this.openAdmin(), 'Sign in as a board admin, to mark tracks official and to edit the ones that are', ''],
       ['delete', 'Delete', () => this.confirmRemove(), 'Remove this track from this browser', 'tb-danger'],
     ]) {
       const b = btn(label, () => { this.closeMore(); fn(); }, title, `tb-more-item ${cls}`.trim());
@@ -5436,6 +6652,9 @@ export class App {
     this.redoBtn.title = this.history.canRedo() ? `Redo ${this.history.redoLabel()}` : 'Nothing to redo';
     const whoop = this.isWhoopRace();
     const map = docModeOf(this.doc) === 'freestyle';
+    if (this.community) {
+      this.drawCommunity(whoop);
+    }
     /* Every canvas is built in the room: 3D first, then 2D, with Top beside Fit. */
     const room = this.buildsIn3D();
     const plan = this.mode === '3d' && this.view3d.isPlan();
@@ -5505,10 +6724,16 @@ export class App {
       this.moreItems.get('export').title = `Write a .json ${noun} file`;
       this.moreItems.get('delete').title = `Remove this ${noun} from this browser`;
       this.moreItems.get('animation').style.display = map ? 'none' : '';
+      /* Says who is signed in, so an admin can see it from here. Shown on a
+       * map too: a map has no official mark, but logos and stickers are the
+       * admin's on every canvas and this is where the admin signs in. */
+      const adminNow = readAdminSession(boardOrigin());
+      this.moreItems.get('admin').textContent = adminNow ? `Admin: ${adminNow.email || 'signed in'}` : 'Admin';
+      this.moreItems.get('admin').style.display = '';
       /* The share link is a race track's, on either canvas (MENUS-PLAN.md
        * 4.2b); the build sheet and the picture are the room's. */
       this.moreItems.get('link').style.display = map ? 'none' : '';
-      for (const id of ['sheet', 'picture']) {
+      for (const id of ['sheet', 'picture', 'bundle']) {
         this.moreItems.get(id).style.display = whoop ? '' : 'none';
       }
     }

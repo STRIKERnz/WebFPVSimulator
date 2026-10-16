@@ -1,0 +1,228 @@
+/*
+ * supportprompt.js: soft support prompts at good moments.
+ *
+ * A small, dismissible prompt shown after a new personal best, about 20
+ * minutes of total flying in a session, or right after publishing a map in
+ * the builder. At most once a week per browser (localStorage). Never during
+ * a run. Never for existing patrons if the sim can tell.
+ *
+ * ON THE PAGE, NOT IN A SCREEN. Until 2026-10-05 the shell put the prompt
+ * inside .screen-results or .screen-paused. A screen is pointer-events
+ * none, which its children inherit, so a click on the close button or a
+ * link went through to the page behind it, and the prompt went hidden with
+ * the screen and came back on the next one. The builder put it inside its
+ * dialog, which has none of these styles. So the prompt goes on the body,
+ * the one place every page has, and whoever shows it puts it away (main.js
+ * does so the moment the screen it was shown on is left).
+ *
+ * This file is part of WebFPVSimulator.
+ *
+ * WebFPVSimulator is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or (at
+ * your option) any later version.
+ *
+ * WebFPVSimulator is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with WebFPVSimulator. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import { counting, eventsUrl } from './stats.js';
+
+const SUPPORT_PROMPT_KEY = 'webfpv.support.prompt.v1';
+const SUPPORT_DISABLED_KEY = 'webfpv.support.disabled.v1';
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/* The shell's settings, where Settings > Advanced > Support prompts is
+ * kept: SETTINGS_KEY in src/ui/ui.js, and SHELL_SETTINGS_KEY in
+ * src/trackbuilder/app.js reads the same blob. Read here so the builder,
+ * which is another page and has no settings of its own for this, keeps a
+ * pilot's Off as well as the shell does. */
+const SHELL_SETTINGS_KEY = 'webfpv.settings.v3';
+
+/* A link with its tags added as parameters. Appending '?utm_source=...' to
+ * an address that already had a query wrote two question marks into the
+ * Patreon link, and the tier id became '29740590?utm_source=sim-prompt'. */
+function tagged(base, params) {
+  const url = new URL(base);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, v);
+  }
+  return url.href;
+}
+
+/* Stripe tip link: one-off, USD $5 suggested, payer can change the amount */
+export const TIP_URL = 'https://donate.stripe.com/7sY4gzaAC2Eu3aOews8so0g';
+
+/* Patreon $3 tier join link */
+export const PATREON_JOIN_URL = 'https://www.patreon.com/checkout/webfpv?rid=29740590';
+
+/* Track the last time the prompt was shown */
+function readPromptState() {
+  try {
+    const raw = localStorage.getItem(SUPPORT_PROMPT_KEY);
+    if (!raw) {
+      return null;
+    }
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function writePromptState(lastShownMs) {
+  try {
+    localStorage.setItem(SUPPORT_PROMPT_KEY, JSON.stringify({ lastShownMs }));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* Check if the prompt is disabled in settings: this module's own key, or
+ * the shell's Support prompts switch set to Off. */
+export function isPromptDisabled() {
+  try {
+    if (localStorage.getItem(SUPPORT_DISABLED_KEY) === 'true') {
+      return true;
+    }
+    const raw = localStorage.getItem(SHELL_SETTINGS_KEY);
+    const shell = raw ? JSON.parse(raw) : null;
+    return Boolean(shell && shell.supportPrompts === false);
+  } catch (e) {
+    return false;
+  }
+}
+
+export function disablePrompt() {
+  try {
+    localStorage.setItem(SUPPORT_DISABLED_KEY, 'true');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* Check if enough time has passed since the last prompt (at least one week) */
+export function canShowPrompt() {
+  if (isPromptDisabled()) {
+    return false;
+  }
+  const state = readPromptState();
+  if (!state || !state.lastShownMs) {
+    return true;
+  }
+  const now = Date.now();
+  return (now - state.lastShownMs) >= ONE_WEEK_MS;
+}
+
+/* Record that the prompt was shown and send a tracking beacon */
+function recordPromptShown(trigger) {
+  writePromptState(Date.now());
+  try {
+    if (counting()) {
+      const body = JSON.stringify({ v: 1, kind: 'support_prompt_shown', source: `sim-${trigger}` });
+      navigator.sendBeacon(eventsUrl(), new Blob([body], { type: 'text/plain;charset=UTF-8' }));
+    }
+  } catch (e) {
+    /* No beacon in this browser, or it refused. The prompt is already showing. */
+  }
+}
+
+/* Record a click on one of the support options. The board counts a
+ * support click from 'sim' or 'landing' and refuses any other source
+ * (SUPPORT_SOURCES in its src/validate.js), so the 'sim-prompt-pb' this
+ * sent was never counted. A prompt's click is the simulator's; which
+ * prompt it was rides on the link itself, as ref and client_reference_id. */
+function recordPromptClick(trigger, target) {
+  try {
+    if (counting()) {
+      const body = JSON.stringify({ v: 1, kind: 'support_click', source: 'sim', target });
+      navigator.sendBeacon(eventsUrl(), new Blob([body], { type: 'text/plain;charset=UTF-8' }));
+    }
+  } catch (e) {
+    /* No beacon */
+  }
+}
+
+/*
+ * Show the support prompt. `trigger` is one of: 'pb' (personal best),
+ * 'time' (20 minutes of flying), or 'publish' (published a map).
+ * `onSettings`, when given, is what the Settings button does, and without
+ * it there is no Settings button: the builder has no settings room to
+ * open, and a button that only closed the prompt said otherwise. Returns
+ * the prompt, on the body, or null when it is not to be shown.
+ */
+export function showSupportPrompt(trigger, { onSettings = null } = {}) {
+  if (!canShowPrompt() || !document.body) {
+    return null;
+  }
+
+  recordPromptShown(trigger);
+
+  const prompt = document.createElement('div');
+  prompt.className = 'support-prompt';
+  prompt.setAttribute('role', 'dialog');
+  prompt.setAttribute('aria-label', 'Support WebFPV');
+
+  const message = document.createElement('p');
+  message.className = 'support-prompt-message';
+  message.textContent = 'I build WebFPV in my spare time. If you are enjoying it, a $3 Patreon or a one-off battery helps keep it free.';
+
+  const actions = document.createElement('div');
+  actions.className = 'support-prompt-actions';
+
+  const patreonBtn = document.createElement('a');
+  patreonBtn.href = tagged(PATREON_JOIN_URL, { utm_source: 'sim-prompt', ref: 'sim-prompt' });
+  patreonBtn.target = '_blank';
+  patreonBtn.rel = 'noopener noreferrer';
+  patreonBtn.className = 'support-prompt-btn support-prompt-btn-primary';
+  patreonBtn.textContent = 'Patreon $3/mo';
+  patreonBtn.addEventListener('click', () => {
+    recordPromptClick(trigger, 'patreon');
+  });
+
+  const tipBtn = document.createElement('a');
+  tipBtn.href = tagged(TIP_URL, { utm_source: 'sim-prompt', client_reference_id: `prompt-${trigger}`, ref: 'sim-prompt' });
+  tipBtn.target = '_blank';
+  tipBtn.rel = 'noopener noreferrer';
+  tipBtn.className = 'support-prompt-btn';
+  tipBtn.textContent = 'One-off $5';
+  tipBtn.addEventListener('click', () => {
+    recordPromptClick(trigger, 'tip');
+  });
+
+  let settingsBtn = null;
+  if (typeof onSettings === 'function') {
+    settingsBtn = document.createElement('button');
+    settingsBtn.type = 'button';
+    settingsBtn.className = 'support-prompt-btn-text';
+    settingsBtn.textContent = 'Settings';
+    settingsBtn.addEventListener('click', () => {
+      prompt.remove();
+      onSettings();
+    });
+  }
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'support-prompt-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => {
+    prompt.remove();
+  });
+
+  actions.append(patreonBtn, tipBtn);
+  if (settingsBtn) {
+    actions.append(settingsBtn);
+  }
+  prompt.append(closeBtn, message, actions);
+  document.body.append(prompt);
+
+  return prompt;
+}

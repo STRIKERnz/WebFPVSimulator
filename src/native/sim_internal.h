@@ -144,6 +144,29 @@ typedef struct {
   double camera_x;      /* lens glass in the body frame */
   double camera_y;
   double camera_z;
+  /*
+   * HOW MANY SCENE METRES ONE OF THIS AIRFRAME'S METRES IS. 1 on the five
+   * inch, which flies the world at life size. The whoop's room is built
+   * MICRO_SCALE times life size (configs/airframes.js), so the whoop's is
+   * that factor: everything in this table is the real 24 g machine in real
+   * metres, and plant.c converts exactly once, where the rigid body meets
+   * the world. See PLANT_W below and plant_build_world in plant.c.
+   */
+  double len_scale;
+  /*
+   * How hard a crashed craft lying off flat is tipped onto its belly or its
+   * back, rad/s^2 (sim.c ground_stall, TUMBLE FLAT). The five inch's is the
+   * 200 measured on the drop probe on 2026-09-24. Angular acceleration does
+   * not change with len_scale, so this is the airframe's own number.
+   */
+  double ground_tip_accel;
+  /*
+   * 1 when the props sit inside ducts. A ducted craft's props are never
+   * world contacts (world.c props_exposed), whatever the hull's size: the
+   * duct takes the hit and the blade keeps turning. 0 is an open prop, which
+   * strikes and rubs when it stands outside the hull.
+   */
+  int ducted;
 } PlantParams;
 
 /*
@@ -203,6 +226,17 @@ typedef struct {
 extern const PlantParams PLANT_TABLE[SIM_AIRFRAME_COUNT];
 extern const PlantParams *PLANT_P;
 #define PLANT (*PLANT_P)
+/*
+ * THE SAME AIRFRAME IN SCENE METRES, for everything that meets the world:
+ * the contact solver in sim.c, the obstacle solver in world.c, the hull, the
+ * camera and the launch stand. Lengths times len_scale, inertia times its
+ * square, gravity times it; mass, rates and every aerodynamic constant are
+ * unit free or stay in the plant's own metres and are not read through this.
+ * On the five inch every entry is the PLANT entry times 1.0, which IEEE 754
+ * returns exactly, so the five inch's arithmetic is bit for bit what it was.
+ */
+extern const PlantParams *PLANT_W_P;
+#define PLANT_W (*PLANT_W_P)
 
 /* Select the airframe. Out of range is ignored. Clears the cached thrust
  * axes, which are built from the airframe's own cant table. */
@@ -289,6 +323,45 @@ extern double SIM_AIR;
  * against the recorded trace hash.
  */
 extern double SIM_GRAVITY;
+
+/*
+ * MOTOR POWER, set by sim_set_motor_kv: a scale on the motor's kV, the speed
+ * it turns per volt. 1.0 is the motor the airframe table describes and the
+ * machine every band in tests/ and gates.config.json was measured against;
+ * above 1 it is the same motor wound hotter on the same pack, below 1 wound
+ * milder.
+ *
+ * WHAT IT IS. A motor of one size comes in several windings. Fewer, thicker
+ * turns (a higher kV) spin faster per volt and pass more current; more,
+ * thinner turns (a lower kV) the reverse. Turns go as 1 / s for a kV scale of
+ * s and resistance goes as turns squared, so the back EMF constant ke is
+ * divided by s and the winding resistance by s * s. That is all plant_step
+ * does with the scale, and the two are one fact rather than two free knobs.
+ *
+ * WHAT FOLLOWS, none of it tuned: the no load speed is s times, the stall
+ * torque s times and the stall current s squared times what they were, while
+ * the motor's own time constant (J R / ke^2) is unchanged because R and ke^2
+ * move together. Hover wants the same rotor speed and the same torque as
+ * before, so hover duty is 1 / s times what it was and hover sits LOWER on
+ * the stick when s is above 1, which is why configs/rates.js carries a kV
+ * axis for the keyboard's hover. Full throttle turns the rotor faster, which
+ * is more thrust, more current and more sag: that is what the knob is for.
+ *
+ * WHAT IT DOES NOT TOUCH. Mass, inertia, the prop (kt, kq), the pack, the
+ * air and every Betaflight setting. r_motor is the airframe's lumped figure
+ * for motor, ESC and leads, so scaling all of it overstates a real rewind a
+ * little (the ESC and the leads would not change); the difference lives in
+ * the stall current, which is the few milliseconds the note on the missing
+ * winding inductance at PLANT_TABLE already calls unphysical and which the
+ * rotor's own time constant filters before it reaches thrust.
+ *
+ * A MODE, same rule as SIM_AIR and SIM_GRAVITY: it survives sim_reset and
+ * sim_init and the shell owns asserting it. Bit identical at 1.0, because
+ * x / 1.0 is x and 1.0 * 1.0 is 1.0 for every finite double and no
+ * expression in plant_step was reassociated to get it. That is measured
+ * against the plant golden and the recorded trace hash, not assumed.
+ */
+extern double SIM_MOTOR_KV;
 
 /* Motor spin direction, position and cant moved INTO PlantParams when the
  * second airframe landed: they are airframe data and a whoop's are its own.

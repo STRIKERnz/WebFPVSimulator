@@ -73,6 +73,15 @@ const PAD_STORE_KEY = 'webfpv.pad.v1';
  * button number on one radio is an arming switch on another.
  */
 const RESTART_STORE_KEY = 'webfpv.restart.v1';
+/*
+ * THE AUTO RESET SWITCH, bug-918a8c99: the Auto reset setting, bindable to a
+ * radio switch the way Restart is, for a pilot who cannot reach the menu
+ * with both hands on the sticks. Same machinery, its own key, so one switch
+ * can be bound to either job and neither forgets the other. An axis (a
+ * switch) sets the setting to its position, because that is what a radio
+ * switch means; a button toggles it, because a button has no position.
+ */
+const AUTORESET_STORE_KEY = 'webfpv.autoreset.v1';
 /* An axis counts as the switch being flipped when it moves this far from
  * where it was when the row was chosen: half its travel, so a three
  * position switch moved one notch counts and a jittering gimbal does not. */
@@ -646,9 +655,9 @@ function savePadChoice(choice) {
   }
 }
 
-function loadRestartSpec() {
+function loadRestartSpec(key = RESTART_STORE_KEY) {
   try {
-    const raw = JSON.parse(localStorage.getItem(RESTART_STORE_KEY) || 'null');
+    const raw = JSON.parse(localStorage.getItem(key) || 'null');
     if (raw && typeof raw.id === 'string' && (raw.kind === 'button' || raw.kind === 'axis')
       && Number.isInteger(raw.index) && raw.index >= 0 && (raw.dir === 1 || raw.dir === -1)) {
       return { id: raw.id, kind: raw.kind, index: raw.index, dir: raw.dir };
@@ -659,13 +668,13 @@ function loadRestartSpec() {
   return null;
 }
 
-function saveRestartSpec(spec) {
+function saveRestartSpec(spec, key = RESTART_STORE_KEY) {
   try {
     if (!spec) {
-      localStorage.removeItem(RESTART_STORE_KEY);
+      localStorage.removeItem(key);
       return true;
     }
-    localStorage.setItem(RESTART_STORE_KEY, JSON.stringify(spec));
+    localStorage.setItem(key, JSON.stringify(spec));
     return true;
   } catch (e) {
     return false;
@@ -1452,6 +1461,7 @@ export class InputManager {
      * alive and are never judged again. See noteDeadChannels. Reset with
      * the pad and with the map, because it is a fact about both. */
     this.deadWatch = null;
+    this.btnSpan = null;
     this.deadList = [];
     this.deadAlive = new Set();
     /* A pad the browser calls a standard gamepad whose stick axis rests off
@@ -1470,6 +1480,14 @@ export class InputManager {
     this.restartCapture = null;
     this.restartFired = false;
     this.restartResult = null;
+    /* The Auto reset switch. See AUTORESET_STORE_KEY. autoEdge is the
+     * pending change main.js takes with takeAutoResetSwitch: true or false
+     * for a switch's new position, 'toggle' for a button, null for none. */
+    this.autoSpec = loadRestartSpec(AUTORESET_STORE_KEY);
+    this.autoPrevOn = null;
+    this.autoCapture = null;
+    this.autoEdge = null;
+    this.autoResult = null;
     /* The hold-to-select bootstrap for a radio reporting zero buttons.
      * See SELECT_STEP. */
     this.holdMs = 0;
@@ -1980,6 +1998,7 @@ export class InputManager {
   /* A new pad or a new map: the old flight said nothing about either. */
   forgetDeadChannels() {
     this.deadWatch = null;
+    this.btnSpan = null;
     if (this.deadList.length) {
       this.deadList = [];
     }
@@ -2009,6 +2028,61 @@ export class InputManager {
       }
     }
     return out;
+  }
+
+  /*
+   * WHAT THE PAD'S BUTTONS HAVE READ, for a bug report and nothing else.
+   *
+   * bug-2a9d8037, a DJI Controller 3 on a Pixel 9 in Chrome: four axes and
+   * seventeen buttons, roll, pitch and throttle moving and the fourth axis
+   * flat for the whole flight, and the same radio fine on a PC. Chrome's
+   * Android fallback turns the axes it knows as triggers (Brake, Gas,
+   * Throttle, Ltrigger, Rtrigger) into the analog VALUE of buttons 6 and 7
+   * and drops or aliases the rest, so a stick the axes never show may be
+   * sitting in a button's value. The report carried the axes and not one
+   * number about the buttons, so that could not be told from a stick the
+   * phone never delivers. This keeps, for each button that has ever left
+   * rest, the lowest and highest value it read. Nothing flies on it.
+   * Bounded: sixteen entries, reset with the pad.
+   */
+  noteButtonTravel(gp) {
+    const b = gp.buttons;
+    if (!b) {
+      return;
+    }
+    if (!this.btnSpan) {
+      this.btnSpan = {};
+    }
+    const n = Math.min(b.length, 32);
+    for (let i = 0; i < n; i += 1) {
+      const v = b[i] ? b[i].value : 0;
+      const seen = this.btnSpan[i];
+      if (seen) {
+        if (v < seen[0]) {
+          seen[0] = v;
+        }
+        if (v > seen[1]) {
+          seen[1] = v;
+        }
+      } else if (Math.abs(v) > 0.02 && Object.keys(this.btnSpan).length < 16) {
+        this.btnSpan[i] = [Math.min(0, v), Math.max(0, v)];
+      }
+    }
+  }
+
+  /* The two for the report: [lo, hi] per button that has left rest, and the
+   * span of every raw axis the flight has watched. */
+  rawTravel() {
+    const round = (v) => Math.round(v * 100) / 100;
+    const buttons = {};
+    if (this.btnSpan) {
+      for (const k of Object.keys(this.btnSpan)) {
+        buttons[k] = [round(this.btnSpan[k][0]), round(this.btnSpan[k][1])];
+      }
+    }
+    const w = this.deadWatch;
+    const axes = w ? w.axes.map((s) => (s ? [round(s.lo), round(s.hi)] : null)) : [];
+    return { axes, buttons };
   }
 
   /*
@@ -2116,6 +2190,7 @@ export class InputManager {
    * is snapshotted on the first poll after this, so whatever is already
    * held or flipped does not count. */
   beginRestartCapture() {
+    this.cancelAutoResetCapture();
     this.restartCapture = { id: null, buttons: null, axes: null };
     this.restartResult = null;
   }
@@ -2131,14 +2206,16 @@ export class InputManager {
     saveRestartSpec(null);
   }
 
-  runRestartCapture(gp) {
-    const cap = this.restartCapture;
+  /* Listen for the one thing to flip or press, on whichever capture object
+   * is passed, and hand back its spec or null. Shared by the Restart switch
+   * and the Auto reset switch. */
+  captureSwitch(cap, gp) {
     const pressedAt = (i) => Boolean(gp.buttons && gp.buttons[i] && gp.buttons[i].pressed);
     if (!cap.buttons || cap.id !== gp.id) {
       cap.id = gp.id;
       cap.buttons = (gp.buttons || []).map((b, i) => pressedAt(i));
       cap.axes = Array.from(gp.axes);
-      return;
+      return null;
     }
     let spec = null;
     for (let i = 0; i < cap.buttons.length && !spec; i += 1) {
@@ -2164,6 +2241,11 @@ export class InputManager {
         }
       }
     }
+    return spec;
+  }
+
+  runRestartCapture(gp) {
+    const spec = this.captureSwitch(this.restartCapture, gp);
     if (!spec) {
       return;
     }
@@ -2174,6 +2256,74 @@ export class InputManager {
     this.restartPrevOn = restartOn(gp, spec);
     this.restartFired = false;
     this.restartResult = saveRestartSpec(spec) ? 'saved' : 'unsaved';
+  }
+
+  /*
+   * THE AUTO RESET SWITCH, watched beside the restart switch on every poll
+   * that reads a radio. A switch (an axis) reports its position whenever it
+   * changes, so up is on and down is off whatever the menu said last; a
+   * button reports a toggle. The first read after the page loads, or after a
+   * different pad, only learns the position, as the restart switch does, so
+   * a switch left on does not overrule the setting the pilot saved.
+   */
+  noteAutoResetSwitch(gp) {
+    if (this.autoCapture) {
+      const spec = this.captureSwitch(this.autoCapture, gp);
+      if (spec) {
+        this.autoSpec = spec;
+        this.autoCapture = null;
+        this.autoPrevOn = restartOn(gp, spec);
+        this.autoEdge = null;
+        this.autoResult = saveRestartSpec(spec, AUTORESET_STORE_KEY) ? 'saved' : 'unsaved';
+      }
+      return;
+    }
+    const spec = this.autoSpec;
+    if (!spec || spec.id !== gp.id) {
+      this.autoPrevOn = null;
+      return;
+    }
+    const on = restartOn(gp, spec);
+    if (this.autoPrevOn !== null && on !== this.autoPrevOn) {
+      if (spec.kind === 'button') {
+        if (on) {
+          this.autoEdge = 'toggle';
+        }
+      } else {
+        this.autoEdge = on;
+      }
+    }
+    this.autoPrevOn = on;
+  }
+
+  beginAutoResetCapture() {
+    this.cancelRestartCapture();
+    this.autoCapture = { id: null, buttons: null, axes: null };
+    this.autoResult = null;
+  }
+
+  cancelAutoResetCapture() {
+    this.autoCapture = null;
+  }
+
+  clearAutoResetSwitch() {
+    this.autoSpec = null;
+    this.autoPrevOn = null;
+    this.autoEdge = null;
+    saveRestartSpec(null, AUTORESET_STORE_KEY);
+  }
+
+  /* null, true, false or 'toggle': one change, taken once. */
+  takeAutoResetSwitch() {
+    const e = this.autoEdge;
+    this.autoEdge = null;
+    return e;
+  }
+
+  takeAutoResetResult() {
+    const r = this.autoResult;
+    this.autoResult = null;
+    return r;
   }
 
   /* One flip, one restart. */
@@ -2292,6 +2442,7 @@ export class InputManager {
        */
       guess: m.stored ? null : (m.guess || 'aetr'),
       buttons: gp.buttons ? gp.buttons.length : 0,
+      raw: this.rawTravel(),
       check: {
         dead: this.deadList,
         missing: this.missingChannels(gp),
@@ -2786,6 +2937,13 @@ export class InputManager {
         ? describeRestart(this.restartSpec)
         : null,
       restartCapturing: Boolean(this.restartCapture),
+      /* autoReset    the Auto reset switch for the pad in use, worded as the
+       *              restart one is, or null. autoResetCapturing: the row
+       *              is waiting for a flip. See noteAutoResetSwitch. */
+      autoReset: selected && this.autoSpec && this.autoSpec.id === selected.id
+        ? describeRestart(this.autoSpec)
+        : null,
+      autoResetCapturing: Boolean(this.autoCapture),
     };
   }
 
@@ -4102,9 +4260,11 @@ export class InputManager {
       }
       this.noteThrottleParked(gp);
       this.noteGuessOrder(gp);
+      this.noteButtonTravel(gp);
       this.noteYawParked(gp, nowWall);
       this.noteStandardParked(gp, nowWall);
       this.noteRestartSwitch(gp);
+      this.noteAutoResetSwitch(gp);
       if (this.stickCheck) {
         this.noteStickCheck(gp);
       }

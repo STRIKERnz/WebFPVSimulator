@@ -49,7 +49,9 @@
  * along with WebFPVSimulator. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { adminAuthHeaders, writeAdminSession } from './admin.js';
 import { readShareImport, writeShareImport } from './session.js';
+import { byRating, cleanRating, raterKey, rememberStars } from './rating.js';
 
 /*
  * Two named hosts, because this page is served from two kinds of place and
@@ -244,6 +246,11 @@ async function readJson(res) {
     const err = new Error(message);
     err.status = res.status;
     err.conflict = Boolean(body && body.conflict) || res.status === 409;
+    /* The board's refusal for a track an admin has marked official: a 403
+     * that is neither a collision (conflict) nor a wrong key, and which the
+     * builder words for itself. See OFFICIAL_LOCKED in the board's
+     * src/store.js. */
+    err.official = Boolean(body && body.official);
     throw err;
   }
   return body;
@@ -349,6 +356,14 @@ export async function fetchTrackList(origin = boardOrigin()) {
      * document, so an older board that does not send it leaves every listing
      * reading as the field, correctly. */
     trackClass: t.trackClass === 'micro' ? 'micro' : 'full',
+    /* An admin has marked it official: only admins can change it, and only
+     * admins can open it in the builder. The builder's board picker reads it,
+     * so it can say so on the row without another request. A board from
+     * before the mark sends none. */
+    official: Boolean(t.official),
+    /* Stars from pilots, { count, avg, score }. A board from before ratings
+     * sends none and every track reads as not rated yet. */
+    rating: cleanRating(t.rating),
     board,
   })).filter((t) => t.id);
 }
@@ -549,87 +564,25 @@ export function usableTags(list) {
  * and the board's copy is the same course. So a group is counted below only for the pieces of it that
  * no pass goes through, and a wall of gates that are all flown is published.
  *
- * WHAT THE BOARD DOES NOT KNOW YET: a living room's table, chair and banner, a hoop and a hex gate, and a cube.
- *
- * The board keeps its own list of what a track is made of (WebFPVSimulator-
- * LeaderBoard/src/validate.js), for the gate count and the length that decide
- * a lap's floor and for the plan its card draws. A piece it has never heard of
- * is counted as nothing and drawn as nothing, which is the safe direction and
- * still a wrong card, so a track that holds one is not sent until the board
- * has been taught them. THIS LIST IS EMPTIED IN THE SAME CHANGE THAT TEACHES
- * THE BOARD, and the board deploys first.
- *
- * A CUBE IS NOT A TYPE. It is five or six ordinary gates that share a `group`,
- * which is a field the board does not read: it would keep the gates, lose the
- * grouping, and its own copy of the track would fly two faces of it. So the
- * cube is counted here by its group, after the parts that have a type of
- * their own, and refused with them.
- *
- * It is the simulator that refuses, not the board, because the author is here
- * and can be told in words, and because a board that refused a document it
- * did not understand would say less. Nothing is lost by it: the track still
- * flies, and it still shares as a link.
+ * THERE IS NO LIST OF PARTS THE BOARD DOES NOT KNOW. Until 2026-10-14 a living room's table, chair and banner, a
+ * hoop, a hex gate and a cube were refused here, because the board's validator and card drawer counted them as
+ * nothing. The board (WebFPVSimulator-LeaderBoard, src/validate.js and public/plan.js) now counts a hoop and a
+ * hex gate as gates and draws all five, and a cube was never a loss: it is ordinary gates that share a `group`,
+ * and the board stores the document as it was sent. The board deploys first, as DEPLOY.md says; a simulator
+ * that sends one of these to a board that predates it gets a track with a short gate count and a plan without
+ * the piece, and the track itself still flies whole.
  */
-export const BOARD_UNKNOWN_TYPES = ['table', 'chair', 'banner', 'hoop', 'hexGate'];
-
-/* What each is called in a sentence. A hex gate is two words, and its plural is on the second. */
-const PART_WORD = {
-  table: 'table', chair: 'chair', banner: 'banner', hoop: 'hoop', hexGate: 'hex gate', cube: 'cube',
-};
-
-/* What in a track the board does not know, as [{ type, count }] in the order of
- * BOARD_UNKNOWN_TYPES and then the cube. A document that is not one holds nothing. */
-export function partsTheBoardDoesNotKnow(doc) {
-  const elements = doc && Array.isArray(doc.elements) ? doc.elements : [];
-  /* The pieces the flying order goes through. A group whose every piece is in it loses nothing when
-   * the board drops the grouping, which is what a wall of gates is; one with a piece no pass goes
-   * through is a cube, whose sides the board's copy would lose. */
-  const flown = new Set((doc && Array.isArray(doc.sequence) ? doc.sequence : []).map((s) => s && s.elementId));
-  const tally = new Map();
-  const groups = new Set();
-  for (const el of elements) {
-    if (!el || typeof el !== 'object') {
-      continue;
-    }
-    if (BOARD_UNKNOWN_TYPES.includes(el.type)) {
-      tally.set(el.type, (tally.get(el.type) ?? 0) + 1);
-    }
-    /* A name and nothing else, the way the reader keeps it. Counted only when this piece is one
-     * the order does not go through: a group in which every piece is flown is a row, and a row is
-     * the same course on the board without its grouping. */
-    if (typeof el.group === 'string' && el.group && !flown.has(el.id)) {
-      groups.add(el.group);
-    }
-  }
-  const found = BOARD_UNKNOWN_TYPES.filter((t) => tally.has(t)).map((type) => ({ type, count: tally.get(type) }));
-  if (groups.size) {
-    found.push({ type: 'cube', count: groups.size });
-  }
-  return found;
-}
-
-/* The refusal, in words: what the board does not know, what this track has, and what
- * to do about it. */
-export function unknownPartsSentence(list) {
-  const have = (list || []).map((p) => `${p.count} ${PART_WORD[p.type] ?? p.type}${p.count === 1 ? '' : 's'}`);
-  const joined = have.length > 1 ? `${have.slice(0, -1).join(', ')} and ${have[have.length - 1]}` : have.join('');
-  return `The board does not know a table, a chair, a banner, a hoop, a hex gate or a cube yet, so a track that has one cannot go on it. This one has ${joined}. Take them out to publish it. It still flies, and it still shares as a link.`;
-}
 
 export async function publishTrack({
   author, document, editKey, origin, tags,
 }) {
-  /* Before anything is sent: see BOARD_UNKNOWN_TYPES. */
-  const unknown = partsTheBoardDoesNotKnow(document);
-  if (unknown.length) {
-    const err = new Error(unknownPartsSentence(unknown));
-    err.unknownParts = unknown;
-    throw err;
-  }
   const board = trimOrigin(origin || boardOrigin());
   const res = await fetch(`${board}/api/tracks`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    /* The admin's token when this tab is signed in as one, which is what
+     * lets a publish through to an official track with no edit key. Nobody
+     * else sends it, and the board decides what it is worth. */
+    headers: { 'content-type': 'application/json', ...adminAuthHeaders(board) },
     body: JSON.stringify({
       author,
       document,
@@ -682,7 +635,7 @@ export async function postTrackGif({ id, gif, editKey, origin }) {
   const board = trimOrigin(origin || boardOrigin());
   const res = await fetch(`${board}/api/tracks/${encodeURIComponent(id)}/gif`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...adminAuthHeaders(board) },
     body: JSON.stringify({ gif, editKey: editKey || undefined }),
   });
   return readJson(res);
@@ -703,8 +656,84 @@ export async function postShareCard({
   const route = kind === 'map' ? 'maps' : 'tracks';
   const res = await fetch(`${board}/api/${route}/${encodeURIComponent(id)}/card`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...adminAuthHeaders(board) },
     body: JSON.stringify({ card, editKey: editKey || undefined }),
+  });
+  return readJson(res);
+}
+
+/*
+ * ADMIN, AS THE BOARD SEES IT.
+ *
+ * The board holds the whitelist and the passwords and decides everything
+ * here; these four functions are a way to ask it. See ./admin.js for where
+ * the token lives and why that is safe.
+ *
+ *   adminSignIn     { email, password } for a token, remembered for this tab
+ *   adminVerify     is the remembered token still good, as an email or null
+ *   fetchTrackOfficial   is this track official, as a boolean, or null when
+ *                   the board could not be asked
+ *   setTrackOfficial     mark or unmark it, which only an admin's token can do
+ *
+ * An official track is the board's own: only an admin may republish it, put
+ * an animation on it or change its share card, and the board refuses anybody
+ * else with a 403 whose body says `official: true`. Flying it, and posting a
+ * time, stay open to everyone.
+ */
+export async function adminSignIn({ email, password, origin }) {
+  const board = trimOrigin(origin || boardOrigin());
+  const res = await fetch(`${board}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const body = await readJson(res);
+  const session = {
+    token: String((body && body.token) || ''),
+    email: String((body && body.email) || email || ''),
+    expiresUtc: String((body && body.expiresUtc) || ''),
+    board,
+  };
+  if (!writeAdminSession(session)) {
+    throw new Error('The board answered without a sign in. Try again.');
+  }
+  return session;
+}
+
+export async function adminVerify(origin) {
+  const board = trimOrigin(origin || boardOrigin());
+  const headers = adminAuthHeaders(board);
+  if (!headers.authorization) {
+    return null;
+  }
+  try {
+    const res = await fetch(`${board}/api/admin/session`, { headers });
+    const body = await readJson(res);
+    return body && typeof body.email === 'string' ? body.email : '';
+  } catch (e) {
+    /* A 401 or 403 is the board saying no, and the caller drops the token
+     * on null. A board that is merely down also lands here, which costs an
+     * admin one more sign in, and is cheaper than keeping a dead token. */
+    return null;
+  }
+}
+
+export async function fetchTrackOfficial(trackId, origin = boardOrigin()) {
+  try {
+    const res = await boardGet(`${trimOrigin(origin)}/api/tracks/${encodeURIComponent(trackId)}`, 4000);
+    const body = await readJson(res);
+    return Boolean(body && body.official);
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function setTrackOfficial({ id, official, origin }) {
+  const board = trimOrigin(origin || boardOrigin());
+  const res = await fetch(`${board}/api/tracks/${encodeURIComponent(id)}/official`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...adminAuthHeaders(board) },
+    body: JSON.stringify({ official: Boolean(official) }),
   });
   return readJson(res);
 }
@@ -776,6 +805,7 @@ export async function fetchMapList(origin = boardOrigin()) {
      * the address, which the board then lets a browser keep for good. */
     hasCard: Boolean(m.hasCard),
     cardUtc: m.cardUtc ? String(m.cardUtc) : '',
+    rating: cleanRating(m.rating),
     board,
   })).filter((m) => m.id);
 }
@@ -799,6 +829,17 @@ function byNewest(a, b) {
 
 export function pickNewestMaps(maps, limit = MAPS_SHOWN) {
   return (maps || []).filter((m) => m && m.id).sort(byNewest).slice(0, limit);
+}
+
+/* The maps the Freestyle room lists, in the order the pilot chose: the ten
+ * newest, or the ten best loved by the board's damped score (byRating) with
+ * the newest breaking a tie. Maps nobody has rated come last either way. */
+export function pickMaps(maps, order = 'newest', limit = MAPS_SHOWN) {
+  const list = (maps || []).filter((m) => m && m.id);
+  if (order === 'rated') {
+    return list.sort((a, b) => byRating(a, b) || byNewest(a, b)).slice(0, limit);
+  }
+  return list.sort(byNewest).slice(0, limit);
 }
 
 /* The address of a listed map's share card, or '' when it has none. */
@@ -903,6 +944,123 @@ export async function fetchFreestyleRuns(map, origin = boardOrigin()) {
     tricks: Number(r.tricks) || 0,
     signature: String(r.signature || ''),
   })).filter((r) => r.name && r.score > 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared tunes and star ratings                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A tune is the settings the Quad room edits to change how the quad flies,
+ * sent to the board by a pilot who chose to and loaded by a short code.
+ * The board's src/tunes.js is the copy of record for what a tune holds
+ * and which values it accepts; ./tunes.js builds the payload. Called a
+ * "setup" on the wire because the board's "tune" already means flight feel
+ * tickets, and "Tunes" to a pilot everywhere they can read it.
+ *
+ *   Share a tune   POST {board}/api/setups  { author, name, notes?,
+ *                  airframe, setup, raterKey } -> { id, code, editKey }
+ *   Load a tune    GET {board}/api/setups/{code}  with or without dashes
+ *   Rate           POST {board}/api/ratings  { kind, id, stars, raterKey }
+ *                  kind is track, map or setup; stars 0 takes it back
+ *
+ * The browser's rater key is sent so the board can refuse a pilot rating
+ * their own tune and overwrite, not add, a second vote. See ./rating.js.
+ */
+const TUNE_CODE_RE = /^[a-hjkmnp-tv-z2-9]{12}$/;
+
+/* The twelve characters a pasted code means, or '' when it is not one. */
+export function tuneCodeFrom(raw) {
+  const id = String(raw ?? '').toLowerCase().replace(/[\s-]+/g, '');
+  return TUNE_CODE_RE.test(id) ? id : '';
+}
+
+/* A code the way it is shown and said aloud: k7mq-2xrt-9vwd. */
+export function tuneCodeShown(code) {
+  const id = tuneCodeFrom(code);
+  return id ? `${id.slice(0, 4)}-${id.slice(4, 8)}-${id.slice(8, 12)}` : '';
+}
+
+export async function fetchTune(code, origin = boardOrigin()) {
+  const id = tuneCodeFrom(code);
+  if (!id) {
+    throw new Error('A share code is twelve letters and numbers, like k7mq-2xrt-9vwd.');
+  }
+  const res = await boardGet(`${trimOrigin(origin)}/api/setups/${id}`);
+  const body = await readJson(res);
+  return {
+    id: String(body.id || id),
+    code: tuneCodeShown(body.id || id),
+    name: String(body.name || 'Untitled tune'),
+    author: String(body.author || ''),
+    airframe: String(body.airframe || ''),
+    notes: String(body.notes || ''),
+    publishedUtc: body.publishedUtc ? String(body.publishedUtc) : '',
+    setup: body.setup && typeof body.setup === 'object' ? body.setup : null,
+    rating: cleanRating(body.rating),
+    board: trimOrigin(origin),
+  };
+}
+
+export async function publishTune({
+  author, name, notes, airframe, setup, origin,
+}) {
+  const board = trimOrigin(origin || boardOrigin());
+  const body = {
+    author, name, airframe, setup, raterKey: raterKey(),
+  };
+  if (notes) {
+    body.notes = notes;
+  }
+  const res = await fetch(`${board}/api/setups`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const made = await readJson(res);
+  return { id: made.id, code: made.code, editKey: made.editKey, board };
+}
+
+/* Give an item 1 to 5 stars, or 0 to take this browser's vote back. The
+ * board answers with the new rating; the stars this browser has given are
+ * remembered beside the key so a card can show them. */
+export async function postRating({
+  kind, id, stars, origin,
+}) {
+  const board = trimOrigin(origin || boardOrigin());
+  const res = await fetch(`${board}/api/ratings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      kind, id, stars, raterKey: raterKey(),
+    }),
+  });
+  const body = await readJson(res);
+  rememberStars(kind, id, stars);
+  return { rating: cleanRating(body.rating), mine: stars };
+}
+
+/* Take a tune this browser shared back down, with the key the publish gave. */
+export async function removeTune({ id, editKey, origin }) {
+  const board = trimOrigin(origin || boardOrigin());
+  const code = tuneCodeFrom(id);
+  if (!code) {
+    throw new Error('A share code is twelve letters and numbers.');
+  }
+  const res = await fetch(`${board}/api/setups/${code}/remove`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ editKey }),
+  });
+  return readJson(res);
+}
+
+/* The board's Tunes tab, for a pilot who wants to look through all of them. */
+export function tunesPageUrl(origin) {
+  const base = usableBoardOrigin(origin)
+    || usableBoardOrigin(boardOrigin())
+    || defaultBoardOrigin();
+  return `${base}/#tunes`;
 }
 
 export async function postTime({

@@ -52,6 +52,18 @@ mark to five. The board accepts 1 and 2. Whenever
 teach `inspectDocument` in the board's `src/validate.js` the new number and
 deploy the board before the simulator, the same way round as the URL above.
 
+Official tracks are the same shape again. Since 2026-10-04 an admin can mark a track official on the board, and the board refuses
+every change to it from anybody but an admin. The builder's Admin sign in, its Mark official button and the admin's in place edit
+all need the board's `/api/tracks/:id/official` route and its `official` field. A simulator deployed ahead of the board reads every
+track as not official and gets a 404 from the mark route, and nothing breaks, so the order costs a missing feature and not a wrong
+answer. The board's `schema.sql` adds the two columns on start, additively.
+
+An official track also does not open in the builder for anybody but an admin: not from a board link, not from the simulator's Edit
+or Remix, not from Load, the board picker or an import, and not as the canvas a browser reopens on. The builder asks the board
+(`GET /api/tracks/:id`, which already carries `official`), so it needs no new board route and no new order. A board that cannot be
+reached answers nothing, and the builder then opens the track as it always did, because the board's own lock on publishing is the
+rule and this is the front of it. The simulator still flies an official track.
+
 The Weight slider is the same shape of problem the other way round, and
 quieter. Since 2026-09-27 a time or a freestyle run carries the `weight` it
 was flown at, and the simulator no longer refuses one off 100. A board that
@@ -62,6 +74,15 @@ nothing would say so. The board's side is `normaliseWeight` in its
 the board first. Its band has to hold the simulator's, `WEIGHT_MIN` to
 `WEIGHT_MAX` in `src/ui/ui.js`, so widening the slider is a board change
 first as well, or the new end is refused with a sentence about a weight.
+
+A letter is the third. Since 2026-10-04 the five inch builder lays capitals of pipe (`type: "letter"`), and the board
+reads one as a gate: it counts as one of the gates a card shows, as a station the lap floor is measured to and as a mark
+the plan draws, and carries which capital it is on the plan. Its side is `PLAN_APERTURE`, `letterWord` and the plan's
+marks in the board's `src/validate.js`, and the drawing in its `public/plan.js`. The simulator does not hold a track with
+a letter back from Publish (and, since 2026-10-14, nothing at all: the list of parts the board did not know is gone),
+so a simulator deployed ahead of the board publishes tracks that the old board counts as having one gate fewer for each
+pass through a letter, measures the lap floor to fewer stations (a lower floor, which is the safe way round) and draws
+a letter as nothing. Nothing is refused and nothing says so. Deploy the board first. An invisible gate needs nothing from the board: it is a gate with its frame taken away.
 
 ## By hand, rather than from the blueprints
 
@@ -871,3 +892,5 @@ cd WebFPVSimulator && npm run serve
 ```
 
 Then open `http://127.0.0.1:8000/`.
+
+A hoop, a hex gate, a table, a chair, a banner and a cube are the fourth (2026-10-14). The board counts a hoop and a hex gate as gates, draws them and the furniture on a card, and stores a cube's `group` as sent. The simulator no longer holds any of them back from Publish. Deploy the board first: an old board counts a hoop or a hex gate as no gate, so the track's gate count and its lap floor come out short and the card draws the piece as nothing. The track itself still flies whole from the board.

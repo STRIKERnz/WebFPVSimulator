@@ -1727,6 +1727,15 @@ kase('touch', async () => {
     check('with the card up, the second finger on it still joins: the pair zooms', !cardBox.hidden && spread.r < hand.r * 0.95, `${hand.r} then ${spread.r}`);
     check('and the card, which it landed on, was not pressed', (await undoCount(page)) === stepsCard);
     check('and lifting the pair did not let go of what was selected', await page.evaluate(`window.trackBuilder.selection.has('${cardGate.id}')`));
+    /* And the first finger on the card's heading is the one that drags it (armCardDrag), toward the middle of
+     * the stage so the edge does not stop it. No check had dragged it before 5 October. */
+    const head = await json(page, "(() => { const h = document.querySelector('#tb-card .tb-card-head strong') || document.querySelector('#tb-card .tb-card-head'); const r = h.getBoundingClientRect(); const c = document.getElementById('tb-card').getBoundingClientRect(); return { x: r.left + Math.min(16, r.width / 2), y: r.top + r.height / 2, left: c.left, top: c.top, mx: c.left + c.width / 2 < innerWidth / 2 ? 40 : -40, my: c.top + c.height / 2 < innerHeight / 2 ? 30 : -30 }; })()");
+    const roomBefore = await orbit();
+    await swipe(page, head, { x: head.x + head.mx, y: head.y + head.my });
+    const cardNow = await json(page, "(() => { const c = document.getElementById('tb-card').getBoundingClientRect(); return { left: c.left, top: c.top }; })()");
+    check('one finger on the card\'s heading drags the card, and leaves the room alone',
+      Math.hypot(cardNow.left - head.left - head.mx, cardNow.top - head.top - head.my) < 4 && same(roomBefore, await orbit()),
+      JSON.stringify([head, cardNow]));
     await page.evaluate('window.trackBuilder.setSelection([]), 1');
     await page.sleep(200);
 
@@ -2709,7 +2718,7 @@ kase('furniture', async () => {
     })()`);
     check('the plan draws the top of it in the obstacle colour: red in it well above blue', px[0] > px[2] + 40, px.join());
 
-    /* The board does not know them yet, so Publish says so and opens no form. */
+    /* The board knows them, so Publish opens the form and does not turn the author away. */
     await page.evaluate(`(() => {
       const app = window.trackBuilder;
       app.arm('gate');
@@ -2721,11 +2730,10 @@ kase('furniture', async () => {
     await page.sleep(250);
     const said = await json(page, `(() => {
       const m = document.getElementById('tb-modal');
-      return { open: !m.hidden, title: m.querySelector('h2')?.textContent ?? '', text: m.textContent, inputs: m.querySelectorAll('input').length };
+      return { open: !m.hidden, title: m.querySelector('h2')?.textContent ?? '', inputs: m.querySelectorAll('input').length };
     })()`);
-    check('Publish on a track with a table in it says the board does not know them yet, in a dialog, and asks for nothing',
-      said.open && said.title === 'Not on the board yet' && /does not know a table, a chair, a banner, a hoop, a hex gate or a cube/.test(said.text) && /This one has 1 table, 1 chair and 1 banner/.test(said.text) && said.inputs === 0,
-      JSON.stringify(said));
+    check('Publish on a track with a table in it opens the publish form, and does not say the board does not know it',
+      said.open && said.title !== 'Not on the board yet' && said.inputs > 0, JSON.stringify(said));
     await page.evaluate("document.querySelector('#tb-modal .tb-btn').click(), 1");
     await page.sleep(150);
     check('and closes', await page.evaluate("document.getElementById('tb-modal').hidden"));
@@ -3480,8 +3488,10 @@ const uncovered = (page, selector) => page.evaluate(`(() => {
 
 /* Every request the page makes to a board's API, answered here and kept, so
  * nothing reaches a board at all: a publish is answered as the board would,
- * a list or a document as `board` says, and anything else under /api/ with an
- * empty object. A seed, so it is in place before the page's first line. */
+ * a list or a document as `board` says, a track's own summary and an admin's
+ * sign in as `board.official` and `board.admin` say, and anything else under
+ * /api/ with an empty object. A seed, so it is in place before the page's
+ * first line. */
 const BOARD_STUB = (board = {}) => `(() => {
   const real = window.fetch.bind(window);
   const board = ${JSON.stringify(board)};
@@ -3513,6 +3523,27 @@ const BOARD_STUB = (board = {}) => `(() => {
       let held = null;
       try { held = localStorage.getItem('flow-board:' + kept[1] + ':' + decodeURIComponent(kept[2])); } catch (e) {}
       if (held) return answer(200, JSON.parse(held));
+    }
+    /* An admin who can sign in, for the cases about official tracks. */
+    if (method === 'POST' && /\\/api\\/admin\\/login$/.test(url)) {
+      const sent = JSON.parse(init.body);
+      if (board.admin && sent.email === board.admin.email && sent.password === board.admin.password) {
+        return answer(200, { token: 'stub-admin-token', email: sent.email, expiresUtc: new Date(Date.now() + 3600e3).toISOString() });
+      }
+      return answer(401, { error: 'That email and password do not open this board.' });
+    }
+    if (method === 'GET' && /\\/api\\/admin\\/session$/.test(url)) {
+      return board.admin && JSON.stringify(init.headers || {}).includes('stub-admin-token')
+        ? answer(200, { email: board.admin.email })
+        : answer(401, { error: 'Not signed in.' });
+    }
+    /* One track's own summary, which is where the board says it is official.
+     * Only for the ids board.official names, so every other case still gets
+     * the 404 it always did. */
+    const one = url.match(/\\/api\\/tracks\\/([^/?]+)$/);
+    if (method === 'GET' && one && board.official && decodeURIComponent(one[1]) in board.official) {
+      const id = decodeURIComponent(one[1]);
+      return answer(200, { id, official: Boolean(board.official[id]), times: [] });
     }
     if (method === 'GET' && /\\/api\\/tracks$/.test(url)) return answer(200, { tracks: board.tracks || [] });
     const doc = url.match(/\\/api\\/tracks\\/([^/]+)\\/document$/);
@@ -3951,8 +3982,8 @@ kase('canvas words', async () => {
     const said = (await toasts(page)).slice(-1)[0] || '';
     check('switching canvas says undo starts again, and which aircraft the simulator will fly', /Undo starts again here, and the simulator will fly the whoop/.test(said), said);
     check('a whoop canvas calls its ground the Room, and its way back is the whoop', f.heading === 'Room' && f.back === '../../index.html?map=custom&craft=whoop65', `${f.heading} ${f.back}`);
-    check('the six parts the board refuses are marked on the palette, and nothing else is',
-      JSON.stringify([...f.notes].sort()) === JSON.stringify(['Banner', 'Chair', 'Cube', 'Hex gate', 'Hoop', 'Table']), f.notes.join(', '));
+    check('no part is marked on the palette as missing from the board, because the board knows them all',
+      f.notes.length === 0, f.notes.join(', '));
 
     at = await centreOf(page, '#tb-topbar .tb-class-btn', 'Freestyle');
     await click(page, at.x, at.y);
@@ -5293,6 +5324,174 @@ kase('links open once', async () => {
 });
 
 /*
+ * AN OFFICIAL TRACK DOES NOT OPEN FOR ANYBODY BUT AN ADMIN (the owner's rule of
+ * 2026-10-04, after they could still open one in the builder). Every door that
+ * hands the builder a track asks the board whether it is official, a stranger and
+ * the browser that published it get the same answer and a dialog that says why,
+ * the canvas is left as it was, and an admin's sign in from that dialog opens the
+ * door it stopped at. A canvas that comes back official is taken off it with
+ * what the board lacks kept in Load. The board is BOARD_STUB, which says which
+ * tracks are official and who the admin is: nothing leaves the machine.
+ */
+kase('official tracks', async () => {
+  const BOARD = 'https://board.test';
+  const official = await fieldDoc('The Official', 2);
+  const ordinary = await fieldDoc('The Ordinary', 3);
+  const edited = { ...official, elements: [...official.elements, ...(await fieldDoc('x', 3)).elements.slice(2)] };
+  const board = {
+    official: { [official.id]: true, [ordinary.id]: false },
+    documents: {
+      [official.id]: { id: official.id, name: 'The Official', author: 'Ada', document: official },
+      [ordinary.id]: { id: ordinary.id, name: 'The Ordinary', author: 'Ada', document: ordinary },
+    },
+    tracks: [
+      { id: official.id, name: 'The Official', author: 'Ada', gates: 2, times: 0, official: true, trackClass: 'full' },
+      { id: ordinary.id, name: 'The Ordinary', author: 'Ada', gates: 3, times: 0, official: false, trackClass: 'full' },
+    ],
+    admin: { email: 'keeper@example.com', password: 'pw' },
+  };
+  const at = (query = '') => `/src/trackbuilder/index.html?class=full&board=${BOARD}${query}`;
+  const modal = (page) => page.evaluate("(() => { const m = document.getElementById('tb-modal'); return m.hidden ? '' : m.textContent; })()");
+  const dialog = (page, words) => page.until(`(() => { const m = document.getElementById('tb-modal'); return !m.hidden && m.textContent.includes(${JSON.stringify(words)}); })()`, 20000);
+  const press = (page, label) => page.evaluate(`(() => { const b = [...document.querySelectorAll('#tb-modal button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)}); if (b) b.click(); return Boolean(b); })()`);
+  const toast = (page) => page.evaluate("document.getElementById('tb-toast').textContent");
+  const booted = (page) => page.until('!!(window.trackBuilder && window.trackBuilder.doc)', 60000);
+  const asked = (page, id) => page.evaluate(`window.__api.some((c) => c === 'GET ${BOARD}/api/tracks/${id}')`);
+  /* What the pilot's browser held, before the page's first line: the library, the
+   * edit key that says this browser published the track, the canvas it left. */
+  const held = (docs, { canvas = null, key = null } = {}) => `(() => {
+    try {
+      if (sessionStorage.getItem('flow-seeded')) return;
+      sessionStorage.setItem('flow-seeded', '1');
+      localStorage.setItem('webfpv.trackbuilder.library.v1', ${JSON.stringify(JSON.stringify(Object.fromEntries(docs.map((d) => [d.id, d]))))});
+      ${key ? `localStorage.setItem('webfpv.share.editkeys.v1', ${JSON.stringify(JSON.stringify({ [key]: 'flow-key' }))});` : ''}
+      ${canvas ? `localStorage.setItem('webfpv.trackbuilder.autosave.v1', ${JSON.stringify(JSON.stringify(canvas))});` : ''}
+    } catch (e) {}
+  })()`;
+  const open = async (query, seeds = []) => {
+    const page = await openPage({ root, width: 1600, height: 900, url: at(query), seed: [BOARD_STUB(board), ...seeds] });
+    await booted(page);
+    return page;
+  };
+
+  /* A BOARD LINK, from a stranger: the answer, not a copy. And an admin signs in from the dialog. */
+  let page = await open(`&share=${official.id}`);
+  try {
+    await dialog(page, 'is an official track');
+    const said = await modal(page);
+    check('a board link to an official track says it is official and who can open it', /"The Official" is an official track\. Only a board admin can open an official track in the builder/.test(said), said);
+    check('it asked the board, and opened neither the track nor a copy of it',
+      (await asked(page, official.id)) && (await page.evaluate('window.trackBuilder.doc.id')) !== official.id && !/your copy/.test(await toast(page)));
+    check('it can still be flown, and the dialog says so', /fly it and post a time/.test(said), said);
+    await press(page, 'Board admin? Sign in');
+    await page.until("!!document.getElementById('tb-admin-email')", 5000);
+    await page.evaluate("(() => { document.getElementById('tb-admin-email').value = 'keeper@example.com'; document.getElementById('tb-admin-password').value = 'nope'; })()");
+    await press(page, 'Sign in');
+    await page.until("document.getElementById('tb-modal').textContent.includes('do not open this board')", 10000);
+    check('a wrong password is told no, in the board\'s words, and nothing opens', (await page.evaluate('window.trackBuilder.doc.id')) !== official.id);
+    await page.evaluate("document.getElementById('tb-admin-password').value = 'pw'");
+    await press(page, 'Sign in');
+    await page.until(`window.trackBuilder.doc.id === ${JSON.stringify(official.id)}`, 20000);
+    check('signing in as an admin from the dialog opens the official track in place, under its own id', true);
+    check('and the toast says it is an admin\'s edit', /as an admin/.test(await toast(page)), await toast(page));
+    check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
+  } finally {
+    await page.close();
+  }
+
+  /* An ordinary track is a copy, as it always was, with no dialog. */
+  page = await open(`&share=${ordinary.id}`);
+  try {
+    await page.until("/your copy/.test(document.getElementById('tb-toast').textContent)", 15000);
+    check('a board link to an ordinary track still opens a copy', (await page.evaluate('window.trackBuilder.doc.id')) !== ordinary.id && (await modal(page)) === '');
+  } finally {
+    await page.close();
+  }
+
+  /* LOAD, for the browser that published it: the edit key does not get it in. */
+  page = await open('', [held([official], { key: official.id })]);
+  try {
+    const before = await page.evaluate('window.trackBuilder.doc.id');
+    await page.evaluate('window.trackBuilder.openLoad()');
+    await page.until("[...document.querySelectorAll('#tb-modal .tb-load-row')].some((r) => r.textContent.includes('The Official'))", 10000);
+    await page.evaluate("[...document.querySelectorAll('#tb-modal .tb-load-row')].find((r) => r.textContent.includes('The Official')).querySelector('button').click()");
+    await dialog(page, 'is an official track');
+    check('Open in Load on an official track the browser published is answered with why, and the canvas stays', (await page.evaluate('window.trackBuilder.doc.id')) === before);
+  } finally {
+    await page.close();
+  }
+
+  /* THE CANVAS A BROWSER REOPENS ON, official since: taken off, nothing lost. */
+  page = await open('', [held([], { canvas: official, key: official.id })]);
+  try {
+    await dialog(page, 'is an official track');
+    const library = await json(page, "Object.values(JSON.parse(localStorage.getItem('webfpv.trackbuilder.library.v1') || '{}')).map((d) => d.name)");
+    check('a reopened canvas that is now official is taken off, and the dialog says it is', (await page.evaluate('window.trackBuilder.doc.id')) !== official.id && !/Load as/.test(await modal(page)));
+    check('with nothing to keep, nothing is added to Load', library.length === 0, library.join(', '));
+  } finally {
+    await page.close();
+  }
+  page = await open('', [held([], { canvas: edited, key: official.id })]);
+  try {
+    await dialog(page, 'is an official track');
+    const library = await json(page, "Object.values(JSON.parse(localStorage.getItem('webfpv.trackbuilder.library.v1') || '{}')).map((d) => d.name + '/' + d.elements.length)");
+    check('with changes the board lacks, they go into Load as a copy, and the dialog says where', library.includes('The Official (local changes)/3') && /is in Load as "The Official \(local changes\)"/.test(await modal(page)), `${library.join(', ')} :: ${await modal(page)}`);
+    check('and the canvas is a fresh track', (await page.evaluate('window.trackBuilder.doc.id')) !== official.id && (await page.evaluate('window.trackBuilder.doc.elements.length')) === 0);
+  } finally {
+    await page.close();
+  }
+
+  /* THE SAME RELOAD, SIGNED IN AS AN ADMIN, keeps the track. */
+  const session = `(() => { try { sessionStorage.setItem('webfpv.share.admin.v1', ${JSON.stringify(JSON.stringify({ token: 'stub-admin-token', email: 'keeper@example.com', expiresUtc: new Date(Date.now() + 36e5).toISOString(), board: BOARD }))}); } catch (e) {} })()`;
+  page = await open('', [held([], { canvas: official, key: official.id }), session]);
+  try {
+    await page.sleep(2000);
+    check('an admin who reloads onto an official track keeps it, with no dialog', (await page.evaluate('window.trackBuilder.doc.id')) === official.id && (await modal(page)) === '');
+  } finally {
+    await page.close();
+  }
+
+  /* THE BOARD PICKER: the row says so and has no button to press, for a stranger. */
+  page = await open();
+  try {
+    await page.evaluate('window.trackBuilder.openBoardStarters()');
+    await page.until("document.querySelectorAll('#tb-modal .tb-load-row').length === 2", 10000);
+    const rows = await json(page, "[...document.querySelectorAll('#tb-modal .tb-load-row')].map((r) => ({ text: r.textContent, label: r.querySelector('button').textContent, off: r.querySelector('button').disabled }))");
+    const row = (name) => rows.find((r) => r.text.includes(name));
+    check('an official row says official and its button is shut', row('The Official').off === true && row('The Official').label === 'Official' && /official/.test(row('The Official').text), JSON.stringify(row('The Official')));
+    check('an ordinary row still opens a copy', row('The Ordinary').off === false && row('The Ordinary').label === 'Open a copy', JSON.stringify(row('The Ordinary')));
+    check('and the line above the list says why some are shut', /Official ones can be flown/.test(await modal(page)));
+  } finally {
+    await page.close();
+  }
+  page = await open('', [session]);
+  try {
+    await page.evaluate('window.trackBuilder.openBoardStarters()');
+    await page.until("document.querySelectorAll('#tb-modal .tb-load-row').length === 2", 10000);
+    const off = await json(page, "[...document.querySelectorAll('#tb-modal .tb-load-row button')].map((b) => b.disabled)");
+    check('signed in as an admin, every row opens', off.every((x) => x === false), JSON.stringify(off));
+  } finally {
+    await page.close();
+  }
+
+  /* AN IMPORTED FILE keeps the id it was published under. */
+  page = await open();
+  try {
+    const before = await page.evaluate('window.trackBuilder.doc.id');
+    await page.evaluate(`(async () => { const m = await import('/src/trackbuilder/model.js'); await window.trackBuilder.importText(m.serialize(m.normalize(${JSON.stringify(official)}).doc)); })()`);
+    await dialog(page, 'is an official track');
+    check('importing an official track\'s file is answered the same way, and the canvas stays', (await page.evaluate('window.trackBuilder.doc.id')) === before);
+    await page.evaluate('window.trackBuilder.closeModal()');
+    await page.evaluate(`(async () => { const m = await import('/src/trackbuilder/model.js'); await window.trackBuilder.importText(m.serialize(m.normalize(${JSON.stringify(ordinary)}).doc)); })()`);
+    await page.until(`window.trackBuilder.doc.id === ${JSON.stringify(ordinary.id)}`, 10000);
+    check('and a file that is not official imports as it always did', (await modal(page)) === '');
+    check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
+  } finally {
+    await page.close();
+  }
+});
+
+/*
  * THE PHONE (MENUS-PLAN.md 4.4). At 390 by 844 the drawing was 0 px wide and
  * nine of the bar's controls were past the right edge. Now Tools and Details
  * open the palette and the inspector as drawers, a tool picked closes the
@@ -5378,6 +5577,350 @@ kase('phone', async () => {
     check('More holds the bar\'s second row: the canvas, New, Save, the view (3D first, as a room\'s is), Fit, Show line, Square, Labels, Sponsor logos and Publish, then More\'s own',
       ['Five inch', 'Whoop', 'Freestyle', 'New track', 'Save', '3D', '2D', 'Fit', 'Show line', 'Square', 'Labels', 'Sponsor logos', 'Publish', 'Duplicate', 'Back to the simulator'].every((w) => menu.includes(w))
       && menu.indexOf('3D') < menu.indexOf('2D') && !menu.includes('Top') && menu.indexOf('Five inch') < menu.indexOf('Duplicate'), menu.join(', '));
+    check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
+  } finally {
+    await page.close();
+  }
+});
+
+/*
+ * THE ANIMATION'S SIZE IS A CHOICE. Export animation drew every file at 512
+ * and offered no way to ask for more, so a field with forty gates came out as
+ * a few pixels of grey a gate under a name nobody could read. The box has a
+ * Size now, and this holds the part of it a pilot meets: three sizes with the
+ * usual one chosen, what each costs said under it and tied to it for a screen
+ * reader, a render that saves the file the pilot always got, and a box that
+ * can be walked away from, which stops the render. That last one is here
+ * because a render at the top size is minutes, and a box that cannot be closed
+ * for minutes is one people close the tab on.
+ *
+ * The downloads are caught in the page and not made. Standard is followed
+ * through to the file. The bigger sizes' names are the file name rule's, which
+ * scripts/gif-selftest.js holds, and what they draw is checked by looking at
+ * them, so a render at 1024 is not what this is for.
+ *
+ * THE WAIT AFTER THE CLOSE is the one soft thing in it: nothing in the page
+ * says a render has stopped, so it waits well past the time the rest of the
+ * render would have taken and checks that no file arrived. A machine slower
+ * than this one's software rasteriser can only make that pass when it should
+ * not, never fail when it should not.
+ */
+kase('animation size', async () => {
+  const page = await openBuilder();
+  const press = (label) => page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('.tb-modal button')].find((x) => x.textContent === ${JSON.stringify(label)});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  const choose = (edge) => page.evaluate(`(() => {
+    const s = document.getElementById('tb-animation-size');
+    s.value = '${edge}';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return s.value;
+  })()`);
+  const note = () => page.evaluate("document.getElementById('tb-animation-size-note').textContent");
+  const boxText = () => page.evaluate("(document.querySelector('.tb-modal') || { textContent: '' }).textContent");
+  try {
+    await page.evaluate(`(() => {
+      window.__downloads = [];
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) {
+          const rec = { name: this.download, bytes: -1 };
+          window.__downloads.push(rec);
+          fetch(this.href).then((r) => r.blob()).then((b) => { rec.bytes = b.size; });
+          return undefined;
+        }
+        return click.call(this);
+      };
+      return 1;
+    })()`);
+    await loadPreset(page, 'racegow5-track1');
+    await menu(page, 'Export animation');
+    await page.until("!!document.getElementById('tb-animation-size')", 5000);
+
+    const shape = await json(page, `(() => {
+      const s = document.getElementById('tb-animation-size');
+      const l = document.querySelector("label[for='tb-animation-size']");
+      return {
+        options: [...s.options].map((o) => o.value),
+        chosen: s.value,
+        label: l ? l.textContent : null,
+        described: s.getAttribute('aria-describedby'),
+        noteId: document.getElementById('tb-animation-size-note') ? 'tb-animation-size-note' : null,
+      };
+    })()`);
+    check('Export animation offers three sizes, the usual first, then 1024 and 2048', shape.options.join() === '512,1024,2048', shape.options.join());
+    check('and the usual one is chosen when the box opens, so doing nothing gets the file it always did', shape.chosen === '512', shape.chosen);
+    check('the choice has a label, and what it costs is tied to it for a screen reader', shape.label === 'Size' && shape.described && shape.described === shape.noteId, JSON.stringify(shape));
+    const notes = [await note()];
+    await choose(1024);
+    notes.push(await note());
+    await choose(2048);
+    notes.push(await note());
+    check('what each size costs is said under it, and says something different for each', notes.every((n) => n.length > 30) && new Set(notes).size === 3, notes.map((n) => n.slice(0, 30)).join(' | '));
+    check('the box says that closing it stops the render', /closing this box stops it/.test(await boxText()));
+    check('a whoop track is flown in a room, so there is no race field to choose and no Setting', (await page.evaluate("!!document.getElementById('tb-animation-setting')")) === false);
+
+    /* Standard, through to the file. */
+    await choose(512);
+    check('Render the animation was pressed', await press('Render the animation'));
+    await page.until("/Frame \\d+ of \\d+/.test(((document.querySelector('.tb-modal') || {}).textContent) || '')", 60000);
+    check('the size cannot be changed while it renders', await page.evaluate("document.getElementById('tb-animation-size').disabled") === true);
+    await page.until("/Done\\./.test(((document.querySelector('.tb-modal') || {}).textContent) || '')", 240000);
+    await page.sleep(800);
+    const done = await json(page, `({
+      files: window.__downloads,
+      locked: document.getElementById('tb-animation-size').disabled,
+      buttons: [...document.querySelectorAll('.tb-modal button')].map((b) => b.textContent),
+    })`);
+    check('one file was saved, and at the usual size it has the name it always had', done.files.length === 1 && done.files[0].name === 'racegow5-track-1.gif', JSON.stringify(done.files));
+    check('and it is a real animation, not an empty file', done.files[0] && done.files[0].bytes > 20000, String(done.files[0] && done.files[0].bytes));
+    check('then the size can be changed again, and the button offers another go', done.locked === false && done.buttons.includes('Render it again'), JSON.stringify(done));
+
+    /* The box closed part way through a render stops it. */
+    check('the box closed', await press('Close'));
+    await menu(page, 'Export animation');
+    await page.until("!!document.getElementById('tb-animation-size')", 5000);
+    await press('Render the animation');
+    await page.until("/Frame [3-9]/.test(((document.querySelector('.tb-modal') || {}).textContent) || '')", 60000);
+    check('and the box was closed with the render under way', await press('Close'));
+    await page.sleep(25000);
+    const after = await page.evaluate('window.__downloads.length');
+    check('closing the box part way through stopped the render: no second file arrived', after === 1, `${after} files`);
+    check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
+  } finally {
+    await page.close();
+  }
+});
+
+/*
+ * THE SETTING OF A FIVE INCH ANIMATION. The black stage it has always been
+ * shot on, or the track on a race field with the sponsors on the grass. The
+ * field is what the bigger sizes are for, so choosing one puts it on, until
+ * the pilot has chosen for themselves, after which their choice stands at any
+ * size. Nothing is rendered here: what the field looks like is looked at, and
+ * the file name that says it is the file name rule's, which
+ * scripts/gif-selftest.js holds.
+ */
+kase('animation setting', async () => {
+  const page = await openBuilder('?class=full');
+  const choose = (id, value) => page.evaluate(`(() => {
+    const s = document.getElementById('${id}');
+    s.value = '${value}';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return s.value;
+  })()`);
+  const setting = () => page.evaluate("document.getElementById('tb-animation-setting').value");
+  try {
+    await page.evaluate(`(async () => {
+      const { FIVE_INCH_PRESETS } = await import('/src/trackbuilder/presets5.js');
+      window.trackBuilder.loadDocument(JSON.parse(JSON.stringify(FIVE_INCH_PRESETS[0])), '');
+      return 1;
+    })()`);
+    await menu(page, 'Export animation');
+    await page.until("!!document.getElementById('tb-animation-size')", 5000);
+    const shape = await json(page, `(() => {
+      const s = document.getElementById('tb-animation-setting');
+      const l = document.querySelector("label[for='tb-animation-setting']");
+      const n = document.getElementById('tb-animation-setting-note');
+      return { options: s ? [...s.options].map((o) => o.value) : null, chosen: s && s.value, label: l && l.textContent, described: s && s.getAttribute('aria-describedby'), note: n ? n.textContent : '' };
+    })()`);
+    check('a five inch track is offered a Setting: the black stage, or the race field', shape.options && shape.options.join() === 'stage,field', JSON.stringify(shape));
+    check('it is labelled, and what it does is tied to it for a screen reader', shape.label === 'Setting' && shape.described === 'tb-animation-setting-note' && shape.note.length > 20, JSON.stringify(shape));
+    check('at the usual size it is the stage, so the file is the one it always was', shape.chosen === 'stage', String(shape.chosen));
+    await choose('tb-animation-size', 1024);
+    check('choosing High puts it on the race field', (await setting()) === 'field');
+    await choose('tb-animation-size', 512);
+    check('and going back to Standard puts the stage back, while the pilot has not chosen', (await setting()) === 'stage');
+    await choose('tb-animation-size', 2048);
+    check('Very high is the field too', (await setting()) === 'field');
+    const noteField = await page.evaluate("document.getElementById('tb-animation-setting-note').textContent");
+    await choose('tb-animation-setting', 'stage');
+    check('the pilot choosing the stage changes what the note says', (await page.evaluate("document.getElementById('tb-animation-setting-note').textContent")) !== noteField);
+    await choose('tb-animation-size', 1024);
+    check('and their choice then stands at any size', (await setting()) === 'stage');
+    check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
+  } finally {
+    await page.close();
+  }
+});
+
+/*
+ * LETTERS, AND GATES WITH NO FRAME, on the five inch canvas, laid and changed the way a person does it: the palette's
+ * button and its chooser, a click on the plan, the card beside what was laid. A letter is a capital of pipe with gaps in
+ * it to fly through (the WA State Champs' W), and an invisible gate is an opening with nothing built round it. The pure
+ * half is in the self test; what only a page can say is that the chooser is there, that a click lays the letter that is lit,
+ * that the card offers what a letter and a gate each can be, and that each change is ONE step to undo.
+ */
+kase('letters and invisible gates', async () => {
+  const page = await openBuilder('?class=full');
+  try {
+    await page.evaluate("window.trackBuilder.setMode('2d'), 1");
+    await page.sleep(500);
+    const at = (x, y) => json(page, `(() => {
+      const app = window.trackBuilder;
+      const s = app.view2d.toScreen({ x: ${x}, y: ${y} });
+      const r = app.view2d.canvas.getBoundingClientRect();
+      return { x: r.left + s.x, y: r.top + s.y };
+    })()`);
+    const steps = () => page.evaluate('window.trackBuilder.history.past.length');
+    const tool = (id) => page.evaluate(`document.querySelector('#tb-palette .tb-tool[data-tool="${id}"]').click(), 1`);
+    const card = () => page.evaluate("(document.getElementById('tb-card') || {}).innerText || ''");
+    const choiceButton = (label, index) => page.evaluate(`(() => {
+      const row = [...document.querySelectorAll('#tb-card .tb-card-choice')].find((r) => r.innerText.trim().toUpperCase().startsWith(${JSON.stringify(label.toUpperCase())}));
+      if (!row) { return false; }
+      row.querySelectorAll('button')[${index}].click();
+      return true;
+    })()`);
+    const pick = (key, value) => page.evaluate(`(() => {
+      const sel = document.querySelector('[data-tbkey="${key}"]');
+      if (!sel) { return false; }
+      sel.value = ${JSON.stringify(value)};
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    const docOf = (i) => json(page, `window.trackBuilder.doc.elements[${i}]`);
+
+    /* THE TOOL AND ITS CHOOSER */
+    const palette = await json(page, `({
+      tools: [...document.querySelectorAll('#tb-palette .tb-tool')].map((b) => b.dataset.tool),
+      letterKey: document.querySelector('#tb-palette .tb-tool[data-tool="letter"] .tb-tool-key').textContent,
+      invisibleKey: document.querySelector('#tb-palette .tb-tool[data-tool="invisibleGate"] .tb-tool-key').textContent,
+      boxShownBefore: !document.querySelector('.tb-letter-opts').hidden,
+    })`);
+    check('the five inch palette has a Letter tool, after the dive gate and before the barrier, and an Invisible gate piece, right after the gate',
+      palette.tools.indexOf('diveGate') < palette.tools.indexOf('letter') && palette.tools.indexOf('letter') < palette.tools.indexOf('barrier')
+      && palette.tools.indexOf('invisibleGate') === palette.tools.indexOf('gate') + 1, palette.tools.join());
+    check('the invisible gate has its key, I, and the letter has none, because the free ones are a map\'s', palette.invisibleKey === 'I' && palette.letterKey === '', `${palette.invisibleKey} ${palette.letterKey}`);
+    check('the chooser is not shown until the tool is in hand', palette.boxShownBefore === false);
+    await tool('letter');
+    await page.until("window.trackBuilder.armed === 'letter' && !document.querySelector('.tb-letter-opts').hidden", 5000);
+    const chips = await json(page, `[...document.querySelectorAll('.tb-letter-grid [data-letter]')].map((b) => b.dataset.letter)`);
+    check('with the tool in hand the chooser shows all twenty six capitals', chips.join('') === 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', chips.join(''));
+    await page.evaluate("document.querySelector('.tb-letter-grid [data-letter=\"W\"]').click(), 1");
+    check('a chip lights, and is the letter in hand', await page.evaluate('window.trackBuilder.letterTool') === 'W'
+      && await page.evaluate("document.querySelector('.tb-letter-grid [data-letter=\"W\"]').getAttribute('aria-pressed')") === 'true');
+
+    /* LAYING ONE */
+    const before = await steps();
+    const w = await at(24, 20);
+    await click(page, w.x, w.y);
+    await page.until("window.trackBuilder.doc.elements.some((e) => e.type === 'letter')", 5000);
+    const laid = await docOf(0);
+    check('a click on the plan lays the letter in hand, a W, in the flying order, as one step',
+      laid.type === 'letter' && laid.letter === 'W' && laid.name === 'Letter W' && await page.evaluate('window.trackBuilder.doc.sequence.length') === 1
+      && await steps() === before + 1, JSON.stringify(laid));
+    check('and the tool stays in hand for the next one, as a gate does', await page.evaluate('window.trackBuilder.armed') === 'letter');
+    await page.evaluate("document.querySelector('.tb-letter-grid [data-letter=\"B\"]').click(), 1");
+    const b = await at(34, 24);
+    await click(page, b.x, b.y);
+    await page.until("window.trackBuilder.doc.elements.length === 2", 5000);
+    const second = await docOf(1);
+    check('another chip, another letter: a B, whose first pass is through its lower bowl', second.letter === 'B' && await page.evaluate('window.trackBuilder.doc.sequence[1].apertureIndex') === 0);
+    check('and the choice is remembered for the next visit', await page.evaluate("localStorage.getItem('webfpv.trackbuilder.letter.v1')") === 'B');
+
+    /* THE CARD OF A LETTER */
+    await page.evaluate('window.trackBuilder.disarm(), window.trackBuilder.setSelection([window.trackBuilder.doc.elements[0].id]), 1');
+    await page.until("document.getElementById('tb-card') && !document.getElementById('tb-card').hidden", 5000);
+    let text = await card();
+    check('the card of a letter names it, offers the other capitals, the frame and the size, and has no flag to go round',
+      /Letter W/.test(text) && /FRAME/i.test(text) && /Width \(m\)/.test(text) && /Height \(m\)/.test(text) && !/ROUND THE FLAG/i.test(text) && !/FLAGS/i.test(text), text.slice(0, 160));
+    const was = await steps();
+    check('Letter on the card changes it to an N in place', await pick(`card-letter-${laid.id}`, 'N'));
+    await page.sleep(200);
+    const changed = await docOf(0);
+    check('the same piece, another letter, as one step: it keeps its place and its size follows the scale it had',
+      changed.id === laid.id && changed.letter === 'N' && changed.name === 'Letter N' && await steps() === was + 1 && await page.evaluate('window.trackBuilder.doc.sequence.length') === 2, JSON.stringify(changed));
+    await page.until("document.querySelector('#tb-card .tb-card-choice') && /FLIES THROUGH/i.test(document.getElementById('tb-card').innerText)", 5000);
+    check('an N has two gaps, and the card says which one this pass goes through', await choiceButton('Flies through', 1));
+    await page.sleep(200);
+    check('and choosing the other gap moves the pass', await page.evaluate('window.trackBuilder.doc.sequence[0].apertureIndex') === 1);
+    check('Frame: Invisible takes the pipe away, and Built puts it back, each one step',
+      await choiceButton('Frame', 1) && (await page.sleep(150), await docOf(0)).unbuilt === true && await choiceButton('Frame', 0) && (await page.sleep(150), await docOf(0)).unbuilt === undefined);
+    await page.evaluate('window.trackBuilder.undo && window.trackBuilder.undo(), 1');
+
+    /* AN INVISIBLE GATE, from the palette */
+    await page.evaluate('window.trackBuilder.disarm(), window.trackBuilder.setSelection([]), 1');
+    await tool('invisibleGate');
+    await page.until("window.trackBuilder.armed === 'invisibleGate'", 5000);
+    const g = await at(44, 22);
+    const n0 = await steps();
+    await click(page, g.x, g.y);
+    await page.until("window.trackBuilder.doc.elements.length === 3", 5000);
+    const inv = await docOf(2);
+    check('a click with the Invisible gate piece lays a gate with nothing built, in the flying order, as one step',
+      inv.type === 'gate' && inv.unbuilt === true && await page.evaluate('window.trackBuilder.doc.sequence.length') === 3 && await steps() === n0 + 1, JSON.stringify(inv));
+    check('it stays in hand, like a gate', await page.evaluate('window.trackBuilder.armed') === 'invisibleGate');
+    await page.evaluate('window.trackBuilder.disarm(), 1');
+    await page.until("document.getElementById('tb-card') && !document.getElementById('tb-card').hidden", 5000);
+    text = await card();
+    check('its card calls it an invisible gate, offers Frame with Invisible lit, and offers to make it a letter', /Invisible gate/.test(text) && /FRAME/i.test(text) && /Make it a letter/.test(text), text.slice(0, 120));
+    check('and has no flags to put on a thing with nothing built', !/FLAGS/i.test(text));
+
+    /* A GATE THAT IS THERE BECOMES A LETTER: how a track is edited */
+    await page.evaluate('window.trackBuilder.pickTool("gate"), 1');
+    const gp = await at(50, 12);
+    await click(page, gp.x, gp.y);
+    await page.until("window.trackBuilder.doc.elements.length === 4", 5000);
+    await page.evaluate('window.trackBuilder.disarm(), 1');
+    await page.until("document.getElementById('tb-card') && !document.getElementById('tb-card').hidden", 5000);
+    const gate = await docOf(3);
+    const order = await json(page, 'window.trackBuilder.doc.sequence.map((s) => s.elementId)');
+    const s0 = await steps();
+    check('a plain gate\'s card offers Make it a letter, and choosing one makes it that letter', await pick(`card-make-letter-${gate.id}`, 'K'));
+    await page.sleep(250);
+    const made = await docOf(3);
+    check('in the same place, with the same id, in the same place in the flying order, as one step',
+      made.type === 'letter' && made.letter === 'K' && made.id === gate.id && Math.abs(made.position.x - gate.position.x) < 1e-9 && Math.abs(made.position.y - gate.position.y) < 1e-9
+      && JSON.stringify(await json(page, 'window.trackBuilder.doc.sequence.map((s) => s.elementId)')) === JSON.stringify(order) && await steps() === s0 + 1, JSON.stringify(made));
+    await page.evaluate('window.trackBuilder.undo && window.trackBuilder.undo(), 1');
+    check('and Undo puts the gate back, as it was', (await docOf(3)).type === 'gate');
+
+    /* IN THE ROOM: a letter is picked by its pipe, and by the gap that is the gate */
+    await page.evaluate(`(() => {
+      const t = window.trackBuilder;
+      t.edit('lay a W for the room', (d) => {
+        d.elements.length = 0;
+        d.sequence.length = 0;
+      });
+      t.pickTool('letter');
+      t.setLetterTool('W');
+      t.placeAt({ x: 30, y: 20 });
+      t.disarm();
+      t.setSelection([]);
+      return 1;
+    })()`);
+    await inThreeD(page);
+    await page.evaluate('window.trackBuilder.setSelection([window.trackBuilder.doc.elements[0].id]), window.trackBuilder.frameSelection(), window.trackBuilder.setSelection([]), 1');
+    await page.sleep(500);
+    const lone = await json(page, 'window.trackBuilder.doc.elements[0]');
+    const gap = await screenOf(page, 'view3d', lone.position.x, lone.position.y, 1.05);
+    check('the gap of a W is on the screen', Boolean(gap), JSON.stringify(gap));
+    await click(page, gap.x, gap.y);
+    await page.sleep(250);
+    check('a click in the gap between the Vs picks the W', await page.evaluate('window.trackBuilder.selection.has(window.trackBuilder.doc.elements[0].id)') === true);
+    await page.evaluate('window.trackBuilder.setSelection([]), 1');
+    await page.sleep(200);
+    const leg = await screenOf(page, 'view3d', lone.position.x, lone.position.y + 1.8375, 1.765);
+    await click(page, leg.x, leg.y);
+    await page.sleep(250);
+    check('and a click on its left pipe picks it too', await page.evaluate('window.trackBuilder.selection.has(window.trackBuilder.doc.elements[0].id)') === true, JSON.stringify(leg));
+    await page.evaluate('window.trackBuilder.setSelection([]), window.trackBuilder.setSelection([window.trackBuilder.doc.elements[0].id]), 1');
+    await page.evaluate("window.trackBuilder.setPieceInvisible(window.trackBuilder.doc.elements[0].id, true), window.trackBuilder.setSelection([]), 1");
+    await page.sleep(300);
+    await click(page, gap.x, gap.y);
+    await page.sleep(250);
+    check('an invisible W is still found by its gap, which is all that is left of it', await page.evaluate('window.trackBuilder.selection.has(window.trackBuilder.doc.elements[0].id)') === true);
+
+    /* THE FILE AND THE ROUND TRIP */
+    const kept = await json(page, `(() => {
+      const t = window.trackBuilder;
+      const text = JSON.stringify(t.doc);
+      return { letters: t.doc.elements.filter((e) => e.type === 'letter').length, hasSchema: t.doc.schemaVersion };
+    })()`);
+    check('the document holds the letter and the schema version is the one it was', kept.letters === 1 && kept.hasSchema === 3, JSON.stringify(kept));
     check('the page reported no error of its own', ownErrors(page).length === 0, ownErrors(page).join(' | '));
   } finally {
     await page.close();

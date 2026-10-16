@@ -75,10 +75,10 @@
  */
 
 import { scaleOf } from './scale.js';
-import { ELEMENTS, KIND, FRAME_TUBE_OD, GATE_FLAG_POLE_R, apertureShapeOf, docModeOf, flagLeanSign, flagSideOf, flagSideSigns, frameSidesOf, gateFlagHeight, isPlain, isUnbuilt, trackClassOf, virtualApertureDims } from './elements.js';
+import { ELEMENTS, KIND, FRAME_TUBE_OD, LETTER_TUBE_OD, GATE_FLAG_POLE_R, apertureShapeOf, docModeOf, flagLeanSign, flagSideOf, flagSideSigns, frameSidesOf, unbuiltPolesOf, poleBuilt, uprightIntact, gateFlagHeight, isLetterPiece, isPlain, isUnbuilt, trackClassOf, virtualApertureDims } from './elements.js';
 import { PIPE_OD as RACEGOW_PIPE_OD, GATE_OPENING_DEFAULT, envelopeFor } from './racegow.js';
 import {
-  aperturesOf, createElement, elementById, kindOf, apertureCenter, logosOf, logoForDecal, dressOrder, topOf,
+  aperturesOf, createElement, elementById, kindOf, apertureCenter, letterLayoutOf, logosOf, logoForDecal, cropOf, dressOrder, topOf,
 } from './model.js';
 import { sequenceNumbers } from './sequence.js';
 import { aroundPass, arrowLanes, spreadTags, stretchOf, tagsOf } from './passes.js';
@@ -93,8 +93,11 @@ import { apertureFrame, clamp, gateSupportFeet, leftOf, normalize, scale } from 
 import { guideFromKnots, knotsFromPath, tessellateGuide } from '../game/guide.js';
 import { isRoomType, roomBoxes, ROOM_COLOURS } from '../props/room.js';
 /* What a hoop and a hex gate are: the outline of the hole and of the tubes round it, as bars and as a pane. */
-import { barsAlong, frameOutline, outlineOf, paneFan } from '../props/aperture.js';
+import {
+  barsAlong, frameOutline, outlineOf, paneFan, paneOfPolygon,
+} from '../props/aperture.js';
 import { placedYaw } from '../props/solids.js';
+import { primaryOpening } from '../props/letters.js';
 /* A map's traffic, as the physics is handed it, and where each car starts:
  * already on the 2D view's graph, so importing them here loads nothing. The
  * module that drives them, and the code that draws them, are fetched later
@@ -190,6 +193,18 @@ async function loadThree() {
     });
   }
   return loading;
+}
+
+/* Start the download now rather than at the first press of the 3D button.
+ * The five inch and the whoop open IN 3D, so the first frame of the page is
+ * waiting on Three.js, a megabyte from the CDN, and the builder (unlike the
+ * simulator, see fresh.js PRELOAD) has no modulepreload for it: the fetch
+ * began only once App had been built, behind the whole module graph, and the
+ * track stayed an empty frame until it came. Kicked off here it runs beside
+ * that graph instead of after it. A failure is not reported here: it is
+ * cached in `loading`, and setEnabled awaits the same promise and says so. */
+if (typeof document !== 'undefined') {
+  loadThree().catch(() => {});
 }
 
 /*
@@ -401,7 +416,7 @@ function gridStep(field) {
 function assetKey(el) {
   return [
     el.id, el.type, el.style ?? '', JSON.stringify(el.dims), el.pitch ?? 0, el.flagSide ?? '',
-    el.unbuilt ? 'unbuilt' : '', el.type === 'horizontalPole' ? el.position.z : '',
+    el.unbuilt ? 'unbuilt' : '', el.type === 'horizontalPole' ? el.position.z : '', el.letter ?? '',
   ].join('|');
 }
 
@@ -1353,6 +1368,8 @@ export class View3D {
     return {
       id: o.userData.elementId,
       side: o.userData.side ?? null,
+      /* Which opening of a stack an upright's stretch belongs to, from the bottom; null on anything else. */
+      level: o.userData.level ?? null,
       weak: o.userData.weak === true,
       ring: o.userData.ring === true,
       /* A selected road's handles: the node a press is on, or the knob between two nodes, by index. */
@@ -1977,11 +1994,20 @@ export class View3D {
     if (!mat || !img) {
       return;
     }
-    const k = Math.min(w / img.naturalWidth, d / img.naturalHeight);
-    const face = new THREE.Mesh(
-      new THREE.PlaneGeometry(img.naturalWidth * k, img.naturalHeight * k),
-      mat,
-    );
+    /* A sticker wears its piece of the sheet (cropOf), not the sheet. */
+    const crop = cropOf(el);
+    const iw = img.naturalWidth * (crop ? crop.w : 1);
+    const ih = img.naturalHeight * (crop ? crop.h : 1);
+    const k = Math.min(w / iw, d / ih);
+    const geo = new THREE.PlaneGeometry(iw * k, ih * k);
+    if (crop) {
+      const u0 = crop.x;
+      const u1 = crop.x + crop.w;
+      const v1 = 1 - crop.y;
+      const v0 = 1 - crop.y - crop.h;
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute([u0, v1, u1, v1, u0, v0, u1, v0], 2));
+    }
+    const face = new THREE.Mesh(geo, mat);
     face.rotation.z = el.yaw;
     face.position.z = 0.008;
     group.add(face);
@@ -2060,12 +2086,15 @@ export class View3D {
           const same = numbers.filter((x) => (x.apertureIndex ?? 0) === (n.apertureIndex ?? 0));
           const slot = Math.max(0, same.findIndex((x) => x.seq === n.seq));
           const along = (0.55 + slot * 0.4) * k;
-          spritePos.x = f.normal.x * along;
-          spritePos.y = f.normal.y * along;
+          spritePos.x = f.normal.x * along + f.widthAxis.x * (ap.centerX ?? 0);
+          spritePos.y = f.normal.y * along + f.widthAxis.y * (ap.centerX ?? 0);
           spritePos.z = ap.centerH + f.normal.z * along;
           label = `${n.number}  ${levelName(el, n.apertureIndex)}`;
           worldH = 0.85 * k;
         } else {
+          const wa = apertureFrame(el.yaw, el.pitch).widthAxis;
+          spritePos.x = wa.x * (ap.centerX ?? 0);
+          spritePos.y = wa.y * (ap.centerX ?? 0);
           spritePos.z = ap.centerH + ap.clearH / 2 + 0.7 * k;
         }
       } else {
@@ -2101,6 +2130,11 @@ export class View3D {
   }
 
   buildAperture(group, el, numbers, selected) {
+    /* A letter is a run of tubes in the shape of a capital and not four sides round a hole. */
+    if (isLetterPiece(el)) {
+      this.buildLetter(group, el, numbers, selected);
+      return;
+    }
     const mat = new THREE.MeshLambertMaterial({ color: selected ? COL.frameSel : COL.frame });
     const levels = aperturesOf(el);
     /*
@@ -2127,8 +2161,13 @@ export class View3D {
      * lowest, and a bar between two openings is none of them.
      */
     const sides = frameSidesOf(el);
+    /* A stack's uprights are one stretch per opening, and a stretch goes on its own: see unbuiltPolesOf in elements.js. */
+    const gonePoles = new Set(unbuiltPolesOf(el));
     const picked = this.host.pickedSide && this.host.pickedSide.id === el.id
       ? this.host.pickedSide.side : null;
+    /* The opening the picked upright's stretch belongs to; null picks the side wherever it is (a bar, or a single gate). */
+    const pickedLevel = this.host.pickedSide && this.host.pickedSide.id === el.id
+      ? (this.host.pickedSide.index ?? null) : null;
     const pickedMat = picked ? new THREE.MeshLambertMaterial({ color: COL.sidePicked }) : null;
     const last = levels.length - 1;
     /* A hoop or a hex gate: one opening, in a run of tubes that is not four sides. */
@@ -2155,10 +2194,15 @@ export class View3D {
         if (side && !sides[side]) {
           continue;
         }
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(w, h, tube), side && side === picked ? pickedMat : mat);
+        if ((side === 'left' || side === 'right') && gonePoles.has(`${side}:${ap.index}`)) {
+          continue;
+        }
+        const lit = side && side === picked && (pickedLevel === null || pickedLevel === ap.index);
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(w, h, tube), lit ? pickedMat : mat);
         bar.position.set(x, y, 0);
         bar.rotation.z = angle ?? 0;
         bar.userData.side = side;
+        bar.userData.level = ap.index;
         this.register(bar, el);
         frame.add(bar);
         drawn += 1;
@@ -2176,6 +2220,7 @@ export class View3D {
           grab.rotation.z = angle ?? 0;
           grab.visible = false;
           grab.userData.side = side;
+          grab.userData.level = ap.index;
           this.register(grab, el);
           frame.add(grab);
         }
@@ -2302,9 +2347,11 @@ export class View3D {
         }
       };
       const at = new THREE.Vector3();
-      for (const sx of plain ? [] : [-1, 1]) {
+      /* A sleeve is one board down an upright, so it hangs only on a stack whose openings are all one width. */
+      const evenWidth = levels.every((ap) => Math.abs(ap.clearW - top.clearW) < 1e-9);
+      for (const sx of plain || !evenWidth ? [] : [-1, 1]) {
         /* A sleeve is sleeved over its upright and goes with it. */
-        if (!sides[sx < 0 ? 'left' : 'right']) {
+        if (!uprightIntact(el, sx < 0 ? 'left' : 'right')) {
           continue;
         }
         const off = sx * (top.clearW / 2 + tube + sleeveW / 2);
@@ -2362,7 +2409,7 @@ export class View3D {
       /* gateSupportFeet gives the -widthAxis leg first. A leg is the foot of
        * its upright, so it goes when the upright does, as it does in the
        * world. */
-      if (h < 0.02 || unbuilt || (!shaped && !sides[i === 0 ? 'left' : 'right'])) {
+      if (h < 0.02 || unbuilt || (!shaped && !poleBuilt(el, i === 0 ? 'left' : 'right', 0))) {
         continue;
       }
       const leg = new THREE.Mesh(new THREE.BoxGeometry(tube * 1.4, tube * 1.4, h), legMat);
@@ -2372,6 +2419,116 @@ export class View3D {
     }
 
     this.buildHeaderFlags(group, el, selected);
+  }
+
+  /*
+   * A LETTER: its pipe, and its holes.
+   *
+   * The layout is src/props/letters.js's, in the document's frame (letterLayoutOf in model.js): every tube is a bar
+   * in the plane of the letter, turned to the side it runs, and every joint a ball at the corner, which is what the
+   * world builds from the same numbers at the world's scale. A letter is drawn in ONE frame, the plane of the piece,
+   * because its holes are not one above another: each hole is a pane and a line round it, at its own place in that
+   * plane. An invisible letter (unbuilt) has no pipe, and is its holes alone: still found by its panes, still
+   * numbered, still lit when it is the target.
+   *
+   * Like a gate's pipe, a letter's is drawn with a fatter stand-in that is never seen, so a pipe 60 mm across can be
+   * picked from the plan camera, and with a line down each tube's middle, so the letter reads from across a field
+   * where the pipe itself is less than a pixel.
+   */
+  buildLetter(group, el, numbers, selected) {
+    const laid = letterLayoutOf(el);
+    const levels = aperturesOf(el);
+    const unbuilt = isUnbuilt(el);
+    const f = apertureFrame(el.yaw, el.pitch);
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(f.widthAxis.x, f.widthAxis.y, f.widthAxis.z),
+      new THREE.Vector3(f.heightAxis.x, f.heightAxis.y, f.heightAxis.z),
+      new THREE.Vector3(f.normal.x, f.normal.y, f.normal.z),
+    );
+    const quat = new THREE.Quaternion().setFromRotationMatrix(basis);
+    const tube = LETTER_TUBE_OD;
+    const colour = selected ? COL.frameSel : COL.frame;
+    const mat = new THREE.MeshLambertMaterial({ color: colour });
+    const frame = new THREE.Group();
+    frame.quaternion.copy(quat);
+    group.add(frame);
+
+    if (!unbuilt) {
+      const fat = this.host.buildsIn3D() ? scaleOf(this.host.doc).pickPipe : 0;
+      const centres = [];
+      for (const [a, b] of laid.tubes) {
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const angle = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(len, tube, tube), mat);
+        bar.position.set(mid[0], mid[1], 0);
+        bar.rotation.z = angle;
+        this.register(bar, el);
+        frame.add(bar);
+        if (fat) {
+          const grab = new THREE.Mesh(new THREE.BoxGeometry(len + fat, tube + fat, tube + fat), this.grabMaterial());
+          grab.position.set(mid[0], mid[1], 0);
+          grab.rotation.z = angle;
+          grab.visible = false;
+          this.register(grab, el);
+          frame.add(grab);
+        }
+        centres.push(a[0], a[1], 0, b[0], b[1], 0);
+      }
+      for (const p of laid.joints) {
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(tube * 0.62, 10, 8), mat);
+        ball.position.set(p[0], p[1], 0);
+        this.register(ball, el);
+        frame.add(ball);
+      }
+      const spine = new THREE.BufferGeometry();
+      spine.setAttribute('position', new THREE.Float32BufferAttribute(centres, 3));
+      frame.add(new THREE.LineSegments(spine, new THREE.LineBasicMaterial({ color: colour })));
+    }
+
+    for (const ap of levels) {
+      if (ap.poly.length < 3) {
+        continue;
+      }
+      const at = new THREE.Group();
+      at.position.set(ap.centerX, ap.centerH, 0);
+      frame.add(at);
+      /* The pane in the hole is what is clicked and what is seen: as a gate's is. Weak, so a flag or a pole seen
+       * through the hole takes the click, as the racing line does. */
+      const seen = this.host.buildsIn3D();
+      const field = !this.host.isWhoopRace();
+      const base = selected ? (field ? 0.2 : 0.42) : (field ? 0.09 : 0.28);
+      const pane = new THREE.MeshBasicMaterial(seen
+        ? {
+          color: this.paneColour(el), transparent: true, opacity: base, side: THREE.DoubleSide, depthWrite: false,
+        }
+        : { transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+      const pick = new THREE.Mesh(this.polygonPaneGeometry(ap.poly), pane);
+      pick.userData.weak = true;
+      this.register(pick, el);
+      at.add(pick);
+      if (seen && el.id !== '__ghost') {
+        const list = this.panes.get(el.id) ?? [];
+        list.push({ mat: pane, base });
+        this.panes.set(el.id, list);
+      }
+      /* The line round the hole the pilot flies: the corners of the polygon, and the same one the world scores. */
+      const loop = new THREE.BufferGeometry();
+      loop.setAttribute('position', new THREE.Float32BufferAttribute(ap.poly.flatMap(([x, y]) => [x, y, 0]), 3));
+      at.add(new THREE.LineLoop(loop, new THREE.LineBasicMaterial({ color: colour })));
+    }
+
+    this.buildLanes(group, el, levels, numbers, f, quat, selected);
+  }
+
+  /* A pane in the shape of a letter's hole: its corners cut into triangles, about the hole's own point. */
+  polygonPaneGeometry(poly) {
+    const fan = paneOfPolygon(poly, 1, 1);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(fan.position, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(fan.uv, 2));
+    geo.setIndex(fan.index);
+    return geo;
   }
 
   /*
@@ -2429,16 +2586,20 @@ export class View3D {
   /* The green entry pane and the red exit pane of one pass, a hand's breadth
    * either side of its opening. */
   panePair(group, ap, seq, f, quat) {
+    /* A letter's hole is not on the middle of its piece, and is a polygon of its own. */
+    const across = ap.centerX ?? 0;
     for (const [side, colour] of [[-seq.entry, COL.entry], [seq.entry, COL.exit]]) {
       const pane = new THREE.Mesh(
-        ap.shape ? this.paneGeometry(ap.shape, ap.clearW, ap.clearH) : new THREE.PlaneGeometry(ap.clearW, ap.clearH),
+        ap.shape === 'poly'
+          ? this.polygonPaneGeometry(ap.poly)
+          : (ap.shape ? this.paneGeometry(ap.shape, ap.clearW, ap.clearH) : new THREE.PlaneGeometry(ap.clearW, ap.clearH)),
         new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
       );
       pane.quaternion.copy(quat);
       pane.position.set(
-        f.normal.x * side * 0.12,
-        f.normal.y * side * 0.12,
-        ap.centerH + f.normal.z * side * 0.12,
+        f.widthAxis.x * across + f.normal.x * side * 0.12,
+        f.widthAxis.y * across + f.normal.y * side * 0.12,
+        ap.centerH + f.widthAxis.z * across + f.normal.z * side * 0.12,
       );
       group.add(pane);
     }
@@ -2459,7 +2620,8 @@ export class View3D {
       const ap = levels[lane.apertureIndex];
       const inFocus = focus != null && lane.seqIds.includes(focus);
       const quiet = focus != null && !inFocus;
-      const across = lane.lanes === 1 ? 0 : (lane.lane === 0 ? -1 : 1) * ap.clearW * 0.22;
+      /* A lane's offset across its hole, and the hole's own across offset when it is not on the piece's middle. */
+      const across = (ap.centerX ?? 0) + (lane.lanes === 1 ? 0 : (lane.lane === 0 ? -1 : 1) * ap.clearW * 0.22);
       const length = Math.max(0.22, ap.clearW * (inFocus ? 0.6 : 0.46));
       const along = { x: f.normal.x * lane.entry, y: f.normal.y * lane.entry, z: f.normal.z * lane.entry };
       const arrow = arrowMesh(along, length, inFocus || (selected && focus == null) ? COL.frameSel : COL.arrow, quiet ? 0.3 : (inFocus ? 1 : 0.85));
@@ -3165,7 +3327,7 @@ export class View3D {
 
   /* The ghost is a list of pieces, because a row of gates is several. */
   setGhosts(list) {
-    const key = list.map((g) => `${g.type}|${g.position.x.toFixed(4)}|${g.position.y.toFixed(4)}|${(g.position.z ?? 0).toFixed(4)}|${g.yaw.toFixed(4)}|${g.props ? `${g.props.pitch}|${g.props.dims.sillH}` : ''}`).join(';');
+    const key = list.map((g) => `${g.type}|${g.position.x.toFixed(4)}|${g.position.y.toFixed(4)}|${(g.position.z ?? 0).toFixed(4)}|${g.yaw.toFixed(4)}|${g.props ? `${g.props.pitch}|${g.props.dims.sillH}|${g.props.letter ?? ''}|${g.props.unbuilt ? 'u' : ''}` : ''}`).join(';');
     if (this.ghost && this.ghost.key === key) {
       return;
     }
@@ -3231,10 +3393,12 @@ export class View3D {
             }
           }
         });
-        if (def.kind === KIND.APERTURE && !g.props) {
-          const ap = aperturesOf(el)[0];
+        if (def.kind === KIND.APERTURE && (!g.props || g.props.letter)) {
+          /* A letter's arrow goes through the hole a new pass would, which is across the piece as well as up it. */
+          const ap = aperturesOf(el)[g.props?.letter ? primaryOpening(el.letter) : 0];
           const arrow = arrowMesh({ x: Math.cos(g.yaw), y: Math.sin(g.yaw), z: 0 }, Math.max(0.3, ap.clearW * 0.85), COL.arrow, 0.7);
-          arrow.position.set(0, 0, ap.centerH);
+          const across = ap.centerX ?? 0;
+          arrow.position.set(-Math.sin(g.yaw) * across, Math.cos(g.yaw) * across, ap.centerH);
           node.add(arrow);
         }
         all.add(node);
@@ -3479,15 +3643,25 @@ export class View3D {
       }
       const def = ELEMENTS[el.type];
       let dz = def.kind === KIND.MARKER ? el.dims.height + 0.12 : 1.0;
+      /* Where the tag stands across the piece: a letter's hole is not on its middle. */
+      let dx = 0;
+      let dy = 0;
       if (def.kind === KIND.APERTURE) {
         const levels = aperturesOf(el);
         const ap = levels[Math.min(tag.apertureIndex, levels.length - 1)];
         dz = ap.centerH + ap.clearH / 2 + 0.1;
+        if (ap.centerX) {
+          const wa = apertureFrame(el.yaw, el.pitch).widthAxis;
+          dx = wa.x * ap.centerX;
+          dy = wa.y * ap.centerX;
+        }
       }
       this.bubbleSpecs.push({
         id: el.id,
         key: tag.key,
         apertureIndex: tag.apertureIndex,
+        dx,
+        dy,
         dz,
         passes: tag.passes.map((p) => ({ seqId: p.seq.id, number: p.number })),
       });
@@ -3496,7 +3670,7 @@ export class View3D {
 
   syncBubbles() {
     const sig = this.bubbleSpecs
-      .map((sp) => `${sp.key}@${sp.dz.toFixed(3)}:${sp.passes.map((p) => `${p.seqId}=${p.number}`).join(',')}`)
+      .map((sp) => `${sp.key}@${sp.dz.toFixed(3)},${(sp.dx ?? 0).toFixed(3)},${(sp.dy ?? 0).toFixed(3)}:${sp.passes.map((p) => `${p.seqId}=${p.number}`).join(',')}`)
       .join('|');
     if (sig !== this.tagSig || this.bubbles.length !== this.bubbleSpecs.length) {
       this.tagSig = sig;
@@ -3765,7 +3939,7 @@ export class View3D {
     const boxes = [];
     for (const b of this.bubbles) {
       const el = elementById(doc, b.spec.id);
-      b.at = el ? project({ x: el.position.x, y: el.position.y, z: el.position.z + b.spec.dz }) : null;
+      b.at = el ? project({ x: el.position.x + (b.spec.dx ?? 0), y: el.position.y + (b.spec.dy ?? 0), z: el.position.z + b.spec.dz }) : null;
       if (b.at) {
         boxes.push({ key: b.spec.key, x: b.at.x - b.half, y: b.at.y - b.half, w: b.w, h: b.h, priority: b.priority ?? 0, prev: b.off });
       }

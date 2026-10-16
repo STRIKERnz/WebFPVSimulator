@@ -59,7 +59,9 @@
 import { fastestLap, fastestThreeConsecutive, MICRO_SCALE } from './track.js';
 /* What an opening is when it is not a rectangle: pure arithmetic, no Three.js, shared with the
  * scene that draws the frame and the builder that draws the ring. */
-import { clipToShape, insideShape } from '../props/aperture.js';
+import {
+  clipToPolygon, clipToShape, insetPolygon, insidePolygon, insideShape,
+} from '../props/aperture.js';
 
 /*
  * How far the scoring volume sticks out either side of the opening, metres.
@@ -274,6 +276,17 @@ export class Race {
      */
     this.weight = null;
     /*
+     * WHETHER THE LAPS ARE FLOWN OFF THE STOCK AIR OR MOTORS, flight feel
+     * tuning's two sliders (src/share/tune.js), stamped on a lap the same way
+     * and for the same reason as the weight. Unlike the weight it is not
+     * printed on the board: a lap flown on a quad that grips the air or pulls
+     * differently is a lap on another aircraft, and the board has nowhere to
+     * say which, so such a lap is left out of boardRow altogether. The shell
+     * keeps it equal to what the module is flying (setTuned, from
+     * applySettings in main.js, which voids a lap the change lands in).
+     */
+    this.tuned = false;
+    /*
      * THROUGH THE ROOM'S FACTOR, BECAUSE BOTH MICRO FIGURES ARE DERIVED FROM
      * RACEGOW'S REAL PIPE AND THE PIPE IS NOT BUILT AT THAT SIZE.
      *
@@ -422,6 +435,17 @@ export class Race {
     this.weight = weight;
   }
 
+  /* Whether the next lap is flown off the stock air or motors. See this.tuned. */
+  setTuned(tuned) {
+    this.tuned = Boolean(tuned);
+  }
+
+  /* Whether any lap this run counted was flown off stock, for the results
+   * row that says why the board was not offered it. */
+  hasTunedLaps() {
+    return this.log.some((e) => e.ms != null && e.tuned === true);
+  }
+
   /* Best laps are only comparable on the same config and pack voltage;
    * the shell keys the record accordingly and swaps it here. */
   setRecordKey(key) {
@@ -552,9 +576,14 @@ export class Race {
    * rectangle as always and then, exactly, against the shape, so a line through the corner of the
    * box that holds a hoop goes past the ring and does not score. A square, which is every gate
    * there ever was, never reaches that second clip.
+   *
+   * `poly` is a hole that is a list of corners and not a shape inscribed in a box: a letter's. It is
+   * the whole of the hole, and it is not centred on anything, so the box is not asked about at all
+   * and only the depth and the polygon are (halfW and halfH are not read). Left out, as it is for
+   * every opening that ever was, nothing about this changes.
    */
-  openingHits(a, b, halfW, halfH, tMin = 0, shape = 'square') {
-    if (!(halfW > 0) || !(halfH > 0)) {
+  openingHits(a, b, halfW, halfH, tMin = 0, shape = 'square', poly = null) {
+    if (!poly && (!(halfW > 0) || !(halfH > 0))) {
       return -1;
     }
     const dx = b.x - a.x;
@@ -584,16 +613,25 @@ export class Race {
       }
       return t0 <= t1;
     };
-    if (!clip(a.x, dx, -halfW, halfW)) {
-      return -1;
-    }
-    if (!clip(a.y, dy, -halfH, halfH)) {
-      return -1;
+    if (!poly) {
+      if (!clip(a.x, dx, -halfW, halfW)) {
+        return -1;
+      }
+      if (!clip(a.y, dy, -halfH, halfH)) {
+        return -1;
+      }
     }
     if (!clip(a.z, dz, -this.passDepth, this.passDepth)) {
       return -1;
     }
-    if (shape !== 'square') {
+    if (poly) {
+      const inside = clipToPolygon(poly, a.x, a.y, dx, dy, t0, t1);
+      if (!inside) {
+        return -1;
+      }
+      t0 = inside[0];
+      t1 = inside[1];
+    } else if (shape !== 'square') {
       const inside = clipToShape(shape, halfW, halfH, a.x, a.y, dx, dy, t0, t1);
       if (!inside) {
         return -1;
@@ -612,11 +650,32 @@ export class Race {
     return t0;
   }
 
+  /*
+   * A POLYGON HOLE AS IT SCORES: the hole the pilot sees, pushed in by the fingernail every other opening
+   * is shrunk by (a rectangle takes it off each half width, a hoop scales by it). It is the same push on
+   * every edge, the ground's and an open side's included, which costs a centimetre or two nobody can
+   * fly and keeps one rule. Worked out once per opening and kept, because a pass is tested every frame.
+   */
+  holeOf(ap) {
+    if (!this.holes) {
+      this.holes = new WeakMap();
+    }
+    let hole = this.holes.get(ap);
+    if (!hole) {
+      hole = insetPolygon(ap.poly, this.passMargin);
+      this.holes.set(ap, hole);
+    }
+    return hole;
+  }
+
   /* Whether a point is inside opening k of station g's box, the same box
    * openingHits clips against. */
   insideOpening(g, k, p) {
     const ap = g.apertures[k];
     const q = this.local(g, ap.centreY, p.x, p.y, p.z);
+    if (ap.shape === 'poly') {
+      return insidePolygon(this.holeOf(ap), q.x, q.y) && Math.abs(q.z) <= this.passDepth;
+    }
     const halfW = ap.clearW * 0.5 - this.passMargin;
     const halfH = ap.clearH * 0.5 - this.passMargin;
     if (ap.shape === 'circle' || ap.shape === 'hex') {
@@ -678,7 +737,9 @@ export class Race {
       const b = this.local(g, ap.centreY, curr.x, curr.y, curr.z);
       const halfW = ap.clearW * 0.5 - this.passMargin;
       const halfH = ap.clearH * 0.5 - this.passMargin;
-      const tk = this.openingHits(a, b, halfW, halfH, tMin, ap.shape === 'circle' || ap.shape === 'hex' ? ap.shape : 'square');
+      const tk = ap.shape === 'poly'
+        ? this.openingHits(a, b, halfW, halfH, tMin, 'poly', this.holeOf(ap))
+        : this.openingHits(a, b, halfW, halfH, tMin, ap.shape === 'circle' || ap.shape === 'hex' ? ap.shape : 'square');
       if (tk < 0) {
         continue;
       }
@@ -711,7 +772,11 @@ export class Race {
         this.lastSplits = this.splits;
         this.lap += 1;
         this.laps.push(this.lastLapMs);
-        this.log.push({ n: this.lapNumber(), ms: this.lastLapMs, weight: this.weight });
+        /* `tuned` only when it is, so a stock lap's entry is the shape it
+         * always was. */
+        this.log.push(this.tuned
+          ? { n: this.lapNumber(), ms: this.lastLapMs, weight: this.weight, tuned: true }
+          : { n: this.lapNumber(), ms: this.lastLapMs, weight: this.weight });
         let msgText = `Lap ${this.log.length}   ${fmt(this.lastLapMs)}`;
         /* Kept for the shell's spoken call (src/render/voice.js), so the
          * voice reads the flash's decision rather than making its own. */
@@ -830,7 +895,11 @@ export class Race {
    * wrongly.
    */
   boardRow() {
-    const clean = this.log.filter((e) => e.ms != null);
+    /* A lap flown off the stock air or motors is not on the board's menu:
+     * it is left out here, so it can never be picked, never be one of the
+     * three in a row and never be the lap a weight is read off. A run of
+     * nothing but such laps has no row, and the results screen says why. */
+    const clean = this.log.filter((e) => e.ms != null && e.tuned !== true);
     if (!clean.length) {
       return null;
     }
@@ -838,7 +907,7 @@ export class Race {
       let best = null;
       let run = [];
       for (const e of this.log) {
-        if (e.ms == null) {
+        if (e.ms == null || e.tuned === true) {
           run = [];
           continue;
         }

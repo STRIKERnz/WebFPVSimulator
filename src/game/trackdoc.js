@@ -56,10 +56,11 @@
  * along with WebFPVSimulator. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ELEMENTS, KIND, GATE_FLAG_POLE_R, apertureShapeOf, docModeOf, flagLeanSign, flagSideOf, flagSideSigns, frameSidesOf, gateFlagHeight, hasMissingSides, isPlain, isUnbuilt, trackClassOf, virtualApertureDims } from '../trackbuilder/elements.js';
+import { ELEMENTS, KIND, GATE_FLAG_POLE_R, apertureShapeOf, docModeOf, flagLeanSign, flagSideOf, flagSideSigns, frameSidesOf, unbuiltPolesOf, gateFlagHeight, hasMissingSides, isLetterPiece, openingSizesOf, isPlain, isUnbuilt, letterOfPiece, trackClassOf, virtualApertureDims } from '../trackbuilder/elements.js';
 import {
   normalize, elementById, aperturesOf, startPadsOf, logosOf, logoForDecal, dressOrder,
 } from '../trackbuilder/model.js';
+import { mirrorPolygon } from '../props/aperture.js';
 import { seatFloating } from '../trackbuilder/seat.js';
 import { buildPath } from '../trackbuilder/path.js';
 import { apertureFrame } from '../trackbuilder/geometry.js';
@@ -153,7 +154,13 @@ function meshFlipsX(el, t) {
   return Math.hypot(t.x, t.y) > 1e-9 && (t.x * n.x + t.y * n.y) > 0;
 }
 
-function meshSidesFor(el, t, sides) {
+/* A letter's hole, scaled as the world builds it and turned for the way it is flown (see the station above). */
+function stationPolygon(poly, scale, along) {
+  const flat = poly.map(([x, y]) => [x * scale, y * scale]);
+  return along ? flat : mirrorPolygon(flat);
+}
+
+function meshSidesFor(el, t, sides, poles = []) {
   const n = apertureFrame(el.yaw, el.pitch).normal;
   let flipX;
   let flipY;
@@ -164,12 +171,28 @@ function meshSidesFor(el, t, sides) {
     flipX = false;
     flipY = (t.x * n.x + t.y * n.y + t.z * n.z) > 0;
   }
-  return {
+  const out = {
     xNeg: flipX ? sides.right : sides.left,
     xPos: flipX ? sides.left : sides.right,
     top: flipY ? sides.bottom : sides.top,
     bottom: flipY ? sides.top : sides.bottom,
   };
+  /* One opening's stretch of an upright, on a stack (unbuiltPolesOf in elements.js): the openings that have lost
+   * one, each with the mesh's own two uprights, from the bottom. Written only when some stretch is gone, so every
+   * gate with whole uprights hands the mesh what it always did. A flat dive gate's openings run the other way up
+   * the mesh, which is why the index is turned with the same flip the top and bottom are. */
+  if (poles.length) {
+    const count = Math.max(1, Math.round(el.dims.levels));
+    const gone = new Set(poles);
+    out.stretches = [];
+    for (let i = 0; i < count; i += 1) {
+      const at = flipY ? count - 1 - i : i;
+      const left = !gone.has(`left:${i}`);
+      const right = !gone.has(`right:${i}`);
+      out.stretches[at] = { xNeg: flipX ? right : left, xPos: flipX ? left : right };
+    }
+  }
+  return out;
 }
 
 /*
@@ -278,13 +301,23 @@ function scaledDims(dims, scale) {
  * not grow makes the room smaller and the builder's own warnings wrong.
  */
 function builtDims(dims, scale) {
-  return {
+  const out = {
     clearW: dims.clearW * scale,
     clearH: dims.clearH * scale,
     sillH: dims.sillH * scale,
     levelPitch: dims.levelPitch * scale,
     stack: Math.max(1, Math.round(dims.levels)),
   };
+  /* A stack whose openings are not all one size carries every opening's own built size, bottom to top, and only then:
+   * a gate and every stack that ever shipped has no key and is built exactly as it was. */
+  const sizes = openingSizesOf(dims, out.stack);
+  if (sizes) {
+    out.openings = sizes.map((o) => ({
+      clearW: (o.clearW ?? dims.clearW) * scale,
+      clearH: (o.clearH ?? dims.clearH) * scale,
+    }));
+  }
+  return out;
 }
 
 const FLOATING_DIVE_Z = 0.3;
@@ -423,6 +456,11 @@ function buildCourse(raw) {
     if (kind === KIND.APERTURE && apertureShapeOf(el) !== 'square') {
       s.shape = apertureShapeOf(el);
     }
+    /* A letter says which one it is: the world builds its pipe from that and the size above
+     * (src/props/letters.js), and the first pass through it decides which way round it is built, below. */
+    if (kind === KIND.APERTURE && isLetterPiece(el)) {
+      s.letter = letterOfPiece(el);
+    }
     /* The openings that are a gap in the lattice and not a gate: no pipe
      * is built for them anywhere. See isUnbuilt in elements.js. */
     if (kind === KIND.APERTURE && isUnbuilt(el)) {
@@ -433,6 +471,7 @@ function buildCourse(raw) {
      * structure is known, because that pass is what the mesh faces. */
     if (kind === KIND.APERTURE && hasMissingSides(el)) {
       s.frameSides = frameSidesOf(el);
+      s.framePoles = unbuiltPolesOf(el);
     }
     /* The plain dress: no sleeves, a header board as wide as the frame. Nothing is written for a
      * gate in the MultiGP dress, so a course that has none is the bytes it always was. */
@@ -472,6 +511,9 @@ function buildCourse(raw) {
    */
   const path = buildPath(doc);
   const stations = [];
+  /* Which station each knot of the line made, so the race line (src/game/raceline.js) can tell a knot that is a
+   * hole or a pole to be passed from one that only shapes the curve, without redoing this walk. */
+  const knotStation = new Map();
   /* The structures whose pennants have been put in the mesh's frame. */
   const flagsTurned = new Set();
   for (const knot of path.knots) {
@@ -553,6 +595,7 @@ function buildCourse(raw) {
         ox = 0;
         oz = 0;
       }
+      knotStation.set(knot, stations.length);
       stations.push({
         elementId: el.id,
         structure,
@@ -609,7 +652,7 @@ function buildCourse(raw) {
     /* The mesh is built facing the FIRST pass through it, so that pass is
      * the one that says which of its sides is which. */
     if (structure.frameSides && !structure.meshSides) {
-      structure.meshSides = meshSidesFor(el, knot.tangent, structure.frameSides);
+      structure.meshSides = meshSidesFor(el, knot.tangent, structure.frameSides, structure.framePoles);
     }
     /*
      * THE PENNANTS ARE IN THE MESH'S FRAME TOO, which is the mirror of the document's for a gate flown
@@ -632,7 +675,30 @@ function buildCourse(raw) {
       }
     }
 
-    const pos = toScene(field, { x: el.position.x, y: el.position.y });
+    /*
+     * A LETTER'S HOLE IS NOT ON THE PIECE'S MIDDLE, always: an N has two, one to each side. The station stands at the
+     * hole, so every reader of one (the guide, the glow, the number) is told where the hole is, and the mesh stands at
+     * the piece (coursePlacements). For everything else the hole is on the middle and this is the position it was.
+     *
+     * AND IT IS BUILT FACING THE FIRST PASS, as every gate is, which for a letter decides which way round its pipe is
+     * laid: a letter reads the right way round to a pilot flying along its normal (entry +1), so a first pass the other
+     * way round is built turned about its axis, and every pass through it after that is scored in the frame it is
+     * flown in. `along` is whether this pass is flown along the normal.
+     */
+    const letter = isLetterPiece(el);
+    const along = letter ? meshFlipsX(el, knot.tangent) : false;
+    if (letter && structure.letterMirror === undefined) {
+      structure.letterMirror = !along;
+    }
+    /* The hole's own across offset is part of the letter and so goes through the obstacle scale with it, as the pipe
+     * does. (Positions are never scaled: the piece stands where the author put it.) */
+    const f = apertureFrame(el.yaw, el.pitch);
+    const across = letter ? (ap.centerX ?? 0) * gateScale : 0;
+    const pos = toScene(field, {
+      x: el.position.x + f.widthAxis.x * across,
+      y: el.position.y + f.widthAxis.y * across,
+    });
+    knotStation.set(knot, stations.length);
     stations.push({
       elementId: el.id,
       structure,
@@ -646,6 +712,9 @@ function buildCourse(raw) {
       clearW: ap.clearW * gateScale,
       clearH: ap.clearH * gateScale,
       ...(ap.shape ? { shape: ap.shape } : {}),
+      /* The hole as this pass scores it: its corners about its own point, in the frame the pass test works in, which
+       * is the document's across axis when the pass is along the normal and the other way round when it is not. */
+      ...(ap.shape === 'poly' ? { poly: stationPolygon(ap.poly, gateScale, along) } : {}),
       yaw,
       pitch: tilt,
       name: structure.name,
@@ -685,7 +754,7 @@ function buildCourse(raw) {
     const normal = apertureFrame(el.yaw, el.pitch).normal;
     const { yaw, tilt } = meshFrameFor(normal, structure);
     if (structure.frameSides && !structure.meshSides) {
-      structure.meshSides = meshSidesFor(el, normal, structure.frameSides);
+      structure.meshSides = meshSidesFor(el, normal, structure.frameSides, structure.framePoles);
     }
     const ap = aperturesOf(el)[0];
     const pos = toScene(field, { x: el.position.x, y: el.position.y });
@@ -811,6 +880,9 @@ function buildCourse(raw) {
     /* Kept so a caller can report on the track without re-reading it. */
     lapLength: path.length,
     closed: path.closed,
+    /* The race line's knots. A RaceGOW room only: the line is offered on the whoop and a course that is not one is
+     * the object it always was. */
+    ...(cls === 'micro' ? { knots: raceKnots(path.knots, field, knotStation) } : {}),
   };
   out.samples = corridorSamples(out);
   return out;
@@ -927,6 +999,47 @@ function sceneKnots(knots, field) {
     }
     return out;
   });
+}
+
+/*
+ * The racing line's knots in the scene frame, for the race line (src/game/raceline.js), which keeps what they say
+ * about the lap (which way round every pole, which hole after which, where the author pinned a loop) and moves
+ * where each one crosses. Everything a knot carries is kept: its place, the way it points, whether it is a hole to
+ * pass, a pole to pass or only a shape for the curve, and for a pole, the pole.
+ *
+ * The closing knot, which repeats the first, is left out: the lap closes by going from the last back to the first.
+ * `station` is the index into course.stations that this knot makes, or -1 for a knot that only shapes the curve
+ * (a waypoint, a wrap round a stack, a steer round a gate the lap was not sent through).
+ *
+ * The tangent goes from the document's frame (up is z, north is y) to the scene's (up is y, north is minus z) the
+ * way a position does, and a direction has no origin or scale to move.
+ */
+function raceKnots(knots, field, knotStation) {
+  const out = [];
+  for (const k of knots) {
+    if (k.role === 'finish') {
+      continue;
+    }
+    const p = toScene(field, k.pos);
+    const t = k.tangent;
+    const q = {
+      role: k.role,
+      x: p.x,
+      y: elev(k.pos.z),
+      z: p.z,
+      tx: t.x,
+      ty: t.z,
+      tz: -t.y,
+      station: knotStation.has(k) ? knotStation.get(k) : -1,
+    };
+    if (k.markerPos) {
+      const m = toScene(field, k.markerPos);
+      q.poleX = m.x;
+      q.poleZ = m.z;
+    }
+    out.push(q);
+  }
+  return out;
 }
 
 /*

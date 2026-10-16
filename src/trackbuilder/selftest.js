@@ -33,30 +33,41 @@
 import {
   createTrack, createElement, createSequenceEntry, deserialize, elementById, normalize, isSequenceable, kindOf,
   roundTripsCleanly, serialize, aperturesOf, toPlain, startPadsOf, newElementId,
-  logoForDecal, dressOrder, LOGO_SLOTS, SCHEMA_VERSION,
-  SCENE_TIMES, SCENE_GROUNDS, SCENE_DEFAULT, sceneOf, deepClone, setSideBuilt,
-  groupMembers, expandGroups, elementNormal, apertureCenter,
+  logoForDecal, cropOf, achievementOf, ACHIEVEMENT_MAX, dressOrder, LOGO_SLOTS, SCHEMA_VERSION,
+  SCENE_TIMES, SCENE_GROUNDS, SCENE_DEFAULT, sceneOf, deepClone, setSideBuilt, setPoleBuilt, setOpeningSize, gateWidthOf,
+  groupMembers, expandGroups, elementNormal, apertureCenter, letterLayoutOf, openingNearest, setLetter, topOf,
 } from './model.js';
 import { applyAutoFaces, flipFace, setYaw, clearOverride, travelDirection, defaultYawFor } from './faces.js';
 import {
   addToSequence, addNextLevel, sequenceLabel, faceLabel, bendIndexFor, bendLineAt, gateNumbers,
   neighboursOf, pinFacesAt, sequenceNumbers, removeElement, removeFromSequence,
 } from './sequence.js';
-import { applyFigure, matchingFigure, defaultFigure, upgradeStackedFigures, figuresFor, figureHandOf, wrapBetween } from './figures.js';
+import {
+  applyFigure, matchingFigure, defaultFigure, upgradeStackedFigures, figuresFor, figureHandOf, wrapBetween, levelName,
+} from './figures.js';
 import {
   buildPath, elevationProfile, sequencedElementCount, knotForSeq, markerSquare, passYawOf,
 } from './path.js';
 import { collectWarnings, freestyleReport, labeller, FREESTYLE_SOLIDS_MAX } from './warnings.js';
 import { History } from './history.js';
+import { presetById } from './presets.js';
 import { docFromQuery, docFromHash, decodeTrack, encodeTrack, trackLink, canCompress } from './sharelink.js';
 import { buildSheet, sheetHtml, sheetSvg, membersOf, mergeMembers, nodesOf, fittingKind, CORNERS, SECTION, FITTING_ALLOWANCE, compass } from './buildsheet.js';
+import {
+  BUNDLE_FORMAT, BUNDLE_VERSION, bundleData, bundleEntries, evenRoute, mapSvg, trackSlug, dataText,
+} from './bundle.js';
+import { crc32, zipStore } from './zip.js';
+import {
+  COMMUNITY_SESSION_KEY, MAX_PACK_BYTES as COMMUNITY_PACK_MAX, communityPageUrl, fetchCommunity, packBase64, parseOrganiserLink,
+  readCommunityLink, sendRound,
+} from './community.js';
 import { importFpvEvents, looksLikeFpvEvents, reportLines } from './importfpv.js';
 import {
   passList, tagsOf, reuseOf, lanesOf, focusFor, aroundPass, stretchOf, flyAgain, apertureAt,
   removeLastPass, MAX_PASSES, spreadTags, arrowLanes,
 } from './passes.js';
 import {
-  frameRectFor, nearestQuarter, placementFor, placeOnTrack, spacingTone, snapTurn, copyElements,
+  frameRectFor, nearestQuarter, placementFor, placeOnTrack, spacingTone, snapTurn, copyElements, trackBounds,
   moveToPlace, measuresFor, magnetFor, sideBySideYaw, MAGNET_RADIUS, rowPlan, placeRow, ROW_MAX,
   rulerPoint, rulerReading, replacementsFor, replaceWith, placeCube, cubeItems, turnGroups,
 } from './snap.js';
@@ -66,6 +77,7 @@ import {
   canFlag, flagsOf, setFlags, wallPlan, placeWall, wallBays, placeHurdle, placeUpGate, addSpiral, flagsAsFlown,
   wallOf, wallFlagsOf, setWallFlags, wallIsWoven, setWallWeave, reverseWall, flyOver,
   partGhosts, setWallSize, wallSizeOf,
+  canBecomeLetter, canBeInvisible, placeInvisibleGate, setInvisible, turnIntoGate, turnIntoLetter,
   WALL_MIN, WALL_DEFAULT, WALL_MAX, HURDLE, SPIRAL, ROUND_NAME, roundFlagOf, removeSpiral,
   BAR_HURDLE, HURDLE_LINES, HURDLE_SIZES, hurdleAngleOf, hurdleLineOf, hurdleSizeOf, hurdleTop, placeBarHurdle, setHurdleAngle,
   setHurdleLine, setHurdleSize,
@@ -89,8 +101,9 @@ import {
   RAD, DEG, wrapAngle, gateSupportFeet, apertureFrame, GATE_POST_R_SCALE, leftOf,
 } from './geometry.js';
 import {
-  FRAME_SIDES, frameSidesOf, hasMissingSides, unbuiltSidesOf, isPlain, wallPitchFor, WHOOP_TOOLS, labelOf, trackClassOf,
-  FIVE_INCH_PIECES, FIVE_INCH_TOOLS, MAP_TOOLS, toolByKey,
+  FRAME_SIDES, frameSidesOf, hasMissingSides, unbuiltSidesOf, unbuiltPolesOf, poleBuilt, uprightIntact, isPlain, wallPitchFor, WHOOP_TOOLS, labelOf, trackClassOf,
+  FIVE_INCH_PIECES, FIVE_INCH_TOOLS, WHOOP_PIECES, MAP_TOOLS, toolByKey, isFiveInchPiece, isLetterPiece, isUnbuilt, letterExtent, pieceLabel,
+  LETTER_TUBE_OD,
 } from './elements.js';
 import { PRESETS } from './presets.js';
 import { ELEMENTS, PALETTE_ORDER, GATE_FLAG_H, flagSideOf, flagSideSigns, elementByKey, elementHeight,
@@ -130,7 +143,7 @@ import { BANNER_SIZE, GATE_BANNER_H, flagMast, flagSailProfile } from '../art/ba
 import { courseFromDocument } from '../game/trackdoc.js';
 import { GUIDE, guideFromKnots, knotsFromPath, tessellateGuide } from '../game/guide.js';
 import { GATE_SCALE, MICRO_SCALE } from '../game/track.js';
-import { PRACTICE_LAPS, Race, runComplete, stationLegMin } from '../game/race.js';
+import { PRACTICE_LAPS, Race, gateAcross, gateUp, runComplete, stationLegMin } from '../game/race.js';
 import { LapVoice, lapCall, pickVoice } from '../render/voice.js';
 import {
   Colliders, hitOutcome, groundOutcome, GROUND_LAND, GROUND_BOUNCE, GROUND_CRASH,
@@ -152,17 +165,26 @@ import {
 import { sincos } from '../props/trig.js';
 import {
   APERTURE_SHAPES, CIRCLE_SEGMENTS, shapeOf, outlineOf, insideShape, clipToShape, frameOutline, frameParts, barsAlong, paneFan,
+  clipToPolygon, insetPolygon, insidePolygon, mirrorPolygon, paneOfPolygon, polygonArea, polygonBounds, triangulate,
 } from '../props/aperture.js';
+import {
+  GAP_ADVISORY, GRID, LETTERS, LETTER_DEFAULT, OPENINGS_MAX, checkLetter, dimsForLetterSize, glyphOf, isLetter, layoutLetter,
+  letterDefaults, letterOf, letterSizeOf, nearestOpening, openingCount, openingName, primaryOpening, stationOpening, widestCircle,
+} from '../props/letters.js';
 import { AIRFRAMES, airframeById } from '../../configs/airframes.js';
 import {
-  inspectCourse, layoutFingerprint, publishCurrentCourse, publishedTags, rememberPublish,
-  suggestRemixName, tagsToSend,
+  adminEditFor, boardHolding, inspectCourse, layoutFingerprint, officialBlocksOpen, publishCurrentCourse,
+  publishedTags, rememberPublish, suggestRemixName, tagsToSend,
 } from '../share/listing.js';
-import { readBind, readEditKey, writeBind, writeBuilderIntent, takeBuilderIntent } from '../share/session.js';
 import {
-  publishTrack, partsTheBoardDoesNotKnow, unknownPartsSentence, BOARD_UNKNOWN_TYPES, TRACK_TAGS, tagsForClass,
+  readBind, readEditKey, writeBind, writeBuilderIntent, writeEditKey, takeBuilderIntent,
+} from '../share/session.js';
+import {
+  publishTrack, TRACK_TAGS, tagsForClass,
+  adminSignIn, adminVerify, fetchTrackOfficial, setTrackOfficial, postTrackGif, postShareCard,
 } from '../share/board.js';
-import { planFromDocument, PLAN_SHAPE, isoApertures, isoShapes } from '../share/plan.js';
+import { clearAdminSession, readAdminSession, writeAdminSession } from '../share/admin.js';
+import { planFromDocument, PLAN_SHAPE, PLAN_LETTERS, isoApertures, isoShapes, letterTubes } from '../share/plan.js';
 import {
   keepDisplaced, readAutosave, shipTracks, listTracks, loadTrack, trackExists, saveTrack, deleteTrack, savedTrack, restoreTrack, librarySize,
 } from './storage.js';
@@ -2782,8 +2804,9 @@ function suiteClipCatch() {
    *
    * IT IS THE FIVE INCH'S REACH NOW, and the asymmetry the original defect
    * was about is still the thing being asserted. The whoop flies the five
-   * inch's plant, so its down extent is that plant's 45 mm, the height it
-   * actually rests at; its UP extent is the drawn canopy through the room's
+   * inch's plant, so its down extent is that plant's hull_hz_down, read
+   * from the five inch's table so it follows the plant (45 mm until
+   * 2026-10-09, 33 mm since), the height it actually rests at; its UP extent is the drawn canopy through the room's
    * factor, 61.7 mm, because nothing rests a craft on its canopy and what
    * reads that number is a collider deciding whether the top of the aircraft
    * met a bar. So the two are still different, still in the right order, and
@@ -2793,8 +2816,9 @@ function suiteClipCatch() {
   const whoopRig = reachRig();
   const whoopDown = firstTouch(whoopRig, 0.30, 0.0, false);
   const whoopUp = 1 - firstTouch(whoopRig, 0.70, 1.0, false);
-  check('a whoop rests on the plant\'s 45 mm, which is what it settles at',
-    Math.abs(whoopDown - 0.045) < 1e-3, whoopDown);
+  const plantDown = airframeById('5inch').dims.vHalfDown;
+  check(`a whoop rests on the plant's ${(plantDown * 1000).toFixed(0)} mm, which is what it settles at`,
+    Math.abs(whoopDown - plantDown) < 1e-3, whoopDown);
   check('and it still does not carry its canopy height under it',
     whoopUp > whoopDown, `${whoopUp} above, ${whoopDown} below`);
   setCraftAirframe(fiveBefore);
@@ -5690,6 +5714,32 @@ function suiteBranding() {
   check('a decal naming a mark that is gone wears nothing, rather than somebody else\u2019s',
     logoForDecal(painted, orphan) === null);
 
+  /*
+   * A STICKER is a ground logo that wears one piece of a sheet (`crop`, a
+   * rectangle in the image's own 0 to 1 units) and may name the word its
+   * find calls out (`achievement`). Both round trip; a crop that is not a
+   * rectangle inside the image is dropped rather than drawn wrong, so the
+   * decal wears its whole mark as it always did.
+   */
+  const sticker = place(painted, 'groundLogo', 20, 30, { dims: { width: 2, depth: 2 } });
+  sticker.logoId = 'logo-2';
+  sticker.crop = { x: 0.25, y: 0.5, w: 0.125, h: 0.25 };
+  sticker.achievement = '90%er';
+  const back = deserialize(serialize(painted)).doc.elements.find((e) => e.id === sticker.id);
+  check('a sticker keeps its piece of the sheet through a round trip',
+    back && cropOf(back) && cropOf(back).x === 0.25 && cropOf(back).y === 0.5 && cropOf(back).w === 0.125
+      && cropOf(back).h === 0.25, JSON.stringify(back && back.crop));
+  check('and the word its find calls out', back && achievementOf(back) === '90%er');
+  check('a decal with no crop wears its whole mark', cropOf(decal) === null && achievementOf(decal) === '');
+  check('a crop that runs off the image is no crop',
+    cropOf({ crop: { x: 0.9, y: 0, w: 0.2, h: 0.5 } }) === null);
+  check('and neither is one with no size', cropOf({ crop: { x: 0.1, y: 0.1, w: 0, h: 0.5 } }) === null);
+  check('an achievement longer than its limit is cut to it',
+    achievementOf({ achievement: 'x'.repeat(ACHIEVEMENT_MAX + 9) }).length === ACHIEVEMENT_MAX);
+  const plainBack = deserialize(serialize(painted)).doc.elements.find((e) => e.id === decal.id);
+  check('and a plain decal writes neither field', plainBack && !('crop' in plainBack) && !('achievement' in plainBack));
+  painted.elements.splice(painted.elements.indexOf(sticker), 1);
+
   const course = courseFromDocument(painted);
   check('the course carries the marks in order',
     course.logos.length === 2 && course.logos[0] === painted.branding.logos[0].image);
@@ -6972,6 +7022,206 @@ function suiteFrameSides() {
 }
 
 /*
+ * A STACK'S UPRIGHT IS ONE STRETCH PER OPENING. Deleting a side of a double or a triple takes only the stretch
+ * of the opening that was clicked, not the pole the whole height of the stack (the owner, 2026-10-04).
+ */
+function suitePoleStretches() {
+  console.log('\nstacked gate, one upright stretch at a time');
+  const doc = createTrack('stretch', 'micro');
+  const g = place(doc, 'doubleStack', 4, 5);
+  const three = place(doc, 'gate', 8, 5);
+  three.dims.levels = 3;
+  const single = place(doc, 'gate', 12, 5);
+  const levels = (e) => Math.round(e.dims.levels);
+  check('the double is a stack of two', levels(g) === 2, String(levels(g)));
+
+  check('taking one stretch away reports a change', setPoleBuilt(doc, g.id, 'left', 0, false) === true);
+  check('only that stretch is gone', !poleBuilt(g, 'left', 0) && poleBuilt(g, 'left', 1) && poleBuilt(g, 'right', 0) && poleBuilt(g, 'right', 1));
+  check('the side as a whole still reads built', frameSidesOf(g).left && !('unbuiltSides' in g));
+  check('it is written as a stretch', JSON.stringify(g.unbuiltPoles) === '["left:0"]', JSON.stringify(g.unbuiltPoles));
+  check('and the gate counts as having something missing', hasMissingSides(g));
+  check('the whole upright is not intact', !uprightIntact(g, 'left') && uprightIntact(g, 'right'));
+  check('taking the same stretch twice changes nothing', setPoleBuilt(doc, g.id, 'left', 0, false) === false);
+
+  const back = normalize(JSON.parse(serialize(doc))).doc;
+  const gb = elementById(back, g.id);
+  check('a stretch round trips', JSON.stringify(gb.unbuiltPoles) === '["left:0"]' && !poleBuilt(gb, 'left', 0) && poleBuilt(gb, 'left', 1));
+
+  check('the second stretch takes the whole upright with it', setPoleBuilt(doc, g.id, 'left', 1, false) === true
+    && JSON.stringify(g.unbuiltSides) === '["left"]' && !('unbuiltPoles' in g), JSON.stringify([g.unbuiltSides, g.unbuiltPoles]));
+  check('and a stretch of an upright that is gone is nothing to take away', setPoleBuilt(doc, g.id, 'left', 0, false) === false);
+  check('putting one stretch of a gone upright back leaves the other gone', setPoleBuilt(doc, g.id, 'left', 0, true) === true
+    && poleBuilt(g, 'left', 0) && !poleBuilt(g, 'left', 1) && !('unbuiltSides' in g)
+    && JSON.stringify(g.unbuiltPoles) === '["left:1"]', JSON.stringify([g.unbuiltSides, g.unbuiltPoles]));
+  setPoleBuilt(doc, g.id, 'left', 1, true);
+  check('putting every stretch back is the JSON it was', !('unbuiltPoles' in g) && !('unbuiltSides' in g) && !hasMissingSides(g));
+
+  setPoleBuilt(doc, three.id, 'right', 1, false);
+  check('the middle of a triple goes alone', poleBuilt(three, 'right', 0) && !poleBuilt(three, 'right', 1) && poleBuilt(three, 'right', 2)
+    && JSON.stringify(three.unbuiltPoles) === '["right:1"]');
+  check('a whole side taken away covers its stretches and writes none beside it', setSideBuilt(doc, three.id, 'right', false) === true
+    && !('unbuiltPoles' in three) && JSON.stringify(three.unbuiltSides) === '["right"]');
+
+  check('a single gate has no stretches', setPoleBuilt(doc, single.id, 'left', 0, false) === false && unbuiltPolesOf(single).length === 0);
+
+  const raw = JSON.parse(serialize(doc));
+  const rawG = raw.elements.find((e) => e.id === g.id);
+  rawG.unbuiltPoles = ['left:0', 'left:0', 'left:7', 'top:0', 'right:1'];
+  const rawS = raw.elements.find((e) => e.id === single.id);
+  rawS.unbuiltPoles = ['left:0'];
+  const read = normalize(raw).doc;
+  check('a stretch it does not have, or a side it has no stretches for, is dropped on read',
+    JSON.stringify(elementById(read, g.id).unbuiltPoles) === '["left:0","right:1"]'
+    && !('unbuiltPoles' in elementById(read, single.id)), JSON.stringify(elementById(read, g.id).unbuiltPoles));
+
+  const placed = courseFromDocument(doc);
+  const placedBefore = JSON.stringify(placed.stations.map((st) => [st.elementId, st.x, st.z, st.centreY]));
+  setPoleBuilt(doc, g.id, 'left', 0, false);
+  const placedAfter = JSON.stringify(courseFromDocument(doc).stations.map((st) => [st.elementId, st.x, st.z, st.centreY]));
+  check('taking a stretch away moves no station', placedBefore === placedAfter);
+}
+
+/*
+ * EACH OPENING OF A STACK IS A GATE OF ITS OWN: its own width and height, kept in dims.openings, read by the builder's
+ * views, the warnings and the race field alike (the owner, 2026-10-04). A document without the list reads as it always
+ * did, and a size that is no length is never let into a piece.
+ */
+function suiteOpeningSizes() {
+  console.log('\neach opening of a stack its own size');
+  for (const cls of ['micro', 'full']) {
+    const doc = createTrack('sized', cls);
+    place(doc, 'startPads', 3, 2, { yaw: Math.PI / 2 });
+    const three = place(doc, 'ladder', 8, 5);
+    const two = place(doc, 'doubleStack', 12, 5);
+    const single = place(doc, 'gate', 16, 5);
+    const tag = `(${cls})`;
+    const before = JSON.stringify(aperturesOf(three));
+    const pristine = serialize(doc);
+
+    check(`a stack with no list has none ${tag}`, !('openings' in three.dims) && !pristine.includes('openings'));
+    check(`and every opening is the stack's size ${tag}`, aperturesOf(three).every((ap) => ap.clearW === three.dims.clearW && ap.clearH === three.dims.clearH));
+
+    const wide = three.dims.clearW * 1.5;
+    const tall = three.dims.clearH * 1.25;
+    check(`sizing the middle opening reports a change ${tag}`, setOpeningSize(doc, three.id, 1, { clearW: wide, clearH: tall }) === true);
+    const aps = aperturesOf(three);
+    check(`only the middle opening changed size ${tag}`, aps[1].clearW === wide && aps[1].clearH === tall
+      && aps[0].clearW === three.dims.clearW && aps[2].clearW === three.dims.clearW
+      && aps[0].clearH === three.dims.clearH && aps[2].clearH === three.dims.clearH);
+    check(`the bottom opening has not moved ${tag}`, aps[0].sillH === JSON.parse(before)[0].sillH && aps[0].centerH === JSON.parse(before)[0].centerH);
+    const gap = three.dims.levelPitch - three.dims.clearH;
+    check(`the next opening sits one member above it ${tag}`, Math.abs(aps[1].sillH - (aps[0].sillH + aps[0].clearH + gap)) < 1e-9
+      && Math.abs(aps[2].sillH - (aps[1].sillH + tall + gap)) < 1e-9, JSON.stringify(aps.map((a) => a.sillH)));
+    check(`and every centre is half its own height up ${tag}`, aps.every((ap) => Math.abs(ap.centerH - (ap.sillH + ap.clearH / 2)) < 1e-9));
+    check(`a stack's width as a whole is its widest opening, and its top's is the top one's ${tag}`,
+      gateWidthOf(three) === wide && gateWidthOf(three, true) === three.dims.clearW);
+
+    /* The number every reader of a piece's height is handed. A height that was not a number once framed the 3D camera on
+     * nothing, so it is checked as a number and not only as a size. */
+    const def = ELEMENTS[three.type];
+    const topH = elementHeight(def, three.dims);
+    check(`the stack's height is a real number, to the top of its top opening ${tag}`, Number.isFinite(topH)
+      && Math.abs(topH - (aps[2].sillH + aps[2].clearH + 0.0267)) < 0.01, String(topH));
+    check(`and so is topOf ${tag}`, Number.isFinite(topOf(three)) && topOf(three) > aps[2].sillH);
+
+    check(`a doubled size is refused and changes nothing ${tag}`, setOpeningSize(doc, three.id, 0, { clearW: Number.NaN }) === false
+      && setOpeningSize(doc, three.id, 0, { clearH: 0 }) === false && setOpeningSize(doc, three.id, 0, { clearH: -1 }) === false
+      && setOpeningSize(doc, three.id, 0, { clearW: '2' }) === false && setOpeningSize(doc, three.id, 0, { clearH: Infinity }) === false
+      && JSON.stringify(aperturesOf(three)[0]) === JSON.stringify(aps[0]));
+    check(`an opening it does not have is refused ${tag}`, setOpeningSize(doc, three.id, 3, { clearW: 1 }) === false
+      && setOpeningSize(doc, three.id, -1, { clearW: 1 }) === false && setOpeningSize(doc, three.id, 0.5, { clearW: 1 }) === false);
+    check(`a single gate has no openings to size ${tag}`, setOpeningSize(doc, single.id, 0, { clearW: 1 }) === false && !('openings' in single.dims));
+
+    /* The round trip, and the read of a document that has none. */
+    const back = normalize(JSON.parse(serialize(doc))).doc;
+    const tb = elementById(back, three.id);
+    check(`the sizes round trip ${tag}`, aperturesOf(tb).every((ap, i) => Math.abs(ap.clearW - aps[i].clearW) < 1e-6
+      && Math.abs(ap.clearH - aps[i].clearH) < 1e-6 && Math.abs(ap.sillH - aps[i].sillH) < 1e-6), JSON.stringify(tb.dims.openings));
+    check(`and the same document writes the same text twice ${tag}`, serialize(back) === serialize(normalize(JSON.parse(serialize(back))).doc));
+    const plain = JSON.parse(pristine);
+    check(`a saved document with no list reads as it did, byte for byte ${tag}`, serialize(normalize(plain).doc) === pristine);
+
+    /* Hand written garbage never gets in. */
+    const raw = JSON.parse(serialize(doc));
+    const rawThree = raw.elements.find((e) => e.id === three.id);
+    rawThree.dims.openings = [{ clearW: 'wide', clearH: Number.NaN }, { clearH: -2, clearW: null }, { clearH: 2.5 }, { clearW: 9 }];
+    const rawSingle = raw.elements.find((e) => e.id === single.id);
+    rawSingle.dims.openings = [{ clearW: 3 }];
+    const rawTwo = raw.elements.find((e) => e.id === two.id);
+    rawTwo.dims.openings = 'tall';
+    const read = normalize(raw).doc;
+    const rt = elementById(read, three.id);
+    const rtAps = aperturesOf(rt);
+    check(`a size that is no length is the stack's, and a good one is kept ${tag}`,
+      rtAps[0].clearW === rt.dims.clearW && rtAps[0].clearH === rt.dims.clearH
+      && rtAps[1].clearH === rt.dims.clearH && rtAps[2].clearH === 2.5, JSON.stringify(rt.dims.openings));
+    check(`an entry past the last opening is dropped ${tag}`, rt.dims.openings.length === 3, JSON.stringify(rt.dims.openings));
+    check(`no height a stack hands out is anything but a number ${tag}`, rtAps.every((ap) => Number.isFinite(ap.clearH) && Number.isFinite(ap.clearW)
+      && Number.isFinite(ap.sillH) && Number.isFinite(ap.centerH)) && Number.isFinite(topOf(rt)));
+    check(`a gate with a list has none, and a list that is not a list is dropped ${tag}`,
+      !('openings' in elementById(read, single.id).dims) && !('openings' in elementById(read, two.id).dims));
+
+    /* Back to the stack's size. */
+    check(`one opening goes back to the stack's size ${tag}`, setOpeningSize(doc, three.id, 1, { clearW: null, clearH: null }) === true
+      && !('openings' in three.dims) && JSON.stringify(aperturesOf(three)) === before);
+    check(`and a size equal to the stack's is no size of its own ${tag}`, setOpeningSize(doc, three.id, 2, { clearW: three.dims.clearW }) === false
+      && !('openings' in three.dims));
+    setOpeningSize(doc, three.id, 2, { clearH: tall });
+    check(`a stack made one opening has no list for the opening it lost ${tag}`, (() => {
+      const t = deepClone(three);
+      t.dims.levels = 1;
+      return aperturesOf(t).length === 1 && aperturesOf(t)[0].clearH === t.dims.clearH;
+    })());
+    check(`a gate preset puts every opening back ${tag}`, (() => {
+      const t = deepClone(three);
+      applyGatePreset(t.dims, GATE_PRESETS[0], 'square');
+      return !('openings' in t.dims);
+    })());
+
+    /* The race field: every opening scores at its own size, at its own height. */
+    const flown = createTrack('flown', cls);
+    place(flown, 'startPads', 3, 2, { yaw: Math.PI / 2 });
+    const st3 = place(flown, 'ladder', 8, 5);
+    setOpeningSize(flown, st3.id, 0, { clearW: st3.dims.clearW * 0.8 });
+    setOpeningSize(flown, st3.id, 1, { clearW: st3.dims.clearW * 1.4, clearH: st3.dims.clearH * 1.3 });
+    setOpeningSize(flown, st3.id, 2, { clearH: st3.dims.clearH * 0.7 });
+    for (let i = 0; i < 3; i += 1) {
+      addToSequence(flown, st3.id, i);
+    }
+    const apsFlown = aperturesOf(st3);
+    const course = courseFromDocument(flown);
+    const sts = course.stations.filter((q) => q.elementId === st3.id);
+    check(`the race field has a station for each opening ${tag}`, sts.length === 3, String(sts.length));
+    const scale = sts[0].clearW / apsFlown[0].clearW;
+    check(`each station scores at its own opening's size, through one obstacle scale ${tag}`, sts.every((q, i) => Math.abs(q.clearW - apsFlown[i].clearW * scale) < 1e-9
+      && Math.abs(q.clearH - apsFlown[i].clearH * scale) < 1e-9), JSON.stringify(sts.map((q) => [q.clearW, q.clearH])));
+    check(`and at its own height ${tag}`, sts.every((q, i) => Math.abs(q.centreY - apsFlown[i].centerH * scale) < 1e-9));
+    check(`the openings really are three different sizes ${tag}`, new Set(sts.map((q) => `${q.clearW.toFixed(4)}x${q.clearH.toFixed(4)}`)).size === 3);
+    const built = sts[0].structure.dims;
+    check(`the built stack carries each opening's size for the world to build ${tag}`, Array.isArray(built.openings) && built.openings.length === 3
+      && built.openings.every((o, i) => Math.abs(o.clearW - apsFlown[i].clearW * scale) < 1e-9 && Math.abs(o.clearH - apsFlown[i].clearH * scale) < 1e-9),
+    JSON.stringify(built.openings));
+    check(`a stack with none builds as it always did ${tag}`, (() => {
+      const plainDoc = createTrack('plain', cls);
+      place(plainDoc, 'startPads', 3, 2, { yaw: Math.PI / 2 });
+      const p = place(plainDoc, 'ladder', 8, 5);
+      addToSequence(plainDoc, p.id, 0);
+      return !('openings' in courseFromDocument(plainDoc).structures.find((q) => q.type === 'ladder').dims);
+    })());
+  }
+
+  /* RaceGOW's rules read each opening at its own size. */
+  const micro = createTrack('rules', 'micro');
+  const s2 = place(micro, 'doubleStack', 5, 5);
+  const before = collectWarnings(micro, null).map((w) => w.code).join();
+  setOpeningSize(micro, s2.id, 1, { clearW: 0.3 });
+  const warned = collectWarnings(micro, null).map((w) => w.code);
+  check('an opening under the 24 inch minimum is named by the rule', warned.includes('rg-opening-min'), warned.join());
+  check('it was not named before', !before.includes('rg-opening-min'), before);
+  check('and a stack of two sizes is not the size of the rest of the track', warned.includes('rg-opening-mixed') || collectWarnings(micro, null).length >= 1);
+}
+
+/*
  * BENDING THE LINE. A grab on a segment drops a waypoint into the flying
  * order between the two stations that segment joins, the line then runs
  * through it, the game scores exactly what it scored before, and the gates
@@ -8132,6 +8382,140 @@ async function suiteShareLink() {
  * small cases are counted from how a gate is built out of pipe: four pipes and four
  * elbows, a shared bar and two tees, a leg and a foot.
  */
+/*
+ * COMMUNITYGOW, the builder's half: reading the community a link names and
+ * sending a round to the board, with the board played by a fake fetch. The
+ * board's own self test holds its half, the route these requests reach.
+ */
+async function suiteCommunity() {
+  console.log('\nthe whoop builder: sending a round to a CommunityGow community');
+  const key = 'Ab3_dEf-GhIjKlMnOpQr';
+  const fromPortal = readCommunityLink(
+    `?class=micro&mode=race&board=${encodeURIComponent('https://webfpv.org/board')}&community=perth-whoop-club`,
+    `#cgkey=${key}`,
+  );
+  check('the portal\'s link names the community, the board and the key',
+    Boolean(fromPortal) && fromPortal.slug === 'perth-whoop-club' && fromPortal.board === 'https://webfpv.org/board' && fromPortal.key === key);
+  check('a link with no key, a bad address or a board that is not a web address names nothing',
+    readCommunityLink('?community=perth-whoop-club', '', 'https://webfpv.org/board') === null
+      && readCommunityLink('?community=..%2Fapi', `#cgkey=${key}`, 'https://webfpv.org/board') === null
+      && readCommunityLink(`?community=perth-whoop-club&board=${encodeURIComponent('javascript:alert(1)')}`, `#cgkey=${key}`) === null);
+  check('a link with no board uses the board this builder talks to',
+    readCommunityLink('?community=perth-whoop-club', `#track=x&cgkey=${key}`, 'http://127.0.0.1:3100/').board === 'http://127.0.0.1:3100');
+
+  const pasted = parseOrganiserLink(`https://webfpv.org/board/CommunityGow/perth-whoop-club#key=${key}`);
+  check('the organiser link, pasted, is read with the board on its mount',
+    Boolean(pasted) && pasted.board === 'https://webfpv.org/board' && pasted.slug === 'perth-whoop-club' && pasted.key === key);
+  check('so is a round\'s page with the key on it, and a board on a host of its own',
+    parseOrganiserLink(`https://webfpv.org/board/CommunityGow/perth-whoop-club/3#key=${key}`).slug === 'perth-whoop-club'
+      && parseOrganiserLink(`http://127.0.0.1:3100/CommunityGow/perth-whoop-club#key=${key}`).board === 'http://127.0.0.1:3100');
+  check('the community\'s page without the key is not an organiser link, and nor is anything else',
+    parseOrganiserLink('https://webfpv.org/board/CommunityGow/perth-whoop-club') === null
+      && parseOrganiserLink('perth-whoop-club') === null
+      && parseOrganiserLink(`ftp://webfpv.org/CommunityGow/perth-whoop-club#key=${key}`) === null);
+  check('a round\'s address is the board\'s', communityPageUrl(pasted, 4) === 'https://webfpv.org/board/CommunityGow/perth-whoop-club/4');
+
+  const bytes = new Uint8Array(70000).map((_, i) => (i * 7) % 256);
+  check('the pack goes as base64 that reads back to the same bytes', Buffer.from(packBase64(bytes), 'base64').equals(Buffer.from(bytes)));
+
+  const asked = [];
+  const board = (status, body) => async (url, opts = {}) => {
+    asked.push({ url, opts });
+    return { ok: status < 400, status, json: async () => body };
+  };
+  const doc = presetById('racegow5-track1');
+  const made = zipStore(bundleEntries(doc, { now: '2026-10-09T06:00:00Z' }).entries);
+  const sent = await sendRound(pasted, {
+    bytes: made,
+    title: 'Week 1',
+    fetchImpl: board(201, { n: 4, track: { id: 'trk-0a1b2c3d', name: 'RaceGOW5 Track1' }, community: { name: 'Perth Whoop Club' } }),
+  });
+  const posted = JSON.parse(asked[0].opts.body);
+  check('a round is posted to the community\'s rounds with the key in the body, never the address',
+    asked[0].url === 'https://webfpv.org/board/api/communities/perth-whoop-club/rounds' && asked[0].opts.method === 'POST'
+      && posted.organiserKey === key && posted.title === 'Week 1' && !asked[0].url.includes(key));
+  check('the pack sent is the bundle, a zip with the track in it',
+    Buffer.from(posted.pack, 'base64').equals(Buffer.from(made)) && Buffer.from(made).includes(Buffer.from('track.json')));
+  check('and the answer is the round, its board track and its page',
+    sent.n === 4 && sent.track.id === 'trk-0a1b2c3d' && sent.url === 'https://webfpv.org/board/CommunityGow/perth-whoop-club/4' && sent.name === 'Perth Whoop Club');
+  let refused = '';
+  try {
+    await sendRound(pasted, { bytes: made, fetchImpl: board(403, { error: 'Only the organiser can add a round.' }) });
+  } catch (e) {
+    refused = e.message;
+  }
+  check('a key the board will not take is said in the builder\'s words', /organiser link/.test(refused), refused);
+  let big = '';
+  const before = asked.length;
+  try {
+    await sendRound(pasted, { bytes: new Uint8Array(COMMUNITY_PACK_MAX + 1), fetchImpl: board(201, {}) });
+  } catch (e) {
+    big = e.message;
+  }
+  check('a bundle over the board\'s limit is refused before it is sent', /small lap animation/.test(big) && asked.length === before, big);
+  const about = await fetchCommunity(pasted, { fetchImpl: board(200, { name: 'Perth Whoop Club', rounds: [{ n: 1 }, { n: 3 }] }) });
+  check('the community\'s name and its next round come from the board', about.name === 'Perth Whoop Club' && about.next === 4 && about.rounds === 2);
+  check('the boot probe in start.js asks for the key this file keeps',
+    readFileSync(fileURLToPath(new URL('./start.js', import.meta.url)), 'utf8').includes(`'${COMMUNITY_SESSION_KEY}'`));
+}
+
+function suiteBundle() {
+  console.log('\nthe whoop builder: the export bundle');
+  const doc = presetById('racegow5-track1');
+  const now = '2026-10-08T14:00:00Z';
+  const path = buildPath(doc, { closeLoop: true });
+  const data = bundleData(doc, { now, path });
+  check('the format and version are named', data.format === BUNDLE_FORMAT && data.formatVersion === BUNDLE_VERSION);
+  check('the lap is the builder\'s own closed line', data.lap.closed && Math.abs(data.lap.lengthM - path.length) < 1e-3, String(data.lap.lengthM));
+  check('one gate row per numbered pass, in order, waypoints left out', data.gates.map((g) => g.number).join() === '1,2,3,4,5,6' && data.lap.gateCount === 6, data.gates.map((g) => g.number).join());
+  check('the passes agree with the build sheet\'s numbers', buildSheet(doc).pieces.flatMap((p) => p.numbers).sort((a, b) => a - b).join() === '1,2,3,4,5,6');
+  const pts = data.route.points;
+  check('the route is evenly spaced and closes on its start', pts.length > 50
+    && Math.hypot(...pts[0].map((v, i) => v - pts[pts.length - 1][i])) < 0.05
+    && Math.abs(Math.hypot(...pts[1].map((v, i) => v - pts[0][i])) - data.route.spacingM) < 0.02);
+  check('evenRoute of nothing is nothing', evenRoute({ samples: [], length: 0 }).length === 0);
+  check('the data survives JSON and the pretty text parses back to the same', JSON.stringify(JSON.parse(dataText(data))) === JSON.stringify(data));
+  check('the slug matches the builder\'s file rule', trackSlug({ name: 'My Track! 2' }) === 'my-track-2' && trackSlug({}) === 'track');
+
+  const svg = mapSvg(doc, { path, data });
+  check('the map is an SVG with a start, a north arrow and every pass number', svg.startsWith('<svg') && svg.includes('START') && svg.includes('>N<') && [...svg.matchAll(/>([0-9][0-9, +]*)<\/text>/g)].map((m) => m[1]).join(',').split(/[, +]+/).filter(Boolean).sort().join() === '1,2,3,4,5,6');
+  const hostile = deepClone(doc);
+  hostile.name = '<img src=x onerror=alert(1)>';
+  const hs = mapSvg(hostile);
+  check('a hostile track name is escaped in the map', !hs.includes('<img') && hs.includes('&lt;img'));
+
+  const images = { 'views/southwest-route.png': new Uint8Array([137, 80, 78, 71]) };
+  const made = bundleEntries(doc, { images, lap: new Uint8Array([71, 73, 70]), now });
+  const names = made.entries.map((e) => e.name);
+  check('bundle.json goes first and the files are the ones asked for', names[0] === 'bundle.json'
+    && ['track.json', 'map.svg', 'instructions.html', 'lap.gif', 'views/southwest-route.png'].every((n) => names.includes(n)), names.join());
+  check('only the views that exist are named', made.data.views.length === 1 && made.data.views[0].obstacles === null);
+  check('every file is listed with its size and CRC', made.data.files.length === names.length - 1
+    && made.data.files.every((f) => {
+      const e = made.entries.find((x) => x.name === f.path);
+      const bytes = typeof e.data === 'string' ? new TextEncoder().encode(e.data) : e.data;
+      return f.bytes === bytes.length && f.crc32 === crc32(bytes).toString(16).padStart(8, '0');
+    }));
+  const html = made.entries.find((e) => e.name === 'instructions.html').data;
+  const page = new TextDecoder().decode(html);
+  check('the page points only at files that are in the bundle', [...page.matchAll(/src="([^"]+)"/g)].every((m) => names.includes(m[1])));
+  check('track.json reads back as the same document', serialize(deserialize(new TextDecoder().decode(made.entries.find((e) => e.name === 'track.json').data)).doc) === serialize(doc));
+  const again = bundleEntries(doc, { images, lap: new Uint8Array([71, 73, 70]), now });
+  const zipA = zipStore(made.entries, { date: new Date(now) });
+  const zipB = zipStore(again.entries, { date: new Date(now) });
+  check('the same track makes the same bytes', zipA.length === zipB.length && zipA.every((b, i) => b === zipB[i]));
+  check('and it is a zip: local header first, end record last, one entry per file', zipA[0] === 0x50 && zipA[1] === 0x4b && new DataView(zipA.buffer).getUint16(zipA.length - 12, true) === names.length);
+  check('crc32 of "123456789" is the standard check value', crc32(new TextEncoder().encode('123456789')) === 0xcbf43926);
+  let refused = '';
+  try { zipStore([{ name: '../x', data: 'a' }]); } catch (e) { refused = e.message; }
+  check('a path that climbs out of the zip is refused', /safe/.test(refused), refused);
+  const lone = createTrack('lone', 'micro');
+  placeOnTrack(lone, 'gate', { x: 5, y: 6 });
+  let none = '';
+  try { bundleEntries(lone, { now }); } catch (e) { none = e.message; }
+  check('a track with no lap is refused with a sentence', /no lap/.test(none), none);
+}
+
 function suiteBuildSheet() {
   console.log('\nthe whoop builder: the build sheet');
   const IN = 0.0254;
@@ -9160,118 +9544,35 @@ function suiteRoomParts() {
 }
 
 /*
- * THE BOARD DOES NOT KNOW A TABLE, A CHAIR OR A BANNER, and until it does no track that holds one goes to
- * it. Its validator and its card drawer keep their own list of what a track is made of, so a track with an
- * unknown piece would be counted short and drawn without it, which is the safe direction and still wrong.
- * The refusal is where every publish passes, publishTrack, so the builder's dialog and the game's own
- * menu are both stopped by it, and it costs the author nothing they had: the track still flies.
+ * THE BOARD KNOWS A TABLE, A CHAIR, A BANNER, A HOOP, A HEX GATE AND A CUBE (2026-10-14). Until then publishTrack
+ * refused a track that held one, because the board counted them as nothing. Nothing refuses now: a track that
+ * holds all six reaches the board whole, with the cube's group on its gates.
  */
 async function suiteBoardParts() {
   console.log('\nthe board and the furniture');
-  const doc = createTrack('with furniture', 'micro');
+  const doc = createTrack('with everything', 'micro');
   placeOnTrack(doc, 'gate', { x: 4, y: 5 });
-  placeOnTrack(doc, 'gate', { x: 4, y: 8 });
-  placeOnTrack(doc, 'table', { x: 6, y: 5 });
+  placeOnTrack(doc, 'hoop', { x: 5.5, y: 5 });
+  placeOnTrack(doc, 'hexGate', { x: 7, y: 5 });
   placeOnTrack(doc, 'table', { x: 6, y: 7 });
   placeOnTrack(doc, 'chair', { x: 7, y: 6 });
+  placeOnTrack(doc, 'banner', { x: 8, y: 6 });
+  placeCube(doc, { x: 5.5, y: 8 });
   const plain = toPlain(doc);
-  const list = partsTheBoardDoesNotKnow(plain);
-  check('a track that holds furniture names it, counted, in the palette\'s order',
-    JSON.stringify(list) === '[{"type":"table","count":2},{"type":"chair","count":1}]', JSON.stringify(list));
-  check('the list is the five, and the working document is read as well as the plain one',
-    BOARD_UNKNOWN_TYPES.join() === 'table,chair,banner,hoop,hexGate' && partsTheBoardDoesNotKnow(doc).length === 2);
-  const none = toPlain(createTrack('plain', 'micro'));
-  placeOnTrack(none, 'gate', { x: 4, y: 5 });
-  check('a track without any names nothing, and a document that is not one names nothing and does not throw',
-    partsTheBoardDoesNotKnow(none).length === 0 && partsTheBoardDoesNotKnow(null).length === 0
-    && partsTheBoardDoesNotKnow({}).length === 0 && partsTheBoardDoesNotKnow({ elements: 'x' }).length === 0
-    && partsTheBoardDoesNotKnow({ elements: [null, 5, { type: 'table' }, { type: 'gate' }] }).length === 1);
-  const say = unknownPartsSentence(list);
-  check('the sentence says what the board does not know, what this track has, and what to do',
-    /does not know a table, a chair, a banner, a hoop, a hex gate or a cube/.test(say) && /2 tables and 1 chair/.test(say) && /Take them out/.test(say) && /still flies/.test(say), say);
-  check('and reads for one kind, and for all five, a hex gate in two words and its own plural',
-    /This one has 1 banner\./.test(unknownPartsSentence([{ type: 'banner', count: 1 }]))
-    && /1 table, 2 chairs and 3 banners/.test(unknownPartsSentence([{ type: 'table', count: 1 }, { type: 'chair', count: 2 }, { type: 'banner', count: 3 }]))
-    && /This one has 1 hoop and 2 hex gates\./.test(unknownPartsSentence([{ type: 'hoop', count: 1 }, { type: 'hexGate', count: 2 }]))
-    && /This one has 1 hex gate\./.test(unknownPartsSentence([{ type: 'hexGate', count: 1 }]))
-    && /This one has 1 cube\./.test(unknownPartsSentence([{ type: 'cube', count: 1 }]))
-    && /This one has 1 table and 2 cubes\./.test(unknownPartsSentence([{ type: 'table', count: 1 }, { type: 'cube', count: 2 }])));
-
-  /* A cube is five gates and a group, so it is the group that the board would lose, and it is counted by group. */
-  {
-    const cubes = createTrack('with cubes', 'micro');
-    placeOnTrack(cubes, 'gate', { x: 4, y: 5 });
-    placeCube(cubes, { x: 5.5, y: 5 });
-    placeCube(cubes, { x: 7, y: 5 });
-    placeOnTrack(cubes, 'table', { x: 6, y: 8 });
-    const found = partsTheBoardDoesNotKnow(toPlain(cubes));
-    check('a track with two cubes names them once each, after the parts that have a type of their own, counted by group and not by gate',
-      JSON.stringify(found) === '[{"type":"table","count":1},{"type":"cube","count":2}]', JSON.stringify(found));
-    check('the working document is read as well as the plain one', JSON.stringify(partsTheBoardDoesNotKnow(cubes)) === JSON.stringify(found));
-    check('a gate that is in no group is not a cube, and neither is one whose group is not a name',
-      partsTheBoardDoesNotKnow({ elements: [{ type: 'gate' }, { type: 'gate', group: '' }, { type: 'gate', group: 7 }, { type: 'gate', group: null }] }).length === 0);
-    check('two gates in one group are one cube', JSON.stringify(partsTheBoardDoesNotKnow({ elements: [{ type: 'gate', group: 'a' }, { type: 'gate', group: 'a' }] })) === '[{"type":"cube","count":1}]');
-    const hadFetch2 = globalThis.fetch;
-    let sent = 0;
-    globalThis.fetch = async () => {
-      sent += 1;
-      return { ok: true, status: 200, text: async () => '{}' };
-    };
-    try {
-      let refusedCube = null;
-      try {
-        await publishTrack({ author: 'Ada Rook', document: toPlain(cubes), origin: 'http://board.test' });
-      } catch (e) {
-        refusedCube = e;
-      }
-      check('publishing a track with a cube is refused, with the sentence, and nothing is sent',
-        Boolean(refusedCube) && /1 table and 2 cubes\./.test(refusedCube.message) && sent === 0, String(refusedCube && refusedCube.message));
-    } finally {
-      globalThis.fetch = hadFetch2;
-    }
-  }
-
   const hadFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
+  const sent = [];
+  globalThis.fetch = async (url, init) => {
+    sent.push(JSON.parse(init.body));
     return { ok: true, status: 200, text: async () => '{}' };
   };
   try {
-    let refused = null;
-    try {
-      await publishTrack({ author: 'Ada Rook', document: plain, origin: 'http://board.test' });
-    } catch (e) {
-      refused = e;
-    }
-    check('publishing a track that holds furniture is refused, with the sentence, and nothing is sent',
-      Boolean(refused) && refused.message === say && calls === 0, `${refused && refused.message}, ${calls} sent`);
-    check('and the refusal carries the list, for a dialog that wants to say more',
-      Boolean(refused) && JSON.stringify(refused.unknownParts) === JSON.stringify(list));
-    await publishTrack({ author: 'Ada Rook', document: none, origin: 'http://board.test' });
-    check('a track without furniture goes as it always did', calls === 1);
-    const shaped = createTrack('shaped', 'micro');
-    placeOnTrack(shaped, 'gate', { x: 4, y: 5 });
-    placeOnTrack(shaped, 'hoop', { x: 5.5, y: 5 });
-    placeOnTrack(shaped, 'hexGate', { x: 7, y: 5 });
-    let refusedShaped = null;
-    try {
-      await publishTrack({ author: 'Ada Rook', document: toPlain(shaped), origin: 'http://board.test' });
-    } catch (e) {
-      refusedShaped = e;
-    }
-    check('a track with a hoop or a hex gate is refused the same way, with the sentence, and nothing is sent',
-      Boolean(refusedShaped) && /1 hoop and 1 hex gate\./.test(refusedShaped.message) && calls === 1
-      && JSON.stringify(refusedShaped.unknownParts) === '[{"type":"hoop","count":1},{"type":"hexGate","count":1}]', String(refusedShaped && refusedShaped.message));
-    const planTable = { ...none, elements: [...none.elements, { ...plain.elements.find((e) => e.type === 'table') }] };
-    let again = null;
-    try {
-      await publishTrack({ author: 'Ada Rook', document: planTable, origin: 'http://board.test', editKey: 'k' });
-    } catch (e) {
-      again = e;
-    }
-    check('an update of a track already on the board is refused the same way, so a board copy is never given a table',
-      Boolean(again) && calls === 1, String(again && again.message));
+    await publishTrack({ author: 'Ada Rook', document: plain, origin: 'http://board.test' });
+    check('a track with a table, chair, banner, hoop, hex gate and cube is sent to the board', sent.length === 1);
+    const types = new Set(sent[0].document.elements.map((e) => e.type));
+    check('and it goes whole: every kind is in the document',
+      ['table', 'chair', 'banner', 'hoop', 'hexGate'].every((t) => types.has(t)), [...types].join());
+    check('with the cube\'s group on its gates, which the board stores as it was sent',
+      sent[0].document.elements.filter((e) => typeof e.group === 'string' && e.group).length >= 5);
   } finally {
     globalThis.fetch = hadFetch;
   }
@@ -9286,8 +9587,8 @@ async function suiteBoardParts() {
 function suiteApertureShapes() {
   console.log('\nthe shape of an opening');
   const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
-  check('there are three shapes, and a word that is not one is a square', APERTURE_SHAPES.join() === 'square,circle,hex'
-    && shapeOf('circle') === 'circle' && shapeOf('hex') === 'hex' && shapeOf('square') === 'square'
+  check('there are four shapes, a letter among them, and a word that is not one is a square', APERTURE_SHAPES.join() === 'square,circle,hex,letter'
+    && shapeOf('circle') === 'circle' && shapeOf('hex') === 'hex' && shapeOf('letter') === 'letter' && shapeOf('square') === 'square'
     && shapeOf('triangle') === 'square' && shapeOf(undefined) === 'square' && shapeOf(null) === 'square' && shapeOf(4) === 'square');
 
   /* THE OUTLINES */
@@ -9949,6 +10250,1040 @@ function suiteHoopHex() {
 
 
 /*
+ * THE LETTERS. A capital of pipe with the gaps in it to fly through, for the WA State Champs' W and every other
+ * letter after it. Nothing in the physics is new: a letter is a run of straight tubes, which are the capsules the
+ * world already holds, and a hole that is a polygon. What is new is the hole: a pass is scored against the shape the
+ * pilot can see, which is a triangle for a W and a notched box for an M, and the same numbers draw it in the room,
+ * on the plan and in the game.
+ */
+function suiteLetters() {
+  console.log('\nletters: A to Z in pipe, and the gaps in them');
+  const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
+  const TUBE_R = LETTER_TUBE_OD / 2;
+  const here = dirname(fileURLToPath(import.meta.url));
+
+  /* THE DESIGNS */
+  {
+    check('there are twenty six of them, A to Z, and every one is a letter', LETTERS.join('') === 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' && LETTERS.every((l) => isLetter(l) && glyphOf(l)));
+    check('a word that is not one is not a letter, and has no design', !isLetter('a') && !isLetter('AB') && !isLetter('') && !isLetter(7) && glyphOf('a') === null && glyphOf(null) === null);
+    const faults = LETTERS.map((l) => [l, checkLetter(l)]).filter(([, f]) => f.length);
+    check('every letter\'s design is sound: holes counter clockwise, pipe edges along strokes, no stroke through a hole, in order, wide enough to fly',
+      faults.length === 0, faults.map(([l, f]) => `${l}: ${f.join(', ')}`).join('; '));
+    check('and the check can fail: a letter that is not one is a fault, and a hole too big a pipe for its letter is one',
+      checkLetter('?').length === 1 && checkLetter('A', 0.3).length > 0 && checkLetter('W', TUBE_R, 5).length > 0);
+    check('every letter has one to three holes, which the flying order names by their place in the list',
+      LETTERS.every((l) => openingCount(l) >= 1 && openingCount(l) <= OPENINGS_MAX) && OPENINGS_MAX === 3
+      && openingCount('W') === 1 && openingCount('A') === 2 && openingCount('B') === 2 && openingCount('Y') === 3);
+    check('and each is named for what it is: a W\'s is between the Vs, an A has its counter and the space under its bar',
+      openingName('W', 0) === 'between the Vs' && openingName('A', 0) === 'under the bar' && openingName('A', 1) === 'counter'
+      && LETTERS.every((l) => Array.from({ length: openingCount(l) }, (_, i) => openingName(l, i)).every((n) => typeof n === 'string' && n.length > 2)));
+    check('a hole number out of range is the nearest one that is there, and a word that is not a letter is an A',
+      openingName('A', 9) === 'counter' && openingName('A', -3) === 'under the bar' && openingName('A', 0.4) === 'under the bar' && openingName('?', 0) === openingName('A', 0));
+    check('a new pass goes through the primary hole: a W\'s one, an A\'s counter, a Y\'s middle, and every letter has one that is a hole',
+      primaryOpening('W') === 0 && primaryOpening('A') === 1 && primaryOpening('Y') === 2
+      && LETTERS.every((l) => primaryOpening(l) >= 0 && primaryOpening(l) < openingCount(l)));
+    check('a letter as a document writes it is its first character in capitals, or the default one',
+      letterOf('w') === 'W' && letterOf('  q ') === 'Q' && letterOf('wxyz') === 'W' && letterOf('') === LETTER_DEFAULT && letterOf(7) === 'A'
+      && letterOf(null) === 'A' && letterOf(undefined) === 'A' && letterOf('?') === 'A' && LETTER_DEFAULT === 'A');
+  }
+
+  /* HOW BIG, which is the size of the primary hole and nothing else */
+  {
+    const w = letterDefaults('W');
+    check('a W is built the size of a W: its gate 2.45 m wide and 3.15 m to the point, so the letter is 4.9 m wide and 3.5 m tall',
+      near(w.clearW, 7 * GRID) && near(w.clearH, 9 * GRID) && GRID === 0.35
+      && near(letterSizeOf('W', w.clearW, w.clearH, 0).width, 4.9) && near(letterSizeOf('W', w.clearW, w.clearH, 0).height, 3.5));
+    check('and every capital is ten units tall, 3.5 m, at the size it starts at',
+      LETTERS.every((l) => { const d = letterDefaults(l); return near(letterSizeOf(l, d.clearW, d.clearH, 0).height, 3.5, 1e-9); }));
+    let worst = 0;
+    for (const l of LETTERS) {
+      for (const [width, height] of [[3, 2.2], [6.1, 4.4], [2.2, 5]]) {
+        const d = dimsForLetterSize(l, width, height, LETTER_TUBE_OD);
+        const back = letterSizeOf(l, d.clearW, d.clearH, LETTER_TUBE_OD);
+        worst = Math.max(worst, Math.abs(back.width - width), Math.abs(back.height - height));
+      }
+    }
+    check('a width and a height asked for turn into the two numbers every opening has, and back again, for every letter, pipe and all', worst < 1e-9, String(worst));
+    check('a size smaller than its own pipe is no size: no room, so no hole',
+      dimsForLetterSize('W', 0.05, 0.02, LETTER_TUBE_OD).clearW === 0 && dimsForLetterSize('W', 0.05, 0.02, LETTER_TUBE_OD).clearH === 0);
+  }
+
+  /* THE LAYOUT */
+  {
+    const d = letterDefaults('W');
+    const laid = layoutLetter('W', d.clearW, d.clearH, TUBE_R);
+    check('a W is four tubes: down, up, down and up, five joints, and one hole', laid.tubes.length === 4 && laid.joints.length === 5 && laid.openings.length === 1);
+    check('it stands on the ground: its feet are lifted by one radius, so the tube rests on the floor and is not half in it',
+      near(Math.min(...laid.tubes.flat().map((p) => p[1])), TUBE_R) && near(laid.top, 3.5 + TUBE_R) && near(laid.width, 4.9 + 2 * TUBE_R));
+    check('and it stands on the middle of its primary hole: a W is as wide each side of the middle of its gap, 2.45 m of pipe and a radius',
+      near(laid.left, -2.45 - TUBE_R) && near(laid.right, 2.45 + TUBE_R));
+    const o = laid.openings[0];
+    check('its gap is a triangle on the ground, and the hole the pilot sees is the one pushed in by the pipe\'s radius from the two slanted sides and not from the ground',
+      o.nominal.length === 3 && o.poly.length === 3 && o.ok
+      && near(Math.min(...o.poly.map((p) => p[1])), TUBE_R) && near(Math.min(...o.nominal.map((p) => p[1])), TUBE_R));
+    /* The push, measured: the inside base corner is a radius from the line of the slanted side it was pushed off. */
+    const [bl, br, top] = o.nominal;
+    const lineDist = (p, a, b) => Math.abs((b[0] - a[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (b[1] - a[1])) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+    check('measured, each sloping side of the hole is exactly a pipe\'s radius in from the side of the triangle it was pushed off: two corners of the hole are on each pushed line',
+      o.poly.filter((p) => near(lineDist(p, bl, top), TUBE_R, 1e-9)).length === 2 && o.poly.filter((p) => near(lineDist(p, br, top), TUBE_R, 1e-9)).length === 2,
+      JSON.stringify(o.poly));
+    check('the racing line goes through the hole at a third of its height, 1.05 m, where the triangle is widest, and it is in the hole',
+      near(o.cx, 0) && near(o.cy, 1.05) && insidePolygon(o.poly, o.cx, o.cy));
+    check('the layout is the same numbers every time, and finite for every letter at the sizes a document can hold',
+      JSON.stringify(layoutLetter('W', 2.45, 3.15, TUBE_R)) === JSON.stringify(layoutLetter('W', 2.45, 3.15, TUBE_R))
+      && LETTERS.every((l) => [[0, 0], [1e-6, 1e-6], [1e3, 1e3], [2, 9]].every(([w, h]) => {
+        const x = layoutLetter(l, w, h, TUBE_R);
+        return [...x.tubes.flat().flat(), ...x.joints.flat(), x.left, x.right, x.top, x.width].every(Number.isFinite);
+      })));
+    check('a hole too small for its pipe says so: an O of 5 cm has nothing left once the pipe is in it, and a letter at no size has no hole that scores',
+      layoutLetter('O', 0.05, 0.05, TUBE_R).openings[0].ok === false && layoutLetter('O', 2.8, 3.5, TUBE_R).openings[0].ok === true
+      && layoutLetter('W', 0, 0, TUBE_R).openings[0].ok === false && layoutLetter('W', 0, 0, TUBE_R).openings[0].sillH === 0);
+  }
+
+  /* TURNED ABOUT, for a builder whose x runs the other way from a pilot's right */
+  {
+    let worst = 0;
+    for (const l of LETTERS) {
+      const d = letterDefaults(l);
+      const a = layoutLetter(l, d.clearW, d.clearH, TUBE_R);
+      const b = layoutLetter(l, d.clearW, d.clearH, TUBE_R, { mirror: true });
+      a.tubes.forEach((t, i) => {
+        for (const k of [0, 1]) {
+          worst = Math.max(worst, Math.abs(t[k][0] + b.tubes[i][k][0]), Math.abs(t[k][1] - b.tubes[i][k][1]));
+        }
+      });
+      a.openings.forEach((oa, i) => {
+        const ob = b.openings[i];
+        worst = Math.max(worst, Math.abs(oa.cx + ob.cx), Math.abs(oa.cy - ob.cy));
+        const flipped = mirrorPolygon(oa.poly);
+        flipped.forEach((p, j) => { worst = Math.max(worst, Math.abs(p[0] - ob.poly[j][0]), Math.abs(p[1] - ob.poly[j][1])); });
+      });
+      worst = Math.max(worst, Math.abs(a.left + b.right), Math.abs(a.right + b.left));
+    }
+    check('mirrored, every tube, joint-free end, hole and racing line point is its own reflection about the middle, for every letter', worst < 1e-12, String(worst));
+    const k = layoutLetter('K', letterDefaults('K').clearW, letterDefaults('K').clearH, TUBE_R);
+    const o = k.openings[0];
+    const plain = stationOpening(o);
+    const turned = stationOpening(o, true);
+    check('a hole as a station scores it is its corners about its own point, and turned about when the pass is flown the other way',
+      plain.every((p, i) => near(p[0], o.poly[i][0] - o.cx) && near(p[1], o.poly[i][1] - o.cy))
+      && turned.length === plain.length && turned.every((p) => plain.some((q) => near(-q[0], p[0]) && near(q[1], p[1]))) && polygonArea(turned) > 0);
+  }
+
+  /* WHICH HOLE A POINT IS NEAREST, for a click on a letter and the Fly order tool */
+  {
+    const d = letterDefaults('B');
+    const laid = layoutLetter('B', d.clearW, d.clearH, TUBE_R);
+    const [low, high] = laid.openings;
+    check('a click inside a hole is that hole, and on the pipe between two it is the nearer one\'s',
+      nearestOpening(laid, low.cx, low.cy) === 0 && nearestOpening(laid, high.cx, high.cy) === 1
+      && nearestOpening(laid, 0, (low.cy + high.cy) / 2 - 0.2) === 0 && nearestOpening(laid, 0, (low.cy + high.cy) / 2 + 0.2) === 1);
+    const n = layoutLetter('N', letterDefaults('N').clearW, letterDefaults('N').clearH, TUBE_R);
+    check('and an N\'s two triangles are side by side at different heights: across decides as well as up',
+      nearestOpening(n, n.openings[0].cx, n.openings[0].cy) === 0 && nearestOpening(n, n.openings[1].cx, n.openings[1].cy) === 1
+      && n.openings[0].cx < 0 && n.openings[1].cx > 0);
+  }
+
+  /* THE SAME BITS IN EVERY ENGINE: nothing in a letter's arithmetic is a sine, a cosine or a power */
+  {
+    const src = readFileSync(join(here, '..', 'props', 'letters.js'), 'utf8');
+    const words = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    check('letters.js uses no sine, cosine, tangent, power, logarithm or random: only arithmetic and square roots, which are the same bits everywhere',
+      !/Math\.(sin|cos|tan|asin|acos|atan|atan2|pow|exp|log|random)\b/.test(words) && !/\*\*/.test(words));
+  }
+
+  /* THE POLYGON HELPERS, which every reader of a hole shares */
+  {
+    const square = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    check('area is signed: counter clockwise is positive, and a unit square is one', near(polygonArea(square), 1) && near(polygonArea(square.slice().reverse()), -1));
+    check('the bounds are the box a polygon lies in, and none at all for none',
+      JSON.stringify(polygonBounds([[2, 3], [-1, 5], [0, 0]])) === JSON.stringify({ x0: -1, x1: 2, y0: 0, y1: 5 }) && polygonBounds([]) === null);
+    /* An M's hole: a rectangle with a V bitten out of the top, which is not convex. */
+    const m = layoutLetter('M', letterDefaults('M').clearW, letterDefaults('M').clearH, TUBE_R).openings[0];
+    const notched = [[0, 0], [4, 0], [4, 3], [2, 1], [0, 3]];
+    check('a point is in a polygon that is not convex by the even odd rule: in the arms either side of the notch, and out of the notch itself',
+      insidePolygon(notched, 0.5, 2) && insidePolygon(notched, 3.5, 2) && !insidePolygon(notched, 2, 2.5) && insidePolygon(notched, 2, 0.5) && !insidePolygon(notched, 5, 1));
+    check('and the edge and a corner are in, as they are for every other shape',
+      insidePolygon(notched, 2, 0) && insidePolygon(notched, 0, 0) && insidePolygon(notched, 4, 1.5) && !insidePolygon(notched, 2, -0.001));
+    check('an M\'s hole under its V is a box with a notch bitten out of the top, which is not convex, and holds its own racing line point',
+      m.ok && m.poly.length >= 5 && insidePolygon(m.poly, m.cx, m.cy) && !insidePolygon(m.poly, 0, m.cy + 2.5 * GRID * 3));
+
+    /* A clip held to sampling, on holes that are not convex: the exact stretch against four hundred samples a segment. */
+    let seed = 0x1badf00d;
+    const rnd = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let wrongIn = 0;
+    let wrongOut = 0;
+    let segments = 0;
+    let through = 0;
+    let missed = 0;
+    for (const poly of [notched, m.poly, layoutLetter('C', letterDefaults('C').clearW, letterDefaults('C').clearH, TUBE_R).openings[0].poly,
+      layoutLetter('W', 2.45, 3.15, TUBE_R).openings[0].poly]) {
+      const b = polygonBounds(poly);
+      const w = b.x1 - b.x0;
+      const h = b.y1 - b.y0;
+      for (let n = 0; n < 250; n += 1) {
+        const ax = b.x0 + (rnd() * 3 - 1) * w;
+        const ay = b.y0 + (rnd() * 3 - 1) * h;
+        const bx = b.x0 + (rnd() * 3 - 1) * w;
+        const by = b.y0 + (rnd() * 3 - 1) * h;
+        const clip = clipToPolygon(poly, ax, ay, bx - ax, by - ay, 0, 1);
+        segments += 1;
+        if (clip) {
+          through += 1;
+        } else {
+          missed += 1;
+        }
+        let firstIn = null;
+        for (let i = 0; i <= 300; i += 1) {
+          const t = i / 300;
+          const inside = insidePolygon(poly, ax + (bx - ax) * t, ay + (by - ay) * t);
+          if (inside && firstIn === null) {
+            firstIn = t;
+          }
+        }
+        if (firstIn !== null && (!clip || clip[0] > firstIn + 1e-9)) {
+          wrongIn += 1;
+        }
+        if (clip) {
+          /* The first stretch is inside all the way along, and its ends are where the line meets the outline. */
+          for (let i = 0; i <= 40; i += 1) {
+            const t = clip[0] + ((clip[1] - clip[0]) * i) / 40;
+            if (!insidePolygon(poly, ax + (bx - ax) * t, ay + (by - ay) * t)
+              && !insidePolygon(poly, ax + (bx - ax) * Math.min(1, t + 1e-7), ay + (by - ay) * Math.min(1, t + 1e-7))
+              && !insidePolygon(poly, ax + (bx - ax) * Math.max(0, t - 1e-7), ay + (by - ay) * Math.max(0, t - 1e-7))) {
+              wrongOut += 1;
+            }
+          }
+        }
+      }
+    }
+    check(`${segments} random segments through a notched box, an M's hole, a C's and a W's: no sample inside the hole is before the stretch the clip starts at`,
+      wrongIn === 0, `${wrongIn} samples`);
+    check('and every point of the stretch it returns is inside the hole', wrongOut === 0, `${wrongOut} samples`);
+    check('and the segments were a fair mix of through and missed, so the test looked at both', through > 300 && missed > 100, `${through} through, ${missed} missed`);
+    /* A line through both shoulders of the notch goes in, out over the notch and in again: the first stretch is what scores. */
+    const shoulders = clipToPolygon(notched, -1, 2.4, 6, 0, 0, 1);
+    check('a line across the notch\'s shoulders is in the left arm first, from t = 1/6 to 1.6/6, and that is the stretch it is credited at, and not the right arm\'s',
+      shoulders && near(shoulders[0], 1 / 6) && near(shoulders[1], 1.6 / 6), JSON.stringify(shoulders));
+    check('a line along an edge is in, and one beside it is nothing',
+      (() => { const t = clipToPolygon(square, -1, 0, 3, 0, 0, 1); return t && near(t[0], 1 / 3) && near(t[1], 2 / 3); })()
+      && clipToPolygon(square, -1, 1.001, 3, 0, 0, 1) === null);
+    check('only the range asked about is answered, and a range that is backwards or a polygon with no area is nothing',
+      (() => { const t = clipToPolygon(square, -1, 0.5, 3, 0, 0.5, 1); return t && near(t[0], 0.5) && near(t[1], 2 / 3); })()
+      && clipToPolygon(square, -1, 0.5, 3, 0, 0.9, 1) === null && clipToPolygon(square, 0, 0, 1, 1, 1, 0) === null && clipToPolygon([[0, 0], [1, 1]], 0, 0, 1, 1, 0, 1) === null);
+    check('a travel that goes nowhere is in the polygon or not by where it stands',
+      (() => { const t = clipToPolygon(square, 0.5, 0.5, 0, 0, 0.2, 0.8); return t && t[0] === 0.2 && t[1] === 0.8; })() && clipToPolygon(square, 2, 2, 0, 0, 0, 1) === null);
+
+    /* THE PUSH */
+    const pushed = insetPolygon(square, 0.1);
+    check('a square pushed in by a tenth is a square 0.8 across, in the same place', pushed.length === 4 && near(polygonArea(pushed), 0.64)
+      && pushed.every((p) => p[0] > 0.0999 && p[0] < 0.9001 && p[1] > 0.0999 && p[1] < 0.9001));
+    const partly = insetPolygon(square, [0, 0.1, 0.1, 0.1]);
+    check('and with a push for each edge, the bottom one left alone, it is as wide as the edges it was held off by, standing on the ground',
+      near(polygonArea(partly), 0.8 * 0.9) && Math.min(...partly.map((p) => p[1])) === 0);
+    check('a hole pushed in past its middle is turned inside out and, with four sides, the same way round: a unit square pushed 0.6 is a smaller square whose area is positive, which is why a letter asks where its corners are and not the sign of the area',
+      polygonArea(insetPolygon(square, 0.6)) > 0 && near(polygonArea(insetPolygon(square, 0.6)), 0.04) && insetPolygon([[0, 0], [1, 0]], 0.1).length === 0);
+    check('and a polygon pushed by nothing is the polygon', insetPolygon(notched, 0).every((p, i) => near(p[0], notched[i][0]) && near(p[1], notched[i][1])));
+    const turned = mirrorPolygon(notched);
+    check('a mirror image stays counter clockwise, and mirrored twice is what it was',
+      polygonArea(turned) > 0 && near(polygonArea(turned), polygonArea(notched)) && mirrorPolygon(turned).every((p, i) => near(p[0], notched[i][0]) && near(p[1], notched[i][1])));
+
+    /* THE PANE: triangles that cover the hole and nothing else */
+    let worstArea = 0;
+    let badTriangles = 0;
+    let holes = 0;
+    for (const l of LETTERS) {
+      const d = letterDefaults(l);
+      for (const o of layoutLetter(l, d.clearW, d.clearH, TUBE_R).openings) {
+        for (const poly of [o.nominal, o.poly]) {
+          if (poly.length < 3 || polygonArea(poly) <= 0) {
+            continue;
+          }
+          holes += 1;
+          const tri = triangulate(poly);
+          let sum = 0;
+          for (let i = 0; i < tri.length; i += 3) {
+            const area = polygonArea([poly[tri[i]], poly[tri[i + 1]], poly[tri[i + 2]]]);
+            if (area < -1e-12) {
+              badTriangles += 1;
+            }
+            sum += area;
+          }
+          worstArea = Math.max(worstArea, Math.abs(sum - polygonArea(poly)));
+        }
+      }
+    }
+    check(`the triangles that cover a hole add up to its area, for all ${holes} holes of the twenty six letters, drawn and as designed, and none is turned inside out`,
+      worstArea < 1e-9 && badTriangles === 0, `${worstArea} ${badTriangles}`);
+    const pane = paneOfPolygon(notched, 4, 3, 2, 1.5);
+    check('a pane is a point and a uv for every corner, and every uv is in the box it was asked for, as a rectangle\'s pane\'s are',
+      pane.position.length === 3 * notched.length && pane.uv.length === 2 * notched.length && pane.uv.every((v) => v >= -1e-9 && v <= 1 + 1e-9)
+      && pane.index.length >= 3 && pane.index.every((i) => i >= 0 && i < notched.length));
+  }
+}
+
+
+/*
+ * A LETTER IN THE BUILDER: an element like any opening, with the five numbers every opening has, one of them the
+ * size of its primary hole, and a word that says which capital it is. The document holds no polygon, so there is
+ * none to get wrong: the capital's design is the copy of record and every reader asks it.
+ */
+function suiteLetterPiece() {
+  console.log('\nletters in the builder: the piece, the document and the flying order');
+  const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
+  const lay = (letter, extra = {}, cls = 'full') => {
+    const doc = createTrack('letters', cls);
+    const el = placeOnTrack(doc, 'letter', { x: 30, y: 20 }, { letter, ...extra });
+    return { doc, el };
+  };
+
+  /* WHAT IT IS */
+  {
+    const def = ELEMENTS.letter;
+    check('a letter is an opening on the five inch palette, a letter by shape, with a gate\'s own five sizes and no hotkey (the free ones are a map\'s)',
+      Boolean(def) && def.kind === KIND.APERTURE && def.shape === 'letter' && def.group === 'track' && def.key === ''
+      && Object.keys(def.dims).join() === Object.keys(ELEMENTS.gate.dims).join() && def.label === 'Letter' && def.note.length > 40 && def.pitch === 0);
+    check('it follows the dive gate on the five inch palette and is not on a whoop palette or a map\'s',
+      PALETTE_ORDER[PALETTE_ORDER.indexOf('diveGate') + 1] === 'letter' && !MICRO_PALETTE_ORDER.includes('letter') && !FREESTYLE_PALETTE_ORDER.includes('letter')
+      && paletteItems('full').some((d) => d.id === 'letter') && !paletteItems('micro').some((d) => d.id === 'letter')
+      && elementByKey('Y', 'full', 'race') === undefined);
+    check('apertureShapeOf says letter for the type and for a piece of it, and isLetterPiece is true of both and of nothing else',
+      apertureShapeOf('letter') === 'letter' && apertureShapeOf({ type: 'letter' }) === 'letter' && isLetterPiece('letter') && isLetterPiece({ type: 'letter' })
+      && !isLetterPiece('gate') && !isLetterPiece({ type: 'hoop' }) && !isLetterPiece(null) && !isLetterPiece(undefined));
+    const a = defaultDims('letter', 'full');
+    const dflt = letterDefaults(LETTER_DEFAULT);
+    check('the type starts as the default letter\'s size: the primary hole, one count of holes, on the ground',
+      a.levels === openingCount(LETTER_DEFAULT) && a.sillH === 0 && near(a.clearW, dflt.clearW) && near(a.clearH, dflt.clearH), JSON.stringify(a));
+  }
+
+  /* PLACING ONE */
+  {
+    const { doc, el } = lay('W');
+    check('a placed W is a W, named for it, at the size a W is, and has one pass, through its one gap',
+      el.type === 'letter' && el.letter === 'W' && el.name === 'Letter W' && near(el.dims.clearW, 2.45) && near(el.dims.clearH, 3.15) && el.dims.levels === 1
+      && el.dims.sillH === 0 && el.pitch === 0 && doc.sequence.length === 1 && doc.sequence[0].apertureIndex === 0);
+    const b = lay('B').el;
+    const a = lay('A');
+    check('a letter with more than one gap is flown through its primary one first: an A\'s counter, and a B\'s lower bowl',
+      b.dims.levels === 2 && a.doc.sequence[0].apertureIndex === 1 && lay('B').doc.sequence[0].apertureIndex === 0);
+    check('and it is one pass, not a spiral up the frame: the figure a stack gets is not for a letter, and none is offered',
+      defaultFigure(a.el) === 'single' && figuresFor(a.el).length === 1 && figuresFor(a.el)[0].id === 'single' && a.doc.sequence.length === 1);
+    check('a letter placed with none picked is the default one, and a word that is not a letter is too',
+      lay(undefined).el.letter === LETTER_DEFAULT && lay('!').el.letter === 'A' && lay('q').el.letter === 'Q');
+    check('its holes are named in the flying order for what they are: Letter B, lower bowl, and a W\'s is the letter\'s own name',
+      sequenceLabel(a.doc, a.doc.sequence[0]) === 'Letter A, counter' && sequenceLabel(lay('W').doc, lay('W').doc.sequence[0]) === 'Letter W'
+      && levelName(b, 1) === 'upper bowl' && levelName(b, 0) === 'lower bowl');
+    const stack = createTrack('stack', 'full');
+    const st = placeOnTrack(stack, 'doubleStack', { x: 30, y: 20 });
+    check('a double stack beside it is what it was: a letter changes nothing about the pieces that are not one', st.dims.levels === 2 && defaultFigure(st) === 'spiralUp' && stack.sequence.length === 2);
+    const big = createTrack('big', 'full');
+    const next = placeOnTrack(big, 'gate', { x: 20, y: 20 });
+    next.yaw = 0.7;
+    next.yawOverridden = true;
+    const w = apertureFrame(next.yaw, next.pitch).widthAxis;
+    const reach = wallPitchFor(next.dims, 'full');
+    const spot = { x: next.position.x + w.x * reach, y: next.position.y + w.y * reach };
+    check('a gate put exactly a bay\'s width from a gate takes its heading, so two stand in a row sharing their uprights, and a letter put there does not: it is not a bay',
+      near(placementFor(big, spot, 'gate').yaw, 0.7) && !near(placementFor(big, spot, 'letter').yaw, 0.7, 1e-6), `${placementFor(big, spot, 'gate').yaw} ${placementFor(big, spot, 'letter').yaw}`);
+    const w2 = createTrack('w2', 'full');
+    const wide = placeOnTrack(w2, 'letter', { x: 20, y: 20 }, { letter: 'W' });
+    wide.yaw = 0.7;
+    wide.yawOverridden = true;
+    const f2 = apertureFrame(wide.yaw, wide.pitch).widthAxis;
+    const r2 = wallPitchFor(wide.dims, 'full');
+    check('nor does a gate take a letter\'s heading from the width a bay of its size would be at',
+      !near(placementFor(w2, { x: wide.position.x + f2.x * r2, y: wide.position.y + f2.y * r2 }, 'gate').yaw, 0.7, 1e-6));
+    check('a track\'s extent is as far as the pipe reaches and not as far as the primary hole is wide: a W\'s box is its pipe from end to end',
+      (() => { const t = createTrack('t', 'full'); placeOnTrack(t, 'letter', { x: 30, y: 20 }, { letter: 'W' }); const b = trackBounds(t); return b.maxX - b.minX >= 4.9 && b.maxY - b.minY >= 4.9; })());
+  }
+
+  /* THE DOCUMENT: written plainly, read back as written, and the repairs say what they did */
+  {
+    const { doc, el } = lay('N');
+    el.dims.clearW = 3.1;
+    const text = serialize(doc);
+    const raw = JSON.parse(text);
+    const out = raw.elements[0];
+    check('it is written with its letter, its hole count, a sill of nothing and no tilt, and nothing a gate has that a letter has not',
+      out.letter === 'N' && out.dims.levels === 2 && out.dims.sillH === 0 && out.pitch === 0 && !('unbuilt' in out) && !('unbuiltSides' in out) && !('style' in out)
+      && raw.schemaVersion === SCHEMA_VERSION);
+    check('and reads back as written, with no repair at all', roundTripsCleanly(doc) && deserialize(text).repairs.length === 0 && deserialize(text).doc.elements[0].letter === 'N'
+      && near(deserialize(text).doc.elements[0].dims.clearW, 3.1));
+    const edit = (change) => {
+      const r = JSON.parse(text);
+      change(r.elements[0], r);
+      return deserialize(JSON.stringify(r));
+    };
+    const badLetter = edit((e) => { e.letter = '7'; });
+    check('a letter that is none of the twenty six is an A, with a note that says what was written', badLetter.doc.elements[0].letter === 'A'
+      && badLetter.repairs.some((x) => /letter "7"/.test(x) && /is A/.test(x)), badLetter.repairs.join('|'));
+    const lower = edit((e) => { e.letter = 'w'; });
+    check('and one written in lower case is read as the capital without a word, because the first character in capitals is what the reader reads',
+      lower.doc.elements[0].letter === 'W' && lower.repairs.length === 0, lower.repairs.join('|'));
+    const levels = edit((e) => { e.dims.levels = 5; });
+    check('the number of holes is the letter\'s and not the author\'s: a document that says five is read as the two an N has, without a word',
+      levels.doc.elements[0].dims.levels === 2 && levels.repairs.length === 0 && aperturesOf(levels.doc.elements[0]).length === 2);
+    const sill = edit((e) => { e.dims.sillH = 0.5; });
+    check('a letter stands on the ground, so a sill height is read as nothing, and says so', sill.doc.elements[0].dims.sillH === 0 && sill.repairs.some((x) => /stands on the ground/.test(x)), sill.repairs.join('|'));
+    const tilt = edit((e) => { e.pitch = 0.5; });
+    check('and it stands upright, so a tilt is read as none, and says so', tilt.doc.elements[0].pitch === 0 && tilt.repairs.some((x) => /upright/.test(x)), tilt.repairs.join('|'));
+    const nosize = edit((e) => { e.dims.clearW = 0; });
+    check('a size it cannot have is the size that letter starts at, and says so: the N\'s own, not the default letter\'s',
+      near(nosize.doc.elements[0].dims.clearW, letterDefaults('N').clearW) && nosize.repairs.some((x) => /clearW/.test(x)), nosize.repairs.join('|'));
+    const pass = edit((e, r) => { r.sequence[0].apertureIndex = 4; });
+    check('a pass through a hole an N has not is the last one it has, with a note', pass.doc.sequence[0].apertureIndex === 1 && pass.repairs.some((x) => /level 5 of a 2 level/.test(x)), pass.repairs.join('|'));
+    const whoop = createTrack('whoop', 'micro');
+    const rawWhoop = JSON.parse(serialize(whoop));
+    rawWhoop.elements.push(JSON.parse(JSON.stringify(out)));
+    rawWhoop.elements[0].id = 'el-9';
+    const onWhoop = deserialize(JSON.stringify(rawWhoop));
+    check('a letter on a whoop track is dropped with a note, because there is nothing on that palette to build it', onWhoop.doc.elements.length === 0 && onWhoop.repairs.some((x) => /letters are a five inch track/.test(x)), onWhoop.repairs.join('|'));
+    const rawMap = JSON.parse(serialize(createTrack('map', 'full')));
+    rawMap.mode = 'freestyle';
+    rawMap.elements.push(JSON.parse(JSON.stringify(out)));
+    check('and on a map', deserialize(JSON.stringify(rawMap)).doc.elements.every((e) => e.type !== 'letter'));
+    check('every track that ships holds no letter, so none of them can have changed: the five inch presets and the shipped tracks are read as they were',
+      FIVE_INCH_PRESETS.every((p) => !JSON.stringify(p.document ?? p).includes('"letter"')) && PRESETS.every((p) => !JSON.stringify(p.document ?? p).includes('"letter"')));
+  }
+
+  /* THE LAYOUT IN THE DOCUMENT'S FRAME, which every reader of a hole asks */
+  {
+    const { el } = lay('N');
+    const laid = letterLayoutOf(el);
+    check('the layout is cached by letter and size: the same object while nothing changed, another when the size does, and it cannot be edited',
+      letterLayoutOf(el) === laid && Object.isFrozen(laid.apertures) && Object.isFrozen(laid.apertures[0])
+      && (() => { el.dims.clearW += 0.1; const other = letterLayoutOf(el); el.dims.clearW -= 0.1; return other !== laid && letterLayoutOf(el) === laid; })());
+    const aps = aperturesOf(el);
+    check('a letter\'s openings are polygons about their own points, and carry how far across the piece each is',
+      aps.length === 2 && aps.every((ap) => ap.shape === 'poly' && Array.isArray(ap.poly) && ap.poly.length >= 3 && Number.isFinite(ap.centerX) && Number.isFinite(ap.centerH))
+      && aps[0].centerX * aps[1].centerX < 0);
+    check('and the polygon is about the racing line point of its own hole, which is inside it', aps.every((ap) => insidePolygon(ap.poly, 0, 0)));
+    check('the openings of everything that is not a letter are what they were: no polygon, no across, the same five keys',
+      (() => { const g = createTrack('g', 'full'); const gate = placeOnTrack(g, 'gate', { x: 4, y: 5 }); return JSON.stringify(Object.keys(aperturesOf(gate)[0])) === JSON.stringify(['index', 'sillH', 'centerH', 'clearW', 'clearH']); })());
+    const f = apertureFrame(el.yaw, el.pitch);
+    const c0 = apertureCenter(el, 0);
+    const c1 = apertureCenter(el, 1);
+    check('the point a pass goes through is across the piece by the hole\'s own offset, along the width axis, and up by its height',
+      near(c0.x, el.position.x + f.widthAxis.x * aps[0].centerX) && near(c0.y, el.position.y + f.widthAxis.y * aps[0].centerX) && near(c0.z, aps[0].centerH)
+      && near(c1.x, el.position.x + f.widthAxis.x * aps[1].centerX) && near(c1.z, aps[1].centerH) && Math.hypot(c0.x - c1.x, c0.y - c1.y) > 0.9);
+    const gate = placeOnTrack(createTrack('g', 'full'), 'gate', { x: 4, y: 5 });
+    check('and a gate\'s is the middle of the piece, as it always was', (() => { const p = apertureCenter(gate, 0); return near(p.x, 4) && near(p.y, 5); })());
+    check('which hole a point is nearest follows across as well as up: the two triangles of an N are told apart by the side the point is on',
+      openingNearest(el, c0) === 0 && openingNearest(el, c1) === 1 && openingNearest(el, { x: c1.x, y: c1.y, z: c1.z + 0.1 }) === 1
+      && openingNearest(el, { x: c0.x, y: c0.y, z: c0.z - 0.1 }) === 0);
+    check('the top of a letter is as high as it is drawn, which is not its top hole\'s height: 3.5 m of letter and a radius of pipe',
+      near(topOf(el), letterSizeOf('N', el.dims.clearW, el.dims.clearH, LETTER_TUBE_OD).height) && near(elementHeight(ELEMENTS.letter, el.dims, 'N'), topOf(el))
+      && near(letterExtent(el).width, letterSizeOf('N', el.dims.clearW, el.dims.clearH, LETTER_TUBE_OD).width));
+  }
+
+  /* CHANGING THE LETTER, in place */
+  {
+    const { doc, el } = lay('W');
+    const id = el.id;
+    el.dims.clearW *= 1.5;
+    el.name = 'Start line';
+    const wide = el.dims.clearW;
+    const second = addToSequence(doc, id, 0);
+    check('changing a W to an N is the same piece: it keeps its place, its size scaled the way the author scaled it, and a name the author gave it',
+      setLetter(doc, id, 'N') && el.letter === 'N' && el.name === 'Start line' && near(el.dims.clearW, letterDefaults('N').clearW * 1.5, 1e-9)
+      && near(el.dims.clearH, letterDefaults('N').clearH) && el.dims.levels === 2 && wide > 0 && second);
+    check('and its passes: a pass through the W\'s one gap is a pass through the N\'s primary, and a pass at a gap the new letter has not is its last',
+      doc.sequence.every((s) => s.apertureIndex === primaryOpening('N')) && (() => { doc.sequence[0].apertureIndex = 1; setLetter(doc, id, 'W'); return doc.sequence[0].apertureIndex === 0; })());
+    const named = lay('W');
+    check('a name it was given is kept, and a name it is called by default follows the letter',
+      setLetter(named.doc, named.el.id, 'K') && named.el.name === 'Letter K');
+    check('the same letter again is no change, a piece that is not a letter is not one, and a word that is not a letter is an A',
+      setLetter(named.doc, named.el.id, 'K') === false && setLetter(named.doc, 'nope', 'K') === false
+      && (() => { const g = createTrack('g', 'full'); const gate = placeOnTrack(g, 'gate', { x: 4, y: 5 }); return setLetter(g, gate.id, 'K') === false; })()
+      && setLetter(named.doc, named.el.id, '?') && named.el.letter === 'A');
+    check('changing the letter does not change where it stands or which way it faces',
+      (() => { const t = lay('W'); const p = JSON.stringify([t.el.position, t.el.yaw, t.el.yawOverridden]); setLetter(t.doc, t.el.id, 'H'); return JSON.stringify([t.el.position, t.el.yaw, t.el.yawOverridden]) === p; })());
+  }
+
+  /* COPIES AND THE REST OF THE PIECES' DUTIES */
+  {
+    const { doc, el } = lay('K');
+    el.dims.clearW = 3;
+    const made = copyElements(doc, [el.id]);
+    const copy = elementById(doc, made[0]);
+    check('a copy of a letter is that letter at that size, with a pass of its own, and an id of its own',
+      made.length === 1 && copy.type === 'letter' && copy.letter === 'K' && near(copy.dims.clearW, 3) && copy.id !== el.id && doc.sequence.length === 2
+      && doc.sequence.some((s) => s.elementId === copy.id));
+    check('a letter has nothing to be replaced with: the swaps are RaceGOW\'s palette', replacementsFor(doc, [el.id]).length === 0);
+    const g = createTrack('g', 'full');
+    const gate = placeOnTrack(g, 'gate', { x: 4, y: 5 });
+    const preset = GATE_PRESETS.find((p) => p.id === 'wide');
+    const before = JSON.stringify(el.dims);
+    applyGatePreset(el.dims, preset, apertureShapeOf(el));
+    check('a gate size is not a letter\'s: the preset a whole course is made one size with leaves a letter as it was, and sizes a gate as it sizes one',
+      JSON.stringify(el.dims) === before && (() => { applyGatePreset(gate.dims, preset, 'square'); return near(gate.dims.clearW, preset.clearW); })());
+    const tally = countElementsByType(doc.elements, 'full');
+    check('the inventory counts letters, after the dive gate', tally.some((r) => r.type === 'letter' && r.count === 2) && formatElementCounts(tally).includes('letter'), formatElementCounts(tally));
+  }
+
+  /* THE RACING LINE */
+  {
+    const roles = (letter) => {
+      const d = createTrack('line', 'full');
+      d.elements.push(createElement(d, 'startPads', { x: 4, y: 20 }, 0));
+      placeOnTrack(d, 'letter', { x: 20, y: 20 }, { letter });
+      placeOnTrack(d, 'gate', { x: 40, y: 22 });
+      return buildPath(d).knots.map((k) => k.role);
+    };
+    check('the line to a letter and on from it is the line to a gate: three knots and no steering, for letters whose gaps share a plane and whose boxes overlap',
+      ['N', 'W', 'B', 'M', 'Y', 'A', 'X', 'T'].every((l) => roles(l).join() === 'aperture,aperture,finish'), ['N', 'W', 'B', 'M'].map((l) => roles(l).join('+')).join(' '));
+    /* A line past a letter that is not in its way is left alone, and one through its gap is steered round it, as for a gate. */
+    /* The steering knots a line between two gates has with a W beside it (across metres to the side of the line) and
+     * with none, so what a W adds is the difference: the closing leg turns round the last gate with or without it. */
+    const steering = (across, sill, letter = true) => {
+      const d = createTrack('past', 'full');
+      d.elements.push(createElement(d, 'startPads', { x: 4, y: 20 }, 0));
+      const a = placeOnTrack(d, 'gate', { x: 14, y: 20 });
+      a.yaw = 0;
+      a.yawOverridden = true;
+      a.dims.sillH = sill;
+      const b = placeOnTrack(d, 'gate', { x: 46, y: 20 });
+      b.yaw = 0;
+      b.yawOverridden = true;
+      b.dims.sillH = sill;
+      if (letter) {
+        const w = placeOnTrack(d, 'letter', { x: 30, y: 20 + across }, { letter: 'W' });
+        w.yaw = 0;
+        w.yawOverridden = true;
+      }
+      d.sequence.length = 0;
+      for (const g of [a, b]) {
+        const q = createSequenceEntry(d, g.id, 0);
+        q.entry = 1;
+        q.overridden = true;
+        d.sequence.push(q);
+      }
+      const knots = buildPath(d).knots.filter((k) => k.role === 'wrap');
+      return { n: knots.length, low: Math.min(...knots.map((k) => k.pos.z), 9) };
+    };
+    const added = (across, sill) => steering(across, sill).n - steering(across, sill, false).n;
+    check('a line that goes through a W\'s gap is steered round it, as it is round a gate it was not asked to go through, and round the side and not under the ground',
+      added(0, 0) > 0 && steering(0, 0).low >= 0, `${added(0, 0)} ${steering(0, 0).low}`);
+    check('and one that crosses its plane inside the box that holds the gap but in the pipe, beside the slope of the triangle and up near its point, is not steered: the gap is the triangle and not the box',
+      added(0.5, 1.24) === 0 && added(0.9, 2.4) === 0 && added(0.2, 1.24) > 0, `${added(0.5, 1.24)} ${added(0.9, 2.4)} ${added(0.2, 1.24)}`);
+    const twice = createTrack('twice', 'full');
+    twice.elements.push(createElement(twice, 'startPads', { x: 4, y: 20 }, 0));
+    const n = placeOnTrack(twice, 'letter', { x: 20, y: 20 }, { letter: 'N' });
+    addToSequence(twice, n.id, 1);
+    placeOnTrack(twice, 'gate', { x: 40, y: 22 });
+    const wraps = buildPath(twice).knots.filter((k) => k.role === 'wrap');
+    const across = (k) => Math.abs((k.pos.x - n.position.x) * apertureFrame(n.yaw, 0).widthAxis.x + (k.pos.y - n.position.y) * apertureFrame(n.yaw, 0).widthAxis.y);
+    check('two passes through an N in a row go round it between them, once, and the line clears the pipe: further out than half the letter and the furthest gap',
+      wraps.length === 1 && across(wraps[0]) > letterExtent(n).width / 2 + 0.49, wraps.map((k) => across(k).toFixed(2)).join());
+  }
+
+  /* WARNINGS */
+  {
+    const { doc, el } = lay('W');
+    const codes = (d) => collectWarnings(d, buildPath(d)).map((w) => w.code);
+    check('a W at its own size is flown with no warning about its gap', !codes(doc).includes('letter-gap'), codes(doc).join());
+    el.dims.clearW = 0.9;
+    el.dims.clearH = 1.2;
+    const narrow = collectWarnings(doc, buildPath(doc)).find((w) => w.code === 'letter-gap');
+    check('a gap narrower than a quad wants is said, with how wide it is, and it names the pass and the piece', narrow && /0\.\d\d m across/.test(narrow.message) && narrow.elementId === el.id && narrow.seqId === doc.sequence[0].id && widestCircle(aperturesOf(el)[0].poly) < GAP_ADVISORY,
+      narrow && narrow.message);
+    el.dims.clearW = 0;
+    el.dims.clearH = 0;
+    check('and a letter with no gap left in it says that nothing can score there', collectWarnings(doc, null).some((w) => w.code === 'letter-gap' && /nothing can score/.test(w.message)));
+    const unflown = lay('W');
+    unflown.doc.sequence.length = 0;
+    check('a letter that is on the field and not in the flying order is called by its name', collectWarnings(unflown.doc, null).some((w) => w.code === 'unsequenced' && /Letter W is on the field/.test(w.message)));
+    check('the default sizes of all twenty six are over the advisory, so a letter as it is placed is never warned about',
+      LETTERS.every((l) => aperturesOf(lay(l).el).every((ap) => widestCircle(ap.poly) >= GAP_ADVISORY)) && GAP_ADVISORY === 0.9);
+    check('and widestCircle is the diameter of the widest circle: a unit square\'s is one, and a polygon with no corners has none',
+      near(widestCircle([[0, 0], [1, 0], [1, 1], [0, 1]]), 1, 1e-9) && widestCircle([]) === 0 && widestCircle([[0, 0], [1, 1]]) === 0);
+  }
+
+  /* THE PLAN: 2D, from above a letter is a bar as long as it is wide, where its pipe is */
+  {
+    const { el } = lay('W');
+    const corners = planShapeOf(el);
+    const lengths = [0, 1, 2, 3].map((i) => Math.hypot(corners[(i + 1) % 4].x - corners[i].x, corners[(i + 1) % 4].y - corners[i].y)).sort((p, q) => p - q);
+    check('on the 2D plan a W is a bar 4.96 m long, the width of its pipe, and a pipe thick', near(lengths[3], letterExtent(el).width, 1e-6) && near(lengths[0], LETTER_TUBE_OD, 1e-6), lengths.join());
+    const n = lay('N', { letter: 'N' }).el;
+    n.yaw = 0;
+    const nc = planShapeOf(n);
+    const mid = nc.reduce((s, p) => s + p.y, 0) / 4;
+    check('and it is laid where the pipe is and not on the foot of the primary hole, which is not the middle of every letter',
+      near(mid, n.position.y + (letterLayoutOf(n).left + letterLayoutOf(n).right) / 2, 1e-6));
+  }
+}
+
+
+/*
+ * A LETTER IN THE GAME. The course the game flies is made from the document by courseFromDocument, and the world is built
+ * from the course: the pipe from the capital's design at the size the author gave it, the hole each pass is scored
+ * against from the same numbers, and the two in the one frame, so what the pilot sees is what scores and what is solid.
+ * This holds the two together for every flight direction, and the pass itself to the polygon.
+ */
+function suiteLetterCourse() {
+  console.log('\nletters in the game: the course, the frames and the pass');
+  const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
+  const BUILT_TUBE_R = (LETTER_TUBE_OD * GATE_SCALE) / 2;
+
+  /* THE COURSE */
+  {
+    const doc = createTrack('course', 'full');
+    doc.field.width = 60;
+    doc.field.depth = 40;
+    const w = placeOnTrack(doc, 'letter', { x: 30, y: 20 }, { letter: 'W' });
+    const gate = placeOnTrack(doc, 'gate', { x: 44, y: 20 });
+    const course = courseFromDocument(JSON.parse(serialize(doc)));
+    const st = course.structures.find((s) => s.id === w.id);
+    const gs = course.structures.find((s) => s.id === gate.id);
+    check('the course carries which letter a structure is, and which way round it is built; and a gate carries neither',
+      st.letter === 'W' && typeof st.letterMirror === 'boolean' && st.shape === 'letter' && !('letter' in gs) && !('letterMirror' in gs) && !('poly' in course.stations[1]));
+    const sw = course.stations[0];
+    check('its station scores a polygon, the hole as the pilot sees it, about its own point; and a gate\'s scores none',
+      sw.shape === 'poly' && Array.isArray(sw.poly) && sw.poly.length >= 3 && sw.apertureIndex === 0 && !('shape' in course.stations[1]));
+    check('the sizes are the world\'s obstacle scale on the document\'s: a W\'s hole is a W\'s hole times the scale the world builds every gate at',
+      near(sw.clearW, w.dims.clearW * GATE_SCALE) && near(sw.clearH, w.dims.clearH * GATE_SCALE));
+    check('the structure stands where the piece stands, and the station at its hole: the foot of a W\'s gap is the foot of the W',
+      near(sw.x, st.x, 1e-9) && near(sw.z, st.z, 1e-9));
+    const n = createTrack('n', 'full');
+    n.field.width = 60;
+    n.field.depth = 40;
+    const el = placeOnTrack(n, 'letter', { x: 30, y: 20 }, { letter: 'N' });
+    el.yaw = 0;
+    el.yawOverridden = true;
+    n.sequence.length = 0;
+    for (const index of [0, 1]) {
+      const q = createSequenceEntry(n, el.id, index);
+      q.entry = 1;
+      q.overridden = true;
+      n.sequence.push(q);
+    }
+    const nc = courseFromDocument(JSON.parse(serialize(n)));
+    const a = nc.stations[0];
+    const b = nc.stations[1];
+    check('an N\'s two holes are two stations side by side: not on the middle of the piece, and on different sides of it',
+      nc.stations.length === 2 && Math.hypot(a.x - b.x, a.z - b.z) > 0.9 && a.apertureIndex === 0 && b.apertureIndex === 1);
+    const pinned = JSON.parse(serialize(n));
+    pinned.elements[0].unbuilt = true;
+    const hidden = courseFromDocument(pinned);
+    check('an invisible letter is built with no pipe and keeps its holes: the structure says unbuilt and every station is still there, scored against the same polygons',
+      hidden.structures[0].unbuilt === true && hidden.stations.length === 2 && hidden.stations.every((s, i) => s.shape === 'poly' && s.poly.length === nc.stations[i].poly.length));
+  }
+
+  /* THE FRAMES: the pipe the world builds and the hole each pass is scored against are one and the same shape, flown either way */
+  {
+    let worst = 0;
+    let looked = 0;
+    for (const letter of ['K', 'N', 'B', 'T', 'Y', 'W']) {
+      for (const yaw of [0, 0.9, 2.5, -1.7]) {
+        for (const [first, second] of [[1, -1], [-1, 1]]) {
+          const doc = createTrack('frames', 'full');
+          doc.field.width = 60;
+          doc.field.depth = 40;
+          const el = placeOnTrack(doc, 'letter', { x: 30, y: 20 }, { letter });
+          el.yaw = yaw;
+          el.yawOverridden = true;
+          doc.sequence.length = 0;
+          const count = aperturesOf(el).length;
+          const q1 = createSequenceEntry(doc, el.id, 0);
+          q1.entry = first;
+          q1.overridden = true;
+          doc.sequence.push(q1);
+          const q2 = createSequenceEntry(doc, el.id, count - 1);
+          q2.entry = second;
+          q2.overridden = true;
+          doc.sequence.push(q2);
+          const course = courseFromDocument(JSON.parse(serialize(doc)));
+          const structure = course.structures.find((s) => s.type === 'letter');
+          const built = layoutLetter(structure.letter, structure.dims.clearW, structure.dims.clearH, BUILT_TUBE_R, { mirror: structure.letterMirror === true });
+          const heading = course.stations[0].yaw;
+          /* The mesh's own frame: its x runs along the first pass's across axis, its y is up. */
+          const meshWorld = (x, y) => ({ x: structure.x + x * Math.cos(heading), y, z: structure.z - x * Math.sin(heading) });
+          for (const st of course.stations) {
+            const hole = built.openings[st.apertureIndex];
+            const ax = gateAcross(st.yaw);
+            const ay = gateUp(st.yaw, st.pitch || 0);
+            const inRace = (p) => ({ x: st.x + ax.x * p[0] + ay.x * p[1], y: st.centreY + ay.y * p[1], z: st.z + ax.z * p[0] + ay.z * p[1] });
+            const got = st.poly.map(inRace);
+            for (const v of hole.poly.map(([x, y]) => meshWorld(x, y))) {
+              worst = Math.max(worst, Math.min(...got.map((g) => Math.hypot(g.x - v.x, g.y - v.y, g.z - v.z))));
+              looked += 1;
+            }
+          }
+        }
+      }
+    }
+    check(`the hole a pass is scored against is the hole the world builds: ${looked} corners of six letters, four headings, flown either way first, are within a nanometre`,
+      looked > 100 && worst < 1e-9, String(worst));
+    const along = (entry) => {
+      const doc = createTrack('side', 'full');
+      doc.field.width = 60;
+      doc.field.depth = 40;
+      const el = placeOnTrack(doc, 'letter', { x: 30, y: 20 }, { letter: 'K' });
+      el.yaw = 0.4;
+      el.yawOverridden = true;
+      doc.sequence.length = 0;
+      const q = createSequenceEntry(doc, el.id, 0);
+      q.entry = entry;
+      q.overridden = true;
+      doc.sequence.push(q);
+      return courseFromDocument(JSON.parse(serialize(doc))).structures.find((s) => s.type === 'letter').letterMirror;
+    };
+    check('a letter reads the right way round to a pilot flying along its normal, so a first pass the other way builds it turned about: the mirror is the first pass\'s',
+      along(1) === false && along(-1) === true);
+  }
+
+  /* THE PASS, through the hole and not the box that holds it */
+  {
+    /* A race with one station whose hole is `poly` about its point, 1 m up. A pass is a chord through (lx, ly) of the hole. */
+    const gateOf = (poly) => new Race([{
+      position: { x: 0, y: 0, z: 0 }, heading: 0, flyOrder: 0, virtual: false,
+      apertures: [{ centreY: 1, clearW: 4, clearH: 4, shape: 'poly', poly }],
+    }]);
+    const passes = (poly, lx, ly, through = 1) => {
+      const race = gateOf(poly);
+      const g = race.gates[0];
+      const at = (s) => ({
+        x: g.x + g.ax.x * lx + g.ay.x * ly + g.az.x * s,
+        y: g.y + 1 + g.ax.y * lx + g.ay.y * ly + g.az.y * s,
+        z: g.z + g.ax.z * lx + g.ay.z * ly + g.az.z * s,
+      });
+      race.update(at(-through), at(through), 0, 0);
+      return race.lapStartMs != null;
+    };
+    const w = layoutLetter('W', 2.45, 3.15, BUILT_TUBE_R).openings[0];
+    const wPoly = stationOpening(w);
+    check('through the middle of the gap between a W\'s Vs scores, and through the pipe beside it does not',
+      passes(wPoly, 0, 0) && !passes(wPoly, 2.0, 0.2) && !passes(wPoly, -2.0, 0.2));
+    check('the hole is a triangle: low down it is wide and near the point it is not: a line 1.0 m either side of the middle scores at the foot and not near the top',
+      passes(wPoly, 1.0, w.sillH - w.cy + 0.15) && passes(wPoly, -1.0, w.sillH - w.cy + 0.15) && !passes(wPoly, 0.9, 1.4) && !passes(wPoly, -0.9, 1.4) && passes(wPoly, 0, 1.4));
+    check('and the box that holds the triangle is not the gate: the corners of its box, which a rectangle of that size would score, are pipe',
+      !passes(wPoly, 1.2, 1.5) && !passes(wPoly, -1.2, 1.5) && !passes(wPoly, 1.2, -0.7));
+    check('a line that stays out of the hole all the way through does not score, though it crosses the plane inside the box of it',
+      (() => {
+        const race = gateOf(wPoly);
+        const g = race.gates[0];
+        const p = (x, y, s) => ({
+          x: g.x + g.ax.x * x + g.ay.x * y + g.az.x * s,
+          y: g.y + 1 + g.ax.y * x + g.ay.y * y + g.az.y * s,
+          z: g.z + g.ax.z * x + g.ay.z * y + g.az.z * s,
+        });
+        race.update(p(1.15, 1.2, -1), p(1.15, 1.2, 1), 0, 0);
+        return race.lapStartMs == null;
+      })());
+    const m = layoutLetter('M', letterDefaults('M').clearW, letterDefaults('M').clearH, BUILT_TUBE_R).openings[0];
+    const mPoly = stationOpening(m);
+    const bite = polygonBounds(mPoly);
+    check('an M\'s hole has a notch bitten out of the top: a pass through the notch is a pass through the V, where the pipe is not the gap, and one under it is the gap',
+      passes(mPoly, 0, bite.y0 + 0.3) && !passes(mPoly, 0, bite.y1 - 0.5) && passes(mPoly, bite.x0 + 0.15, bite.y1 - 0.5) && passes(mPoly, bite.x1 - 0.15, bite.y1 - 0.5)
+      && !passes(mPoly, bite.x0 + 0.6, bite.y1 - 0.5));
+    const margin = gateOf(wPoly).passMargin;
+    const floor = polygonBounds(wPoly).y0;
+    check('the hole is held in by the same fingernail every other opening is: half that margin up from the edge of the gap is not a pass, and two and a half is',
+      margin > 0 && !passes(wPoly, 0, floor + margin * 0.5) && passes(wPoly, 0, floor + margin * 2.5), String(margin));
+    check('a station with no polygon is scored as it always was, the rectangle, so a gate is what it was',
+      (() => {
+        const sq = new Race([{ position: { x: 0, y: 0, z: 0 }, heading: 0, flyOrder: 0, virtual: false, apertures: [{ centreY: 1, clearW: 2, clearH: 2 }] }]);
+        const g = sq.gates[0];
+        sq.update({ x: g.x - g.az.x, y: g.y + 1 + 0.9 - g.az.y, z: g.z - g.az.z }, { x: g.x + g.az.x, y: g.y + 1 + 0.9 + g.az.y, z: g.z + g.az.z }, 0, 0);
+        return sq.lapStartMs != null;
+      })());
+
+    /* A letter's second hole is a gate of its own: flying the lower bowl of a B is not flying the upper one. */
+    const b = layoutLetter('B', letterDefaults('B').clearW, letterDefaults('B').clearH, BUILT_TUBE_R);
+    const lower = b.openings[0];
+    const upper = b.openings[1];
+    const stationOf = (o) => ({
+      position: { x: 0, y: 0, z: 0 }, heading: 0, flyOrder: 0, virtual: false,
+      apertures: [{ centreY: o.cy, clearW: o.clearW, clearH: o.clearH, shape: 'poly', poly: stationOpening(o) }],
+    });
+    /* A chord through the point (lx, ly), about the station's own point, across its plane. */
+    const flyThrough = (o, lx, ly) => {
+      const race = new Race([stationOf(o)]);
+      const g = race.gates[0];
+      const at = (s) => ({
+        x: g.x + g.ax.x * lx + g.ay.x * ly + g.az.x * s,
+        y: g.y + o.cy + g.ax.y * lx + g.ay.y * ly + g.az.y * s,
+        z: g.z + g.ax.z * lx + g.ay.z * ly + g.az.z * s,
+      });
+      race.update(at(-1), at(1), 0, 0);
+      return race.lapStartMs != null;
+    };
+    check('through the middle of a B\'s lower bowl scores at the lower bowl\'s station and not at the upper one\'s, which is a gate of its own a bowl higher',
+      flyThrough(lower, 0, 0) && flyThrough(upper, 0, 0) && !flyThrough(lower, upper.cx - lower.cx, upper.cy - lower.cy) && !flyThrough(upper, lower.cx - upper.cx, lower.cy - upper.cy));
+  }
+}
+
+/*
+ * A GATE WITH NO FRAME. The owner asked for an opening to fly through, scored and lit like a gate, with nothing built round it, to
+ * stand a target anywhere a structure has a gap that no gate of its own frames. It is not a new element and the document holds nothing
+ * new: an aperture can already say that nothing is built for it (isUnbuilt), and the new things are the piece that lays one in a
+ * click, the one press that takes the frame from any gate or letter, and the words for it.
+ */
+function suiteInvisibleGate() {
+  console.log('\nan invisible gate: an opening with nothing built round it');
+  const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
+  const five = () => createTrack('invisible', 'full');
+
+  /* THE PIECE */
+  {
+    const piece = FIVE_INCH_PIECES.find((p) => p.id === 'invisibleGate');
+    const keys = [...FIVE_INCH_PIECES, ...FIVE_INCH_TOOLS].map((x) => x.key).filter(Boolean).concat(paletteItems('full').map((x) => x.key).filter(Boolean));
+    check('the piece is on the five inch palette, standing after the gate, with a key of its own that nothing else has',
+      piece && piece.after === 'gate' && piece.key === 'I' && toolByKey('I', 'full')?.id === 'invisibleGate' && new Set(keys).size === keys.length && piece.note.length > 40);
+    check('and the whoop palette has it too, after the gate, on the same key and with nothing else on that key, and the keys of every other tool are where they were',
+      toolByKey('I', 'micro')?.id === 'invisibleGate' && WHOOP_PIECES[0].after === 'gate' && WHOOP_PIECES[0].key === 'I' && WHOOP_PIECES[0].note.length > 40
+      && [...WHOOP_PIECES, ...WHOOP_TOOLS].map((x) => x.key).concat(paletteItems('micro').map((x) => x.key)).filter((k) => k === 'I').length === 1
+      && toolByKey('H', 'micro')?.id === 'row' && toolByKey('K', 'micro')?.id === 'cube'
+      && toolByKey('K', 'full')?.id === 'wall' && toolByKey('J', 'full')?.id === 'run' && toolByKey('N', 'full')?.id === 'route');
+    check('it is not an element: it is in no palette order and in no document, because the document holds a gate with its frame taken away',
+      !ELEMENTS.invisibleGate && !PALETTE_ORDER.includes('invisibleGate') && isFiveInchPiece('invisibleGate'));
+  }
+
+  /* LAYING ONE */
+  {
+    const doc = five();
+    placeOnTrack(doc, 'gate', { x: 20, y: 20 });
+    const el = placeInvisibleGate(doc, { x: 30, y: 24 }, {});
+    check('one click lays a gate with nothing built, in the flying order, after the gate before it',
+      el.type === 'gate' && el.unbuilt === true && isUnbuilt(el) && doc.sequence.length === 2 && doc.sequence[1].elementId === el.id);
+    check('and it faces the way a gate placed there would face, which is the face rule\'s and not the piece\'s',
+      (() => {
+        const plain = five();
+        placeOnTrack(plain, 'gate', { x: 20, y: 20 });
+        const g = placeOnTrack(plain, 'gate', { x: 30, y: 24 });
+        return near(g.yaw, el.yaw) && g.pitch === el.pitch && JSON.stringify(g.dims) === JSON.stringify(el.dims);
+      })());
+    check('it is called an invisible gate where a name is wanted, and its own name where it has one',
+      pieceLabel(el, 'full') === 'Invisible gate' && sequenceLabel(doc, doc.sequence[1]) === 'Invisible gate'
+      && pieceLabel({ type: 'gate' }, 'full') === 'Gate' && (() => { el.name = 'Hole in the wall'; return sequenceLabel(doc, doc.sequence[1]) === 'Hole in the wall'; })());
+    el.name = '';
+    check('every side is gone as far as anything that draws a frame is asked: all four sides are missing and none is a pipe',
+      unbuiltSidesOf(el).join() === FRAME_SIDES.join() && FRAME_SIDES.every((s) => !frameSidesOf(el)[s]) && !hasMissingSides(el));
+    const ghost = partGhosts(doc, 'invisibleGate', { x: 5, y: 5 }, { x: 5, y: 5 }, {});
+    check('the ghost of the tool is a gate with nothing built, where a click would lay it',
+      ghost.items.length === 1 && ghost.items[0].type === 'gate' && ghost.items[0].props.unbuilt === true && near(ghost.items[0].position.x, 5) && near(ghost.items[0].position.y, 5));
+    const sq = partGhosts(five(), 'invisibleGate', { x: 5, y: 5 }, { x: 5, y: 5 }, { square: true });
+    check('and square to the field when Square is on: its heading is a whole number of quarter turns',
+      near(sq.items[0].yaw / (Math.PI / 2), Math.round(sq.items[0].yaw / (Math.PI / 2)), 1e-9), String(sq.items[0].yaw));
+  }
+
+  /* ON A WHOOP CANVAS: the same piece, the whoop room's gate size, and a document that reads on either canvas */
+  {
+    const doc = createTrack('invisible whoop', 'micro');
+    placeOnTrack(doc, 'gate', { x: 2, y: 2 });
+    const el = placeInvisibleGate(doc, { x: 4, y: 3 }, {});
+    const plain = createTrack('plain whoop', 'micro');
+    placeOnTrack(plain, 'gate', { x: 2, y: 2 });
+    const g = placeOnTrack(plain, 'gate', { x: 4, y: 3 });
+    check('a whoop canvas lays a gate with nothing built, in the flying order, at the whoop gate size and facing as a whoop gate would',
+      el.type === 'gate' && el.unbuilt === true && doc.sequence.length === 2 && doc.sequence[1].elementId === el.id
+      && JSON.stringify(g.dims) === JSON.stringify(el.dims) && near(g.yaw, el.yaw) && pieceLabel(el, 'micro') === 'Invisible gate');
+    check('it has a real height, so the 3D camera and the card can place it: the gate\'s own, finite and positive (a gate holds its levels and not a height)',
+      Number.isFinite(elementHeight(ELEMENTS.gate, el.dims)) && elementHeight(ELEMENTS.gate, el.dims) > 0);
+    check('it is written as a gate with `unbuilt` and nothing else, so a whoop track with one round trips and reads on the five inch canvas',
+      roundTripsCleanly(doc) && deserialize(serialize(doc)).repairs.length === 0 && deserialize(serialize(doc)).doc.elements[1].unbuilt === true);
+    const ghost = partGhosts(doc, 'invisibleGate', { x: 1, y: 1 }, { x: 1, y: 1 }, {});
+    check('and its ghost is that gate on a whoop canvas, at the whoop size',
+      ghost.items.length === 1 && ghost.items[0].type === 'gate' && ghost.items[0].props.unbuilt === true
+      && JSON.stringify(ghost.items[0].props.dims) === JSON.stringify(el.dims));
+  }
+
+  /* THE DOCUMENT: nothing new in it */
+  {
+    const doc = five();
+    const el = placeInvisibleGate(doc, { x: 30, y: 24 }, {});
+    const text = serialize(doc);
+    const out = JSON.parse(text).elements[0];
+    check('it is written as a gate with `unbuilt`, which is what a gap in a lattice has always been, and as nothing else',
+      out.type === 'gate' && out.unbuilt === true && !('unbuiltSides' in out) && roundTripsCleanly(doc) && deserialize(text).repairs.length === 0 && deserialize(text).doc.elements[0].unbuilt === true);
+    setInvisible(doc, el.id, false);
+    check('and a gate with its frame back is written as it ever was: no `unbuilt` at all', !('unbuilt' in JSON.parse(serialize(doc)).elements[0]));
+    const course = (() => { setInvisible(doc, el.id, true); return courseFromDocument(JSON.parse(serialize(doc))); })();
+    check('the game scores it and builds nothing: the course has its station, and its structure says unbuilt, with the hole it always had',
+      course.stations.length === 1 && course.structures[0].unbuilt === true && course.stations[0].clearW > 0 && !('poly' in course.stations[0]));
+    const race = new Race([{ position: { x: 0, y: 0, z: 0 }, heading: 0, flyOrder: 0, virtual: false, apertures: [{ centreY: 1, clearW: 2, clearH: 2 }] }]);
+    const g = race.gates[0];
+    race.update({ x: g.x - g.az.x, y: g.y + 1 - g.az.y, z: g.z - g.az.z }, { x: g.x + g.az.x, y: g.y + 1 + g.az.y, z: g.z + g.az.z }, 0, 0);
+    check('and a pass through it scores, because the scoring is the opening\'s and the frame was never part of it', race.lapStartMs != null);
+    const w = collectWarnings(doc, buildPath(doc)).map((x) => x.code);
+    check('no warning is about it that is not about a gate: the line runs through it as it does through any', !w.includes('reversal') && !w.includes('no-face') && !w.includes('unsequenced'), w.join());
+  }
+
+  /* TAKING THE FRAME FROM A GATE THAT IS THERE, and putting it back */
+  {
+    const doc = five();
+    const gate = placeOnTrack(doc, 'gate', { x: 20, y: 20 });
+    const flagged = placeOnTrack(doc, 'gate', { x: 30, y: 24 });
+    setFlags(doc, flagged.id, 'left');
+    const stack = placeOnTrack(doc, 'doubleStack', { x: 40, y: 28 });
+    const letter = placeOnTrack(doc, 'letter', { x: 50, y: 20 }, { letter: 'W' });
+    const pole = placeOnTrack(doc, 'cone', { x: 55, y: 22 });
+    check('any opening can be made one: a gate, a flagged gate, a stack and a letter, and nothing that is not an opening',
+      [gate, flagged, stack, letter].every((e) => canBeInvisible(e)) && !canBeInvisible(pole) && !canBeInvisible(null) && !canBeInvisible({ type: 'gate', group: 'g1' }));
+    check('a gate made invisible has its frame gone, and says it changed; made again, it does not', setInvisible(doc, gate.id, true) && gate.unbuilt === true && setInvisible(doc, gate.id, true) === false);
+    check('and put back, the frame is back and the gate is the gate it was: the same size, in the same place, in the same step of the order',
+      setInvisible(doc, gate.id, false) && !('unbuilt' in gate) && gate.type === 'gate' && near(gate.position.x, 20) && doc.sequence[0].elementId === gate.id && setInvisible(doc, gate.id, false) === false);
+    check('a flag goes with the frame, because a pennant on a mast round nothing would hang in the air: the flagged gate is a plain one that is not built',
+      flagged.type === 'flaggedGate' && setInvisible(doc, flagged.id, true) && flagged.type === 'gate' && flagged.unbuilt === true && flagged.flagSide === undefined && flagged.dims.flagH === undefined);
+    check('the sides taken away one at a time are one spelling of a frame that is not all there, and an invisible gate is the other: making one invisible leaves one of the two, the one that says all four',
+      (() => {
+        const d = five();
+        const g = placeOnTrack(d, 'gate', { x: 20, y: 20 });
+        setSideBuilt(d, g.id, 'top', false);
+        setSideBuilt(d, g.id, 'left', false);
+        return Array.isArray(g.unbuiltSides) && setInvisible(d, g.id, true) && !('unbuiltSides' in g) && g.unbuilt === true && unbuiltSidesOf(g).length === 4;
+      })());
+    check('a stack goes as a whole, every opening of it keeping its place: three levels of a ladder are still three gates to fly',
+      setInvisible(doc, stack.id, true) && stack.unbuilt === true && aperturesOf(stack).length === 2 && doc.sequence.filter((s) => s.elementId === stack.id).length === 2);
+    check('and a letter goes as a whole, keeping its gaps: the pipe is gone and the holes are what is left', setInvisible(doc, letter.id, true) && letter.unbuilt === true && aperturesOf(letter).length === 1
+      && isUnbuilt(letter) && roundTripsCleanly(doc));
+    check('a piece that shares its pipe with others is not offered it: taking one bay\'s frame would take the upright the next stands on, so a wall\'s bay and a cube\'s face are refused',
+      (() => {
+        const d = five();
+        const ids = placeWall(d, { x: 10, y: 10 }, { x: 20, y: 10 });
+        const bay = elementById(d, ids[0]);
+        return Boolean(bay.group) && !canBeInvisible(bay) && setInvisible(d, bay.id, true) === false && !('unbuilt' in bay);
+      })());
+    check('a piece that is not there is nothing, and neither is one that is not an opening', setInvisible(doc, 'nope', true) === false && setInvisible(doc, pole.id, true) === false);
+    const countOf = (d) => countElementsByType(d.elements, 'full');
+    check('an invisible gate is still a gate in the inventory: every piece that is a gate is counted, framed or not',
+      countOf(doc).find((r) => r.type === 'gate').count === doc.elements.filter((e) => e.type === 'gate').length && doc.elements.some((e) => e.type === 'gate' && e.unbuilt === true));
+  }
+
+  /* A GATE BECOMES A LETTER, AND BACK: how a track that is already there is edited */
+  {
+    const doc = five();
+    const first = placeOnTrack(doc, 'gate', { x: 20, y: 20 });
+    const second = placeOnTrack(doc, 'gate', { x: 30, y: 24 });
+    const third = placeOnTrack(doc, 'gate', { x: 40, y: 20 });
+    second.name = 'Start line';
+    second.yaw = 0.5;
+    second.yawOverridden = true;
+    const order = doc.sequence.map((s) => s.id).join();
+    const neighbours = JSON.stringify([first, third]);
+    const other = five();
+    const aStack = placeOnTrack(other, 'doubleStack', { x: 5, y: 5 });
+    check('a plain gate on a five inch track can be a letter, and a stack, a letter, a gate in a wall and a gate on a whoop track cannot',
+      canBecomeLetter(doc, first) && !canBecomeLetter(other, aStack) && !canBecomeLetter(doc, { type: 'letter', dims: { levels: 1 } })
+      && !canBecomeLetter(doc, { type: 'gate', group: 'g', dims: { levels: 1 } }) && !canBecomeLetter(createTrack('w', 'micro'), { type: 'gate', dims: { levels: 1 } }) && !canBecomeLetter(doc, null));
+    check('a gate becomes a letter in the same place: its id, its place in the flying order, where it stands, which way it faces and a name the author gave it all stay',
+      turnIntoLetter(doc, second.id, 'W') && second.type === 'letter' && second.letter === 'W' && second.name === 'Start line' && near(second.position.x, 30) && near(second.position.y, 24)
+      && near(second.yaw, 0.5) && second.yawOverridden === true && doc.sequence.map((s) => s.id).join() === order && doc.sequence[1].elementId === second.id);
+    check('and is the letter at the size a letter starts at, standing on the ground, upright, with none of a gate\'s flag or sides',
+      near(second.dims.clearW, letterDefaults('W').clearW) && second.dims.sillH === 0 && second.pitch === 0 && second.position.z === 0 && !('flagSide' in second) && !('unbuiltSides' in second));
+    check('its pass goes through the new letter\'s primary gap, and the faces are worked out again for the heading it keeps',
+      doc.sequence[1].apertureIndex === primaryOpening('W') && roundTripsCleanly(doc));
+    check('and the other gates of the track are untouched: the same places, headings and sizes as they were', JSON.stringify([first, third]) === neighbours && first.type === 'gate' && third.type === 'gate');
+    const named = placeOnTrack(doc, 'gate', { x: 44, y: 30 });
+    check('a gate that was called nothing is called for the letter it is now, and one that was flagged is a letter without the flag',
+      (() => { setFlags(doc, named.id, 'right'); return turnIntoLetter(doc, named.id, 'B') && named.type === 'letter' && named.name === 'Letter B' && named.flagSide === undefined && named.dims.flagH === undefined; })());
+    check('a piece that is not a gate that can be one is refused and left as it was',
+      (() => { const t = createTrack('t', 'micro'); const g = placeOnTrack(t, 'gate', { x: 4, y: 5 }); return turnIntoLetter(t, g.id, 'A') === false && g.type === 'gate'; })()
+      && turnIntoLetter(doc, 'nope', 'A') === false && turnIntoLetter(doc, second.id, 'A') === false);
+
+
+    /* AND BACK */
+    const back = five();
+    const g1 = placeOnTrack(back, 'gate', { x: 20, y: 20 });
+    const letter = placeOnTrack(back, 'letter', { x: 30, y: 24 }, { letter: 'B' });
+    letter.name = 'Letter B';
+    const extra = addToSequence(back, letter.id, 1);
+    const hole = aperturesOf(letter)[primaryOpening('B')];
+    const at = apertureCenter(letter, primaryOpening('B'));
+    check('a letter becomes a gate again, standing where its primary gap was and as big as it was, and a name it was only given is gone',
+      turnIntoGate(back, letter.id) && letter.type === 'gate' && !('letter' in letter) && letter.name === '' && near(letter.position.x, at.x) && near(letter.position.y, at.y)
+      && near(letter.dims.clearW, hole.clearW) && near(letter.dims.clearH, hole.clearH) && near(letter.dims.sillH, hole.sillH) && letter.dims.levels === 1 && letter.pitch === 0);
+    check('a pass through another gap of the letter has no opening left, and is taken out of the order; the pass through the primary one is a gate\'s pass',
+      back.sequence.length === 2 && back.sequence[1].elementId === letter.id && back.sequence[1].apertureIndex === 0 && !back.sequence.some((s) => s.id === extra.id) && g1.type === 'gate' && roundTripsCleanly(back));
+    check('a piece that is not a letter is not made a gate, and nor is one that is not there', turnIntoGate(back, g1.id) === false && turnIntoGate(back, 'nope') === false);
+  }
+}
+
+/*
+ * THE LETTER ON THE PLAN CARD AND THE BOARD. The card the simulator's own menus draw is drawn from a plan, and a plan from
+ * a document; plan.js has no imports, so its copy of the designs is a table of its own, and this holds it to the designs
+ * (src/props/letters.js is the copy of record) and to the layout the builder and the game build from.
+ */
+function suiteLetterPlan() {
+  console.log('\nletters on the plan card and the board');
+  const near = (a, b, tol = 1e-9) => Math.abs(a - b) < tol;
+  {
+    let wrong = 0;
+    for (const l of LETTERS) {
+      const g = glyphOf(l);
+      const strokes = g.strokes.map((s) => s.map((p) => p.join(',')).join(' ')).join(';');
+      const b = polygonBounds(g.holes[g.primary].poly);
+      const [runs, x0, y0, x1, y1] = PLAN_LETTERS[l] ?? [];
+      if (runs !== strokes || !near(x0, b.x0) || !near(y0, b.y0) || !near(x1, b.x1) || !near(y1, b.y1)) {
+        wrong += 1;
+      }
+    }
+    check('the plan card\'s table has the twenty six capitals, their strokes and the box of their primary hole, as the designs do', Object.keys(PLAN_LETTERS).join('') === LETTERS.join('') && wrong === 0, `${wrong} differ`);
+    let worst = 0;
+    for (const l of LETTERS) {
+      for (const [cw, ch] of [[null, null], [3, 2.2], [1.7, 4]]) {
+        const d = letterDefaults(l);
+        const w = cw ?? d.clearW;
+        const h = ch ?? d.clearH;
+        const laid = layoutLetter(l, w, h, LETTER_TUBE_OD / 2, { mirror: true });
+        const mine = letterTubes({ letter: l, clearW: w, clearH: h });
+        if (mine.tubes.length !== laid.tubes.length) {
+          worst = Infinity;
+          continue;
+        }
+        laid.tubes.forEach((t, i) => {
+          for (const k of [0, 1]) {
+            for (const a of [0, 1]) {
+              worst = Math.max(worst, Math.abs(t[k][a] - mine.tubes[i][k][a]));
+            }
+          }
+        });
+        worst = Math.max(worst, Math.abs(mine.left - laid.left), Math.abs(mine.right - laid.right));
+      }
+    }
+    check('and the tubes the card draws are the tubes the builder and the game lay, for every letter at three sizes, to the last bit that matters', worst < 1e-12, String(worst));
+    check('a mark that is not a letter, or is one this build does not draw, has no pipe to draw, and a size it was not told is the size a W starts at',
+      letterTubes({ type: 'gate' }) === null && letterTubes({ letter: '?' }) === null && letterTubes(null) === null && near(letterTubes({ letter: 'W' }).right, letterTubes({ letter: 'W', clearW: 2.45, clearH: 3.15 }).right));
+  }
+  {
+    const doc = { schemaVersion: 3, field: { width: 60, depth: 40 }, trackClass: 'full', elements: [], sequence: [] };
+    const add = (id, type, x, extra = {}) => doc.elements.push({
+      id, type, name: '', position: { x, y: 10, z: 0 }, yaw: 0, pitch: 0, dims: { levels: 1, sillH: 0, clearW: 2.45, clearH: 3.15, levelPitch: 3 }, ...extra,
+    });
+    add('el-1', 'gate', 5, { dims: { levels: 1, sillH: 0, clearW: 1.524, clearH: 1.524 } });
+    add('el-2', 'letter', 15, { letter: 'W' });
+    add('el-3', 'letter', 25, { letter: 'b', dims: { levels: 2, sillH: 0, clearW: 2.45, clearH: 1.75, levelPitch: 3 } });
+    add('el-4', 'letter', 35, { letter: 7 });
+    add('el-5', 'letter', 45, { letter: 'W', unbuilt: true });
+    doc.sequence = ['el-1', 'el-2', 'el-3', 'el-4', 'el-5'].map((elementId) => ({ elementId, apertureIndex: 0, entry: 1 }));
+    const plan = planFromDocument(doc);
+    const marks = plan.marks.filter((m) => m.type === 'letter');
+    check('the plan carries which capital each letter is, one character in capitals, an A for one that is none, and a gate carries none',
+      marks.map((m) => m.letter).join('') === 'WBAW' && !('letter' in plan.marks[0]) && marks.every((m) => m.shape === 'letter') && PLAN_SHAPE.letter === 'letter'
+      && marks[1].levels === 2 && marks[0].levels === 1);
+    check('the plan badges every pass through a letter as it does a gate', plan.numbers.length === 5 && plan.path.length === 5);
+    check('on the card a letter is drawn as its pipe, and an invisible one has none to draw, and a gate is its frame as it was',
+      isoShapes(marks[0], false).length === letterTubes(marks[0]).tubes.length && isoShapes(marks[3], false).length === 0 && isoShapes(plan.marks[0], false).length > 0);
+    check('its tubes stand where the piece stands: the lowest end of a W is a pipe\'s radius up, and every end is within the letter\'s width of its foot',
+      (() => {
+        const lines = isoShapes(marks[0], false);
+        const zs = lines.flatMap((l) => l.pts.map((p) => p[2]));
+        const xs = lines.flatMap((l) => l.pts.map((p) => p[0]));
+        return near(Math.min(...zs), LETTER_TUBE_OD / 2, 1e-9) && Math.max(...xs) - Math.min(...xs) < 5 && near(Math.max(...zs), 3.5, 1e-9);
+      })());
+    check('a letter\'s lit pane is one box, the primary gap\'s, however many gaps it has, where a stack has one for each',
+      isoApertures(marks[1], false).length === 1 && isoApertures({ type: 'doubleStack', levels: 2, clearW: 1.5, clearH: 1.5, x: 0, y: 0 }, false).length === 2);
+  }
+}
+
+/*
  * A CUBE. The designer's cube is a frame you fly in through one face of and out of through another, and a
  * whoop room's frame is pipe, so a cube is what it is made of: ONE GATE FOR EACH FACE, six squares of pipe
  * that share their edges. Nothing in the physics, the course, the race or the views knows a new thing: a
@@ -10513,13 +11848,6 @@ function suiteFiveInchParts() {
     check('the wall round trips, and a group is selected, moved and removed as one piece',
       roundTripsCleanly(heading) && groupMembers(heading, ids[1]).length === 3
       && expandGroups(heading, [ids[0]]).size === 3 && wallBays(heading, ids[2]).map((b) => b.id).join() === ids.slice().reverse().join());
-    check('and a wall whose every gate is flown is not a cube to the board, but one with a bay left out of the order is',
-      partsTheBoardDoesNotKnow(toPlain(heading)).length === 0
-      && (() => {
-        const loose = deserialize(serialize(heading)).doc;
-        loose.sequence = loose.sequence.filter((s) => s.elementId !== ids[1]);
-        return JSON.stringify(partsTheBoardDoesNotKnow(toPlain(loose))) === '[{"type":"cube","count":1}]';
-      })());
 
     /* Built in the world: every bay is a station, plain, and the uprights meet. */
     const course = courseFromDocument(heading);
@@ -12409,7 +13737,7 @@ async function suiteMenus() {
   /* ---- one letter, one tool (1.20, 4.2a) ---- */
   const keysOf = (cls, mode) => [
     ...paletteItems(cls, mode).map((d) => [d.key, d.id]),
-    ...(cls === 'micro' && mode === 'race' ? WHOOP_TOOLS.map((t) => [t.key, t.id]) : []),
+    ...(cls === 'micro' && mode === 'race' ? [...WHOOP_PIECES, ...WHOOP_TOOLS].map((t) => [t.key, t.id]) : []),
   ].filter(([k]) => k);
   for (const [name, cls, mode] of [['five inch', 'full', 'race'], ['whoop', 'micro', 'race'], ['map', 'full', 'freestyle']]) {
     const seen = new Map();
@@ -12560,6 +13888,234 @@ async function suiteMenus() {
   }
 }
 
+/*
+ * ADMIN AND OFFICIAL TRACKS, the simulator's half.
+ *
+ * The rule itself (an official track changes for admins only) is enforced
+ * by the board and tested in its own src/selftest.js. What this half owns
+ * is smaller and still worth pinning: the token is kept per tab and per
+ * board, goes only where it should, is sent on exactly the three writes an
+ * admin needs it on, and lets an admin's canvas stand in for an edit key
+ * without ever making anyone else's canvas look owned.
+ */
+async function suiteOfficial() {
+  console.log('admin and official tracks');
+  const hadLocal = globalThis.localStorage;
+  const hadSession = globalThis.sessionStorage;
+  const hadFetch = globalThis.fetch;
+  const local = new Map();
+  const session = new Map();
+  const shim = (map) => ({
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => {
+      map.set(k, String(v));
+    },
+    removeItem: (k) => {
+      map.delete(k);
+    },
+  });
+  globalThis.localStorage = shim(local);
+  globalThis.sessionStorage = shim(session);
+  const board = 'http://127.0.0.1:3100';
+  const calls = [];
+  const reply = (status, body) => ({
+    ok: status < 400,
+    status,
+    text: async () => JSON.stringify(body),
+  });
+  let answer = () => reply(200, {});
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return answer(String(url), init);
+  };
+  try {
+    clearAdminSession();
+    check('nobody is signed in to begin with', readAdminSession(board) === null);
+
+    /* THE SESSION: per board, expiring, and in this tab only. */
+    const future = new Date(Date.now() + 3600e3).toISOString();
+    check('a session needs a token and a board', !writeAdminSession({ token: '', board })
+      && !writeAdminSession({ token: 't', board: '' }));
+    writeAdminSession({ token: 'tok-1', email: 'keeper@example.com', expiresUtc: future, board: `${board}/` });
+    check('it is read back for the board that issued it, trailing slash or not',
+      readAdminSession(board) && readAdminSession(board).token === 'tok-1' && readAdminSession(`${board}/`) !== null);
+    check('and for no other board, so a ?board= elsewhere is never handed it',
+      readAdminSession('https://elsewhere.example') === null && readAdminSession('') === null);
+    check('it lives in sessionStorage and never localStorage',
+      session.size === 1 && local.size === 0);
+    writeAdminSession({ token: 'tok-old', email: 'keeper@example.com', expiresUtc: new Date(Date.now() - 1000).toISOString(), board });
+    check('an expired one reads as none, so a stale token is never sent', readAdminSession(board) === null);
+    writeAdminSession({ token: 'tok-1', email: 'keeper@example.com', expiresUtc: future, board });
+
+    /* WHERE IT GOES: the three writes, and only to its own board. */
+    const plain = toPlain(createTrack('Official Loop'));
+    const auth = () => calls[calls.length - 1].init.headers.authorization;
+    await publishTrack({ author: 'Ada Rook', document: plain, origin: board });
+    check('a publish carries the token as a bearer', auth() === 'Bearer tok-1');
+    await postTrackGif({ id: 'trk-1a2b3c4d', gif: 'R0lG', editKey: '', origin: board });
+    check('so does an animation', auth() === 'Bearer tok-1');
+    await postShareCard({ kind: 'track', id: 'trk-1a2b3c4d', card: 'AAAA', editKey: '', origin: board });
+    check('and a share card', auth() === 'Bearer tok-1');
+    await publishTrack({ author: 'Ada Rook', document: plain, origin: 'https://elsewhere.example' });
+    check('a publish to another board carries none', auth() === undefined);
+    clearAdminSession();
+    await publishTrack({ author: 'Ada Rook', document: plain, origin: board });
+    check('and nor does anybody signed out', auth() === undefined);
+    check('the token is never in a body', !calls.some((c) => String(c.init.body || '').includes('tok-1')));
+
+    /* SIGNING IN, and being told no in the board's own words. */
+    answer = () => reply(200, { token: 'tok-2', email: 'keeper@example.com', expiresUtc: future });
+    const done = await adminSignIn({ email: 'keeper@example.com', password: 'pw', origin: board });
+    check('signing in keeps the token for this board',
+      done.token === 'tok-2' && readAdminSession(board).token === 'tok-2' && readAdminSession(board).email === 'keeper@example.com');
+    const login = calls[calls.length - 1];
+    check('and sends the password to the login route and nowhere else',
+      login.url === `${board}/api/admin/login` && JSON.parse(login.init.body).password === 'pw'
+      && !login.init.headers.authorization);
+    clearAdminSession();
+    answer = () => reply(401, { error: 'That email and password do not open this board.' });
+    let refused = null;
+    try {
+      await adminSignIn({ email: 'x@example.com', password: 'no', origin: board });
+    } catch (e) {
+      refused = e;
+    }
+    check('a wrong password throws the board\'s sentence and keeps nothing',
+      refused && refused.message === 'That email and password do not open this board.' && readAdminSession(board) === null);
+
+    /* VERIFY: a token the board has dropped is found out. */
+    writeAdminSession({ token: 'tok-3', email: 'keeper@example.com', expiresUtc: future, board });
+    answer = () => reply(200, { email: 'keeper@example.com', kind: 'session' });
+    check('verify answers the signed in address', (await adminVerify(board)) === 'keeper@example.com');
+    answer = () => reply(401, { error: 'Not signed in.' });
+    check('and answers null when the board says no', (await adminVerify(board)) === null);
+    clearAdminSession();
+    const before = calls.length;
+    check('and asks nothing when there is no token', (await adminVerify(board)) === null && calls.length === before);
+
+    /* OFFICIAL: asked, set, and refused in words the builder can tell apart. */
+    answer = () => reply(200, { id: 'trk-1a2b3c4d', official: true, times: [] });
+    check('a track the board says is official reads as official', (await fetchTrackOfficial('trk-1a2b3c4d', board)) === true);
+    answer = () => reply(200, { id: 'trk-1a2b3c4d', times: [] });
+    check('a board from before the mark reads as not official', (await fetchTrackOfficial('trk-1a2b3c4d', board)) === false);
+    answer = () => reply(503, { error: 'down' });
+    check('a board that cannot answer reads as unknown, not as not official',
+      (await fetchTrackOfficial('trk-1a2b3c4d', board)) === null);
+    writeAdminSession({ token: 'tok-4', email: 'keeper@example.com', expiresUtc: future, board });
+    answer = () => reply(200, { id: 'trk-1a2b3c4d', official: true, changed: true });
+    const marked = await setTrackOfficial({ id: 'trk-1a2b3c4d', official: true, origin: board });
+    const markCall = calls[calls.length - 1];
+    check('marking posts true to the track\'s official route with the bearer',
+      marked.official === true && markCall.url === `${board}/api/tracks/trk-1a2b3c4d/official`
+      && JSON.parse(markCall.init.body).official === true && markCall.init.headers.authorization === 'Bearer tok-4');
+    answer = () => reply(403, {
+      error: 'This is an official track, so only a board admin can change it.', official: true, conflict: false,
+    });
+    let locked = null;
+    try {
+      await publishTrack({ author: 'Ada Rook', document: plain, origin: board, editKey: 'k' });
+    } catch (e) {
+      locked = e;
+    }
+    check('the board\'s official refusal is told apart from a collision, so the builder does not fork a copy',
+      locked && locked.official === true && locked.conflict === false && locked.status === 403);
+    answer = () => reply(409, { error: 'This track is already on the board.', conflict: true });
+    let clash = null;
+    try {
+      await publishTrack({ author: 'Ada Rook', document: plain, origin: board });
+    } catch (e) {
+      clash = e;
+    }
+    check('and a collision is still a collision', clash && clash.conflict === true && clash.official === false);
+
+    /* THE CANVAS: an admin's edit stands in for an edit key, only while signed in. */
+    const doc = createTrack('Official Loop');
+    const bindBase = { board, author: 'Ada Rook', nameOnBoard: 'Official Loop', owned: false };
+    writeBind(doc.id, { ...bindBase, adminEdit: true });
+    check('the bind keeps the admin flag and leaves it out when false',
+      readBind(doc.id).adminEdit === true && !('adminEdit' in (writeBind('trk-ffffffff', bindBase), readBind('trk-ffffffff'))));
+    clearAdminSession();
+    check('signed out, an admin edit canvas is not owned',
+      adminEditFor(doc.id) === false && inspectCourse({ share: null, autosave: { doc } }).kind !== 'owned');
+    writeAdminSession({ token: 'tok-5', email: 'keeper@example.com', expiresUtc: future, board });
+    check('signed in, it is owned, so the dialog offers an update',
+      adminEditFor(doc.id) === true && inspectCourse({ share: null, autosave: { doc } }).kind === 'owned');
+    const stranger = createTrack('Somebody Else');
+    writeBind(stranger.id, { ...bindBase, adminEdit: false });
+    check('and a canvas that was never an admin edit is not made owned by signing in',
+      adminEditFor(stranger.id) === false && inspectCourse({ share: null, autosave: { doc: stranger } }).kind !== 'owned');
+    rememberPublish(doc, { id: doc.id, name: doc.name }, board, 'Ada Rook');
+    check('and the flag survives a publish, or the second update would lose it', readBind(doc.id).adminEdit === true);
+
+    /*
+     * THE DOOR: an official track does not open in the builder for anybody
+     * but an admin (the owner's rule of 2026-10-04). Which tracks are worth
+     * asking the board about, and what the board's answer closes.
+     */
+    const mine = createTrack('Mine');
+    const remixed = createTrack('Remixed');
+    const never = createTrack('Never Published');
+    check('a track this browser never published is not asked about, and nor is no track',
+      boardHolding(never.id) === '' && boardHolding('') === '' && boardHolding(undefined) === '');
+    rememberPublish(mine, { id: mine.id, name: mine.name, editKey: 'key-mine' }, board, 'Ada Rook');
+    check('one it published is, at the board it went to', boardHolding(mine.id) === board);
+    writeBind(remixed.id, { board, owned: false, sourceId: 'trk-1a2b3c4d', sourceName: 'Official Loop' });
+    check('a remix copy is not, because its id has never been sent anywhere', boardHolding(remixed.id) === '');
+    check('an admin edit is, because the track is the board\'s', boardHolding(doc.id) === board);
+    writeEditKey('trk-keyonly', 'k');
+    check('and an edit key alone is enough', boardHolding('trk-keyonly') !== '');
+
+    clearAdminSession();
+    answer = () => reply(200, { id: 'trk-1a2b3c4d', official: true, times: [] });
+    let asked = calls.length;
+    check('an official track is closed to a tab that is not an admin',
+      (await officialBlocksOpen('trk-1a2b3c4d', board)) === true && calls.length === asked + 1);
+    writeAdminSession({ token: 'tok-6', email: 'keeper@example.com', expiresUtc: future, board });
+    asked = calls.length;
+    check('and open to an admin, who is not even asked about',
+      (await officialBlocksOpen('trk-1a2b3c4d', board)) === false && calls.length === asked);
+    writeAdminSession({ token: 'tok-7', email: 'keeper@example.com', expiresUtc: future, board: 'https://elsewhere.example' });
+    check('an admin of another board is not an admin of this one',
+      (await officialBlocksOpen('trk-1a2b3c4d', board)) === true);
+    clearAdminSession();
+    answer = () => reply(200, { id: 'trk-1a2b3c4d', times: [] });
+    check('a track that is not official is open to everybody', (await officialBlocksOpen('trk-1a2b3c4d', board)) === false);
+    answer = () => reply(404, { error: 'That track is not on the board.' });
+    check('and so is one the board has never heard of', (await officialBlocksOpen('trk-00000000', board)) === false);
+    answer = () => reply(503, { error: 'down' });
+    check('a board that answers badly closes nothing, so the builder keeps working',
+      (await officialBlocksOpen('trk-1a2b3c4d', board)) === false);
+    answer = () => {
+      throw new TypeError('Failed to fetch');
+    };
+    check('and neither does one that cannot be reached at all', (await officialBlocksOpen('trk-1a2b3c4d', board)) === false);
+    asked = calls.length;
+    check('a document with no id is not asked about', (await officialBlocksOpen('', board)) === false && calls.length === asked);
+  } finally {
+    globalThis.fetch = hadFetch;
+    globalThis.localStorage = hadLocal;
+    globalThis.sessionStorage = hadSession;
+  }
+}
+
+/* A piece with no height is a number, never NaN: topOf feeds the 3D camera's
+ * target and every tag's anchor, and NaN there draws nothing and says nothing.
+ * The two board tracks that carry sponsor logos on the grass came up as an
+ * empty sky for exactly that reason. */
+function suiteEveryTopIsFinite() {
+  console.log('\nheights: every kind of piece stands some finite height');
+  for (const cls of ['full', 'micro']) {
+    const doc = createTrack('heights', cls);
+    const bad = Object.keys(ELEMENTS).filter((type) => !Number.isFinite(topOf(createElement(doc, type, { x: 5, y: 5 }, 0))));
+    check(`on a ${cls} canvas every piece in the table has a finite top`, bad.length === 0, bad.join(', '));
+  }
+  const doc = createTrack('painted');
+  const logo = createElement(doc, 'groundLogo', { x: 10, y: 10 }, 0);
+  check('a ground logo is paint: its top is the ground it lies on', topOf(logo) === 0, String(topOf(logo)));
+  logo.position.z = 0.25;
+  check('and rises with it when it is laid on a raised floor', topOf(logo) === 0.25, String(topOf(logo)));
+}
+
 async function main() {
   if (process.argv.includes('--emit')) {
     process.stdout.write(serialize(demoTrack()));
@@ -12588,6 +14144,8 @@ async function main() {
   suiteScoring();
   suiteWaypoint();
   suiteFrameSides();
+  suitePoleStretches();
+  suiteOpeningSizes();
   suiteBendLine();
   suitePoleSquare();
   suiteSchemaDoc();
@@ -12619,9 +14177,16 @@ async function main() {
   suiteRoomParts();
   suiteApertureShapes();
   suiteHoopHex();
+  suiteLetters();
+  suiteLetterPiece();
+  suiteLetterCourse();
+  suiteInvisibleGate();
+  suiteLetterPlan();
   await suiteCube();
   await suiteShareLink();
   suiteBuildSheet();
+  suiteBundle();
+  await suiteCommunity();
   suiteImportFpv();
   suiteFiveInchParts();
   suiteManoeuvres();
@@ -12630,8 +14195,10 @@ async function main() {
   suiteRuns();
   suiteHurdles();
   suiteLaunchGate();
+  suiteEveryTopIsFinite();
   suiteFiveInchRoom();
   await suiteMenus();
+  await suiteOfficial();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;
 }

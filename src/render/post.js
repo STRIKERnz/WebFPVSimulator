@@ -53,6 +53,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {
+  INK_WEIGHT, SIL_STRENGTH, INK_COLOR, AO_GLSL, AO_TINT_GLSL, aoUniforms, updateAoCamera, comicAoOn, comicGL2, SIL_GLSL,
+  SIL_REACH,
+} from './comic.js';
 
 /*
  * Depth is packed into two 8 bit channels rather than kept in a depth
@@ -107,19 +111,30 @@ const OutlineShader = {
     tDiffuse: { value: null },
     tGeo: { value: null },
     uResolution: { value: new THREE.Vector2(1, 1) },
-    uLineColor: { value: new THREE.Color(0x1a2230) },
+    /* The comic layer's ink (src/render/comic.js): near black, where it
+     * was a slate 0x1a2230 that read as shading rather than as a pen. */
+    uLineColor: { value: new THREE.Color(INK_COLOR) },
     uDepthBias: { value: 0.0016 },
     /* High enough that the roughly 42 degree facet dihedral of the low
      * poly canopies and rocks stays clean (normal delta about 0.7 per
      * sample pair) while true corners near 90 degrees (delta 1.4) still
      * ink. Facet creases were turning every near tree into a wire mesh. */
     uNormalBias: { value: 1.05 },
-    uStrength: { value: 0.85 },
+    uStrength: { value: 1.0 },
+    /* The pen's reach in texels: the four ink fetches sit this far out, so
+     * the line is this much wider for the same five fetches. It tapers to
+     * one texel with range, which is the comic artist's weight: heavy on
+     * what is near, fine on what is far. */
+    uInkWidth: { value: INK_WEIGHT },
     /* A twentieth of the ink threshold. Coverage is wanted on every
      * silhouette in the frame; ink is wanted only on the ones that read as
      * drawn. */
     uAaBias: { value: 0.00008 },
     uAaAmount: { value: 1.0 },
+    /* The prepass's depth range, for the occlusion's metres. */
+    uGeoNear: { value: 0.1 },
+    uGeoFar: { value: 1000 },
+    ...aoUniforms(),
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -139,7 +154,21 @@ const OutlineShader = {
     uniform float uStrength;
     uniform float uAaBias;
     uniform float uAaAmount;
+    uniform float uInkWidth;
+    uniform float uGeoNear;
+    uniform float uGeoFar;
     ${PACK_GLSL}
+    #ifdef COMIC_AO
+    #define COMIC_AO_DEPTH(uv) (unpackDepth16(texture2D(tGeo, uv).zw) * (uGeoFar - uGeoNear) + uGeoNear)
+    /* One and a half depth codes of the 16 bit packing above: a tap and
+     * the centre can each be half a code off, plus the slack. */
+    #define COMIC_AO_QUANT ((uGeoFar - uGeoNear) * (1.5 / 65025.0))
+    ${AO_GLSL}
+    #endif
+    #ifdef COMIC_SIL
+    #define COMIC_SIL_DEPTH(uv) (unpackDepth16(texture2D(tGeo, clamp(uv, vec2(0.0), vec2(1.0))).zw) * (uGeoFar - uGeoNear) + uGeoNear)
+    ${SIL_GLSL}
+    #endif
 
     /* Only xy is stored. z is reconstructed positive, which is what a
      * front facing surface has in view space anyway, and the two places it
@@ -158,10 +187,12 @@ const OutlineShader = {
        * texel outside the frame wraps and pulls in the opposite edge,
        * which paints a false band along the border. */
       vec4 g0 = texture2D(tGeo, vUv);
-      vec4 g1 = texture2D(tGeo, clamp(vUv + vec2( texel.x,  texel.y), vec2(0.0), vec2(1.0)));
-      vec4 g2 = texture2D(tGeo, clamp(vUv + vec2(-texel.x, -texel.y), vec2(0.0), vec2(1.0)));
-      vec4 g3 = texture2D(tGeo, clamp(vUv + vec2( texel.x, -texel.y), vec2(0.0), vec2(1.0)));
-      vec4 g4 = texture2D(tGeo, clamp(vUv + vec2(-texel.x,  texel.y), vec2(0.0), vec2(1.0)));
+      float penReach = mix(uInkWidth, 1.0, smoothstep(0.004, 0.06, unpackDepth16(g0.zw)));
+      vec2 tp = texel * penReach;
+      vec4 g1 = texture2D(tGeo, clamp(vUv + vec2( tp.x,  tp.y), vec2(0.0), vec2(1.0)));
+      vec4 g2 = texture2D(tGeo, clamp(vUv + vec2(-tp.x, -tp.y), vec2(0.0), vec2(1.0)));
+      vec4 g3 = texture2D(tGeo, clamp(vUv + vec2( tp.x, -tp.y), vec2(0.0), vec2(1.0)));
+      vec4 g4 = texture2D(tGeo, clamp(vUv + vec2(-tp.x,  tp.y), vec2(0.0), vec2(1.0)));
 
       float d0 = unpackDepth16(g0.zw);
       float d1 = unpackDepth16(g1.zw);
@@ -248,9 +279,49 @@ const OutlineShader = {
       float nearness = 1.0 - smoothstep(0.010, 0.055, d0);
       float ne = smoothstep(uNormalBias, uNormalBias * 1.35, normalEdge) * nearness;
       float edge = clamp(max(de, ne), 0.0, 1.0) * uStrength * (1.0 - max(grass, grassNear));
+      #ifdef COMIC_SIL
+      /* The comic layer's outer line (src/render/comic.js, pass 16), on the
+       * four diagonal taps above, each with a wide tap beyond it. Not
+       * refused beside a sentinel as the line above is: the sky clears to
+       * the sentinel, and the skyline is where the outer line matters most.
+       * The allowance is two depth codes, which is what a near centre's
+       * ratios can be off by. It fades out between 12 and 30 m, nearer
+       * than the town's, for two reasons seen in the first shots of it:
+       * faded at 40 to 120 m, every edge of the bush rings and the far
+       * hedges was a silhouette against something much farther, and a
+       * heavy line round all of it turned the distance into a busy cartoon,
+       * aerial perspective in reverse; and a gate's sleeves at 60 m are
+       * five pixels wide, which an outer line two and a half deep from
+       * either side fills, so the pale gate went black. Inside 12 m, where
+       * the line is at full weight, the same sleeve is twenty five pixels
+       * wide and keeps its print inside it. */
+      {
+        float zr = uGeoFar - uGeoNear;
+        float zc = d0 * zr + uGeoNear;
+        vec2 tw = tp * ${SIL_REACH.toFixed(2)};
+        float sil = comicSilEdge(
+          comicSilDir(zc, d1 * zr + uGeoNear, vUv + vec2( tw.x,  tw.y)), comicSilDir(zc, d2 * zr + uGeoNear, vUv + vec2(-tw.x, -tw.y)),
+          comicSilDir(zc, d3 * zr + uGeoNear, vUv + vec2( tw.x, -tw.y)), comicSilDir(zc, d4 * zr + uGeoNear, vUv + vec2(-tw.x,  tw.y)),
+          zr * (2.0 / 65025.0) / zc);
+        edge = max(edge, sil * ${SIL_STRENGTH.toFixed(3)} * uStrength * (1.0 - grass) * (1.0 - smoothstep(12.0, 30.0, zc)));
+      }
+      #endif
       // never draw on the sky, and let very distant geometry go clean
       edge *= step(d0, 0.999) * (1.0 - smoothstep(0.16, 0.42, d0));
 
+      #ifdef COMIC_AO
+      /* The comic layer's occlusion (src/render/comic.js), High only. The
+       * prepass normal where there is one; grass and the promoted occluders
+       * carry the sentinel instead, and get the depth's own derivative. */
+      if (d0 < 0.999) {
+        vec3 aoP = comicAoPos(vUv, d0 * (uGeoFar - uGeoNear) + uGeoNear);
+        vec3 aoN = normalize(cross(dFdx(aoP), dFdy(aoP)));
+        aoN *= sign(dot(aoN, -aoP) + 1e-6);
+        aoN = grass > 0.5 ? aoN : n0;
+        float ao = comicAo(vUv, aoP, aoN);
+        resolved *= mix(${AO_TINT_GLSL}, vec3(1.0), ao);
+      }
+      #endif
       gl_FragColor = vec4(mix(resolved, uLineColor, edge), base.a);
     }
   `,
@@ -261,7 +332,9 @@ const GradeShader = {
     tDiffuse: { value: null },
     uDistort: { value: 0.055 },
     uVignette: { value: 0.16 },
-    uVibrance: { value: 0.22 },
+    uVibrance: { value: 0.34 },
+    /* An S curve about mid grey: the comic layer's harder light. */
+    uContrast: { value: 0.16 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -276,6 +349,7 @@ const GradeShader = {
     uniform float uDistort;
     uniform float uVignette;
     uniform float uVibrance;
+    uniform float uContrast;
 
     void main() {
       // FPV lens: mild barrel distortion, zoom compensated so the
@@ -305,6 +379,13 @@ const GradeShader = {
       float sat = mx > 0.001 ? (mx - mn) / mx : 0.0;
       float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
       c = mix(vec3(luma), c, 1.0 + uVibrance * (1.0 - sat));
+
+      /* Contrast, as a smoothstep S curve on each channel in a perceptual
+       * space (square root, then back), so the darks deepen under the ink
+       * and the lights stay off the clip. */
+      vec3 cp = sqrt(max(c, vec3(0.0)));
+      cp = mix(cp, cp * cp * (3.0 - 2.0 * cp), uContrast * step(cp, vec3(1.0)));
+      c = cp * cp;
 
       // Vignette, wide and shallow: frames the view without reading as a
       // dirty lens.
@@ -421,6 +502,37 @@ export function buildComposer(renderer, scene, camera, quality) {
     outline = new ShaderPass(OutlineShader);
     outline.uniforms.tGeo.value = normalTarget.texture;
     outline.uniforms.uResolution.value.set(w, h);
+    /*
+     * THE WHOOP ROOM KEEPS THE INK IT HAD BEFORE THE COMIC LAYER: slate, at
+     * 0.85, one texel, and no outer line. Its course is a frame of tubes a
+     * few pixels across, and the crease term reads a tube's own curve as a
+     * fold, so it inks most of every tube, on main as well. In slate at
+     * 0.85 a grey tube still read as grey and the red pole as red; in the
+     * comic layer's near black at full strength the tubes went black and
+     * the red pole lost the colour that tells a pilot what it is (found by
+     * the regression sweep after graphics pass 25). The reach alone was
+     * tried first and did not do it, because the crease fires at one texel
+     * too. Giving the room the comic ink needs a crease term that tells a
+     * curve from a fold, which would change every world's line and is left
+     * for a pass of its own.
+     */
+    const room = Boolean(scene.userData.indoor);
+    if (room) {
+      outline.uniforms.uLineColor.value.set(0x1a2230);
+      outline.uniforms.uStrength.value = 0.85;
+      outline.uniforms.uInkWidth.value = 1;
+    }
+    /* Occlusion and the outer line on High only: the preset was set by
+     * buildFieldScene before this runs. Defines, so Medium compiles none of
+     * either. Not on WebGL 1, where dFdx needs an extension this pass does
+     * not ask for: see comicGL2. */
+    if (comicAoOn() && comicGL2(renderer)) {
+      outline.material.defines.COMIC_AO = 1;
+      if (!room) {
+        outline.material.defines.COMIC_SIL = 1;
+      }
+      outline.material.needsUpdate = true;
+    }
     composer.addPass(outline);
   }
 
@@ -609,9 +721,18 @@ export function buildComposer(renderer, scene, camera, quality) {
     /* The prepass overrides every material with one that samples no shadow
      * map, so rebuilding the shadow map for it is pure waste: measured, 74
      * of 310 draw calls and 113260 of 1465708 triangles per frame, because
-     * the map was being rendered twice. Output is bit identical. */
+     * the map was being rendered twice. Output is bit identical.
+     *
+     * A redraw that shadowrate.js has asked for is held over the prepass and
+     * handed back for the colour pass. Left set, the prepass consumed it: Three
+     * renders a pending map in the first render call of the frame, with that
+     * call's layer mask, so on Medium the map was drawn from layer 0 alone and
+     * a caster on any other layer would have lost its shadow on Medium only.
+     * No caster is on another layer today, so nothing on screen changes. */
     const prevShadowAuto = renderer.shadowMap.autoUpdate;
+    const prevShadowNeeds = renderer.shadowMap.needsUpdate;
     renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = false;
     renderer.setRenderTarget(normalTarget);
     renderer.setClearColor(GEO_CLEAR, 0);
 
@@ -623,6 +744,12 @@ export function buildComposer(renderer, scene, camera, quality) {
     const prevMask = camera.layers.mask;
     geoUniforms.uNear.value = camera.near;
     geoUniforms.uFar.value = camera.far;
+    if (outline) {
+      outline.uniforms.uGeoNear.value = camera.near;
+      outline.uniforms.uGeoFar.value = camera.far;
+      updateAoCamera(outline.uniforms, camera,
+        outline.uniforms.uResolution.value.x, outline.uniforms.uResolution.value.y);
+    }
 
     /* Pass one: everything that inks, as packed normals and depth. Layer 0. */
     scene.overrideMaterial = normalMaterial;
@@ -645,6 +772,7 @@ export function buildComposer(renderer, scene, camera, quality) {
     renderer.setClearColor(prevClear, prevClearAlpha);
     camera.layers.mask = prevMask;
     renderer.shadowMap.autoUpdate = prevShadowAuto;
+    renderer.shadowMap.needsUpdate = prevShadowNeeds;
     scene.overrideMaterial = prevOverride;
     scene.background = prevBg;
     scene.fog = prevFog;
